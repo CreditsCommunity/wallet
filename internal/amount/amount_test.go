@@ -113,3 +113,30 @@ func TestErrorsDoNotEchoLongInput(t *testing.T) {
 		t.Errorf("a short input should be quoted back: %v", err)
 	}
 }
+
+func TestParseToken(t *testing.T) {
+	for _, c := range []struct {
+		text string
+		dec  int
+		want string
+	}{{"12.5", 2, "12.5"}, {"0012.50", 2, "12.5"}, {"1", 0, "1"}, {"0.01", 2, "0.01"}, {"7.000", 0, "7"}, {".5", 1, "0.5"}} {
+		got, err := ParseToken(c.text, c.dec)
+		if err != nil || got != c.want {
+			t.Errorf("%q/%d: %q %v", c.text, c.dec, got, err)
+		}
+	}
+	for _, c := range []struct {
+		text string
+		dec  int
+	}{{"0.001", 2}, {"0", 2}, {"-1", 2}, {"1e3", 2}, {"1,5", 2}, {"", 2}, {"1.5", 0}, {"1", -1}, {"1", 99}, {strings.Repeat("9", 41), 0}} {
+		if got, err := ParseToken(c.text, c.dec); err == nil {
+			t.Errorf("%q/%d accepted: %q", c.text, c.dec, got)
+		}
+	}
+	if c, ok := CompareDecimal("998900.50", "1E+3"); !ok || c != 1 {
+		t.Errorf("compare %d %v", c, ok)
+	}
+	if _, ok := CompareDecimal("x", "1"); ok {
+		t.Error("compared a non-number")
+	}
+}

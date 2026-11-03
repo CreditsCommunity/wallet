@@ -39,6 +39,9 @@ type Profile struct {
 	Name    string  `toml:"-"`
 	Address string  `toml:"address"`
 	Network Network `toml:"network"`
+	// HistoryNode is a remote full node (HOST:PORT) the history is read from, read-only: it gets
+	// only public addresses and is never used to send. Empty: the history comes from Address.
+	HistoryNode string `toml:"history_node"`
 }
 
 // Config is the configuration file.
@@ -64,6 +67,9 @@ history_page = 20
 [nodes.local]
 address = "127.0.0.1:9090"
 network = "mainnet"
+
+# history from a remote full node (read-only, never used to send), for a pruned local node:
+# history_node = "203.0.113.7:9090"
 
 # [nodes.lab]
 # address = "10.0.0.5:9090"
@@ -142,6 +148,11 @@ func Parse(text, path string) (*Config, error) {
 		if _, _, err := net.SplitHostPort(p.Address); err != nil {
 			return nil, fmt.Errorf("%s: nodes.%s.address %q: expected HOST:PORT", path, name, p.Address)
 		}
+		if p.HistoryNode != "" {
+			if _, _, err := net.SplitHostPort(p.HistoryNode); err != nil {
+				return nil, fmt.Errorf("%s: nodes.%s.history_node %q: expected HOST:PORT", path, name, p.HistoryNode)
+			}
+		}
 		switch p.Network {
 		case "":
 			p.Network = Mainnet
@@ -175,6 +186,23 @@ func (c *Config) ProfileNames() []string {
 	return names
 }
 
+// ResolveHistory sets the profile's history node from --history-node: HOST:PORT, or "local" for
+// the profile's own node. Empty keeps the configuration's.
+func ResolveHistory(p Profile, override string) (Profile, error) {
+	switch override {
+	case "":
+		return p, nil
+	case "local":
+		p.HistoryNode = ""
+		return p, nil
+	}
+	if _, _, err := net.SplitHostPort(override); err != nil {
+		return p, fmt.Errorf("--history-node %s: expected HOST:PORT or local", echo.Quote(override))
+	}
+	p.HistoryNode = override
+	return p, nil
+}
+
 // Resolve picks the node to talk to: the profile named (or the default one), its address
 // replaced by addressOverride (--node) when given. An address that no profile declares is
 // treated as mainnet, whatever the chosen profile says: declaring a test network is the only way
@@ -198,9 +226,11 @@ func (c *Config) Resolve(profile, addressOverride string) (Profile, error) {
 	out.Address = addressOverride
 	out.Network = Mainnet
 	out.Name = ""
+	out.HistoryNode = ""
 	for _, n := range c.ProfileNames() {
 		if c.Nodes[n].Address == addressOverride {
 			out.Network = c.Nodes[n].Network
+			out.HistoryNode = c.Nodes[n].HistoryNode
 			out.Name = n
 			break
 		}

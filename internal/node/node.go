@@ -13,6 +13,7 @@ import (
 	"github.com/apache/thrift/lib/go/thrift"
 
 	"github.com/CreditsCommunity/wallet/internal/amount"
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/thrift/api"
 	"github.com/CreditsCommunity/wallet/thrift/general"
 )
@@ -86,7 +87,10 @@ type APIError struct {
 	Message string
 }
 
-func (e *APIError) Error() string { return fmt.Sprintf("%s: %s (code %d)", e.Call, e.Message, e.Code) }
+// Error shows the node's message escaped: it is text from the node, untrusted (echo.Printable).
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s: %s (code %d)", e.Call, echo.Printable(e.Message), e.Code)
+}
 
 // check turns a non-success status into an error. A missing status is an error too: every call
 // that has one always sets it.
@@ -328,6 +332,8 @@ type Sent struct {
 	Index      int32
 	Fee        amount.Amount
 	InProgress bool // the node stopped waiting before the block: follow it with WaitInBlock
+	// Result is what a contract method returned (contract calls)
+	Result *general.Variant
 }
 
 // Send hands a signed transaction to the node (TransactionFlow). The node answers once the
@@ -351,6 +357,7 @@ func (c *Client) Send(ctx context.Context, t *api.Transaction) (Sent, error) {
 			s.Block, s.Index = r.ID.PoolSeq, r.ID.Index
 		}
 		s.Fee = amount.FromThrift(r.Fee)
+		s.Result = r.SmartContractResult_
 		return nil
 	})
 	return s, err

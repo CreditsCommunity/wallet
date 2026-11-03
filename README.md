@@ -4,9 +4,11 @@ An open-source terminal wallet for the CREDITS network that runs next to a node,
 macOS: keys kept on the machine, transfers, delegations, and smart contracts compiled, deployed and
 called through the local node. No browser, no web server, no open ports.
 
-Status: **milestone 1** (accounts, key store, status, balances, transfers, history from the local
-node, the terminal interface and the scriptable commands). Delegations, tokens, a remote history
-node and smart contracts come in the next milestones — see [docs/spec.md](docs/spec.md) §10.
+Status: **milestone 2**: accounts, key store, status, balances, transfers with optional user data,
+delegations, tokens (balances, info, transfers), the history from the local node or a remote full
+node with the token transfers and a CSV export, the terminal interface and the scriptable commands.
+Smart contracts (compile, deploy, methods, calls) come in milestone 3 — see
+[docs/spec.md](docs/spec.md) §10.
 
 Part of the [CreditsCommunity](https://github.com/CreditsCommunity) projects, next to the
 [community node](https://github.com/CreditsCommunity/node).
@@ -44,11 +46,23 @@ with the packages of `testdata/requirements.txt` (pinned with hashes:
 ./credits-wallet balance               # every account
 ./credits-wallet history main --csv main.csv
 ./credits-wallet send main u6PJ8DtQuPFnfmwHbGFULQ4u4EgjDiyYKjVEsynXq2w 12.5   # SPENDS REAL CS ON MAINNET
+./credits-wallet send main u6PJ8D…q2w 12.5 --data "invoice 42"           # with user data (public)
+./credits-wallet delegate main NODE_ADDRESS 1000                       # delegate, no time limit
+./credits-wallet delegate main NODE_ADDRESS 500 --until 2027-01-31     # until a UTC date
+./credits-wallet undelegate main NODE_ADDRESS 1000                     # withdraw (no-limit delegations)
+./credits-wallet delegations main                                      # made and received
+./credits-wallet tokens main                                           # token balances
+./credits-wallet token send main TOKEN_ADDRESS u6PJ8D…q2w 250.5        # a call of the token's transfer()
+./credits-wallet history main --tokens                                 # token transfers
 ./credits-wallet help
 ```
 
 Global flags, anywhere on the line: `--node HOST:PORT`, `--profile NAME`, `--config FILE`, `--json`,
-`--password-file FILE`.
+`--password-file FILE`, `--history-node HOST:PORT`.
+
+In the terminal interface: `[s]` send (with an optional Data field), `[d]` delegations (`n` delegate,
+`w` withdraw the selected one), `[t]` tokens (`s` send the selected token, `a` a token by its
+address), `[h]` history (`t` token transfers, `e` CSV export).
 
 ### First steps
 
@@ -101,11 +115,49 @@ it on an encrypted disk, and use it only where unattended sending is really need
 prints machine-readable results (and errors). `history --csv FILE` never replaces an existing
 file unless `--force` is given.
 
-### History on a pruned node
+### Delegations
+
+`delegate ACCOUNT NODE AMOUNT` delegates at least 5 CS to a node without a time limit, or with
+`--until DATE` until that UTC date (`2027-01-31`, `"2027-01-31 18:00"`, or RFC 3339 with an offset);
+the nodes release a delegation with a time limit by themselves once it expires. `undelegate` withdraws
+CS from a delegation without a time limit (at most its amount, at least 5 CS). `delegations` lists
+what an account delegated and received, with the expiry. On mainnet each asks for the same
+confirmation as `send`.
+
+### User data
+
+`send … --data TEXT` attaches a text (UTF-8, at most 4096 bytes, no control characters but newline
+and tab) to a transfer. **It is public**: anyone can read it on the chain. The history shows it, and
+the CSV has it in its `data` column (a text that starts like a spreadsheet formula gets a `'` in
+front).
+
+### Tokens
+
+`tokens ACCOUNT` lists token balances; the node must keep the token cache (`tokens_cache=true` in the
+`[api]` section of its `config.ini`), otherwise the wallet says so. Without it, `token balance TOKEN
+ACCOUNT` still reads one balance from the token contract. `token info TOKEN` shows code, name and
+decimals (and supply and holders with the cache). `token send ACCOUNT TOKEN TO AMOUNT` signs a call of
+the token's `transfer(to, amount)`: the amount may have at most the token's decimals and must be
+within the token balance; the CS balance must cover the signed max fee (1 CS), which the node holds
+while the call runs, and the fee is about 0.0175 CS plus the execution. A token is identified only by
+its contract address: anyone can deploy a token that calls itself "CS" or copies another token's
+code. The confirmation shows the full address and warns about such look-alikes; check the address.
+
+### History on a pruned node, and a remote full node
 
 A pruned node keeps only its latest blocks. The wallet says from which block the node's history
 starts ("history from block N") and how many transactions the account has in all; older ones are on
-full nodes (a remote history source comes in milestone 2).
+full nodes. A node profile can read its history from a remote full node:
+
+```toml
+[nodes.local]
+address = "127.0.0.1:9090"
+history_node = "203.0.113.7:9090"   # read-only: history and token transfers, never used to send
+```
+
+or `--history-node HOST:PORT` on the line (`--history-node local` for the node itself). That node
+receives the account's public address only; every history output names the source it comes from.
+`history --csv FILE` writes the CS transactions and the token transfers in one table.
 
 ## Threat model and limits
 
@@ -126,8 +178,27 @@ full nodes (a remote history source comes in milestone 2).
   user by default; with `CREDITS_WALLET_HOME` outside the user's profile the wallet warns, and the
   folder's permissions are yours to check (Properties > Security).
 
+## Tests and CI
+
+- `go test ./...`: signing (byte-identical to the node's samples, and for user data, delegations and
+  token calls to `testdata/sign-vectors.txt`, made by `testdata/sign-vectors.py` the way the node's
+  `ci/testnet/fund.py` and `samples/python/token_client.py` build them), key store, amounts, the
+  commands against `testdata/fake_node.py`, the screens at 80x24.
+- `.github/workflows/ci.yml`: vet, govulncheck, the tests, the four release builds.
+- `.github/workflows/privnet.yml` (pull requests to main, on demand): `ci/privnet/e2e.sh` starts a
+  private network of 5 community nodes with their contract executors and runs the wallet's commands
+  end to end, TestToken included. The executor comes from the community release package pinned in the workflow (tag, commit and
+  package SHA-256, bumped deliberately); the
+  node is the release commit built with `-DCREDITS_TESTNET=ON` (the package's node is a mainnet build,
+  which cannot fund a private network), cached per release, so only the first run after a release
+  builds it. Locally: `NODE_BIN=… PKG=…/csnode NODE_FILES=… IDL=third-party/thrift-interface-definitions
+  WALLET=./credits-wallet ci/privnet/e2e.sh` (see the script's header).
+
 ## Licence
 
 AGPL-3.0, as the node. `testdata/fake_node.py`, `testdata/sign-expected.txt` and
-`testdata/test-key.txt` come from the community node's `samples/clients/testdata`. The keys in
+`testdata/test-key.txt` come from the community node's `samples/clients/testdata`;
+`testdata/sign-vectors.py` follows the node's `ci/testnet/fund.py` and `samples/python/token_client.py`;
+`ci/privnet/e2e.sh` is a subset of the node's `ci/testnet/run.sh`; the contract-call and argument
+code of `internal/tx` comes from the node's `samples/clients/go`. The keys in
 `testdata/` and `internal/keys/testdata/` are public test values: never send funds to them.

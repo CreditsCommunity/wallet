@@ -1,0 +1,234 @@
+# The wallet end to end on a private network of the community node (ci/privnet/e2e.sh): 5 nodes with
+# their contract executors on one Linux runner; status, accounts, send with user data, delegate and
+# undelegate, delegations, history from node 1 and from node 2 as a remote history node, and
+# TestToken (the node's samples/contracts) deployed with the node's Python sample client, then
+# tokens sent with the wallet.
+#
+# The node: the release of CreditsCommunity/node pinned below (tag, commit and package checksum),
+# bumped deliberately; the `release` and `release_sha` inputs try another one on demand. Its package gives
+# the contract executor and its JDK; its node binary is a mainnet build, whose genesis funds go to the
+# mainnet genesis key, so a private network needs the same release commit built with
+# -DCREDITS_TESTNET=ON (genesis and starter keys from the environment). That build is cached per
+# release commit: only the first run after a release builds it (Boost, then the node: long on a
+# 2-core runner); the others restore it in seconds and take a few minutes in all.
+#
+# One job, on pull requests to main and on demand: Actions minutes are limited in this private
+# repository.
+name: privnet
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Community node release tag to try instead of the pinned one (empty = pinned)'
+        default: ''
+      release_sha:
+        description: 'With release: the commit that tag must point to (40 hex digits)'
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: privnet-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # the community node release under test: its tag, the commit it must point to, and the SHA-256
+  # of its linux-x64 package (from its SHA256SUMS). Bump the three together, deliberately.
+  NODE_RELEASE: community-v4.2.532-community.16
+  NODE_RELEASE_SHA: 7de684740d7585fbc167cfdd44819a496ee26912
+  NODE_PACKAGE_SHA256: 984e44132572d3f2ac5dbbb55268ee089ec3e6d1f430eec16b4a7bee7797b76d
+  # part of the cache key of the built node: bump it when the build recipe below changes
+  NODE_BUILDER: v1
+  THRIFT_COMPILER: 0.19.0-2.1build5
+  # samples/clients/python/credits_client.py and samples/contracts/TestToken.java of the node
+  # repository, pinned (they are newer than the releases so far)
+  SAMPLES_REF: 079e788d521dbb255c77c8b4abeeea0e4c60fcef
+  BOOST_VERSION: 1.83.0
+  BOOST_SHA256: 6478edfe2f3305127cffe8caf73ea0176c53769f4bf1585be237eb30798c3b8e
+  BOOST_PREFIX: /home/runner/boost
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    # a cached node: about 10 minutes; the first run after a release builds the node (up to an hour)
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: '1.27.3'  # go.mod's toolchain
+          cache: true
+
+      - name: Release of the community node
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          tag=$NODE_RELEASE want=$NODE_RELEASE_SHA pinned=1
+          if [ -n "$RELEASE" ]; then
+            echo "$RELEASE" | grep -qE '^[A-Za-z0-9._-]+$' || { echo "bad release tag"; exit 1; }
+            echo "$RELEASE_SHA" | grep -qE '^[0-9a-f]{40}$' || { echo "release_sha: the 40-hex commit the tag must point to"; exit 1; }
+            tag=$RELEASE want=$RELEASE_SHA pinned=0
+          fi
+          sha=$(gh api "repos/CreditsCommunity/node/commits/$tag" -q .sha)
+          [ "$sha" = "$want" ] || { echo "$tag points to $sha, expected $want: refused"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
+          echo "community node $tag at $sha (pinned: $pinned)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Release package (executor and JDK) and the node's samples
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          PINNED: ${{ steps.release.outputs.pinned }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/pkg" "$RUNNER_TEMP/node-files"
+          cd "$RUNNER_TEMP/pkg"
+          gh release download "$TAG" --repo CreditsCommunity/node -p 'credits-node-*-linux-x64.tar.gz' -p SHA256SUMS
+          sha256sum -c --ignore-missing SHA256SUMS
+          pkg=$(ls credits-node-*-linux-x64.tar.gz)
+          if [ "$PINNED" = 1 ]; then
+            echo "$NODE_PACKAGE_SHA256  $pkg" | sha256sum -c
+          fi
+          tar -xzf "$pkg" csnode/contract-executor.jar csnode/sc-api-support.jar csnode/ojdkbuild csnode/VERSION
+          rm "$pkg"
+          [ "community-v$(cat csnode/VERSION)" = "$TAG" ] || { echo "package version $(cat csnode/VERSION) is not $TAG"; exit 1; }
+          echo "package version $(cat csnode/VERSION)"
+          for f in samples/clients/python/credits_client.py samples/contracts/TestToken.java; do
+            curl -sSfL -o "$RUNNER_TEMP/node-files/$(basename "$f")" "https://raw.githubusercontent.com/CreditsCommunity/node/$SAMPLES_REF/$f"
+          done
+
+      - name: Thrift compiler 0.19 and the Python packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q "thrift-compiler=$THRIFT_COMPILER"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r testdata/requirements.txt
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: Build the wallet
+        run: |
+          go generate ./thrift
+          go build -o "$RUNNER_TEMP/credits-wallet" ./cmd/credits-wallet
+
+      # ---- the test-network node of the release commit, cached --------------------------------
+
+      - name: Restore the test-network node
+        id: node-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/node-bin
+          key: testnet-node-${{ steps.release.outputs.sha }}-${{ env.NODE_BUILDER }}-ubuntu-24.04
+
+      - name: Checkout the node
+        if: steps.node-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: CreditsCommunity/node
+          ref: ${{ steps.release.outputs.sha }}
+          path: node-src
+          persist-credentials: false
+
+      - name: Node submodules and build tools
+        if: steps.node-cache.outputs.cache-hit != 'true'
+        working-directory: node-src
+        env:
+          WANT: ${{ steps.release.outputs.sha }}
+        run: |
+          [ "$(git rev-parse HEAD)" = "$WANT" ] || { echo "checked out $(git rev-parse HEAD), expected $WANT"; exit 1; }
+          git submodule update --init -- cscrypto p2p \
+            third-party/berkeleydb third-party/thrift third-party/thrift-interface-definitions \
+            third-party/googletest third-party/lmdb third-party/lmdbxx third-party/nameof third-party/rocksdb
+          git -C cscrypto submodule update --init
+          git -C p2p submodule update --init
+          sudo apt-get install -y -qq cmake ninja-build flex bison autoconf automake libtool pkg-config
+
+      - name: Restore Boost
+        if: steps.node-cache.outputs.cache-hit != 'true'
+        id: boost-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ env.BOOST_PREFIX }}
+          key: boost-${{ env.BOOST_VERSION }}-static-rt-ubuntu-24.04-v1
+
+      # the node repository's recipe (testnet.yml)
+      - name: Build Boost
+        if: steps.node-cache.outputs.cache-hit != 'true' && steps.boost-cache.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          v=${BOOST_VERSION//./_}
+          curl -sSfL -o boost.tar.bz2 "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${v}.tar.bz2"
+          echo "${BOOST_SHA256}  boost.tar.bz2" | sha256sum -c
+          tar xjf boost.tar.bz2
+          cd "boost_${v}"
+          ./bootstrap.sh --with-libraries=system,filesystem,program_options,date_time,regex,log,iostreams,thread,serialization,atomic,chrono
+          ./b2 -j"$(nproc)" -d0 variant=release link=static runtime-link=static threading=multi \
+            cxxflags=-fPIC --layout=tagged -sNO_BZIP2=1 -sNO_ZSTD=1 -sNO_LZMA=1 \
+            install --prefix="${BOOST_PREFIX}"
+
+      - name: Save Boost
+        if: steps.node-cache.outputs.cache-hit != 'true' && steps.boost-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ env.BOOST_PREFIX }}
+          key: boost-${{ env.BOOST_VERSION }}-static-rt-ubuntu-24.04-v1
+
+      # the release's configuration (release.yml) plus CREDITS_TESTNET, as the node's testnet.yml
+      - name: Build the test-network node
+        if: steps.node-cache.outputs.cache-hit != 'true'
+        working-directory: node-src
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_TESTS=OFF \
+            -DBoost_ROOT="${BOOST_PREFIX}" \
+            -DBoost_NO_SYSTEM_PATHS=ON \
+            -DCMAKE_CXX_FLAGS="-include cstdint -include cstddef" \
+            -DWITH_HASKELL=OFF \
+            -DCREDITS_TESTNET=ON
+          cmake --build build -j"$(nproc)" --target node
+          mkdir -p "$RUNNER_TEMP/node-bin"
+          cp build/client/node "$RUNNER_TEMP/node-bin/node"
+          strings build/client/node | grep -q "TESTNET build: genesis funds go to"
+
+      - name: Save the test-network node
+        if: steps.node-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/node-bin
+          key: testnet-node-${{ steps.release.outputs.sha }}-${{ env.NODE_BUILDER }}-ubuntu-24.04
+
+      # ---- the test -------------------------------------------------------------------------------
+
+      - name: Private network and the wallet's commands
+        timeout-minutes: 20
+        env:
+          NODE_BIN: ${{ runner.temp }}/node-bin/node
+          PKG: ${{ runner.temp }}/pkg/csnode
+          NODE_FILES: ${{ runner.temp }}/node-files
+          WALLET: ${{ runner.temp }}/credits-wallet
+          WORK: ${{ runner.temp }}/privnet-run
+        run: |
+          export IDL="$PWD/third-party/thrift-interface-definitions"
+          ci/privnet/e2e.sh
+
+      - name: Node logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: privnet-logs-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/privnet-run/n*/*.log
+            ${{ runner.temp }}/privnet-run/n*/config.ini
+          retention-days: 7

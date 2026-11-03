@@ -1,6 +1,6 @@
 # Credits community wallet — specification
 
-Status: draft for review, 2026-11-03.
+Status: milestones 1 and 2 implemented, 2026-11-03.
 
 ## 1. Purpose
 
@@ -120,7 +120,9 @@ transactions. Running the wallet next to the user's own node is what the design 
 - List accounts, select one; create, import, export (encrypted file or base58 key after the password).
 - Balance in CS (`WalletBalanceGet`), delegated amounts and the delegations made and received
   (`WalletDataGet`, `DelegatedItem`), token balances (`TokenBalancesGet`; needs `[api] tokens_cache=true`
-  on the node, otherwise the screen says so).
+  on the node, otherwise the screen says so: the node answers "This node doesn't provide such info").
+  The node lists only tokens with a balance above 0. Without the token cache one token's balance is
+  still read from its contract (`balanceOf` as a getter: `token balance TOKEN ACCOUNT`).
 - Amounts are exact decimals (CS has 18 fractional digits); never floating point.
 
 ### 5.3 Transfers
@@ -133,16 +135,49 @@ transactions. Running the wallet next to the user's own node is what the design 
   inner id reaches the transfer's.
 - The signed max fee is "1 CS" (encoded 0x4c66, 0.99609375 CS) as in the node's samples and
   `ci/testnet/fund.py`; the node charges the actual fee, which is what the confirmation shows.
-- User data on transfers is left for milestone 2: its signed serialization (a Text user field) must
-  first be checked against a node on a test network.
-- Send tokens: a call of the token contract's `transfer`, with the token's decimals.
+- **User data** (`--data TEXT`, the TUI's Data field): a text, UTF-8, 1 to 4096 bytes, no control
+  characters but newline and tab. It is the user field `ordinary::Text` (id 1); the transaction signs
+  it as `csdb::Transaction::to_byte_stream_for_sig()` does a string field: count 1, then u32 size +
+  bytes; the API carries the text as it is in `Transaction.userFields` (the node reads a `userFields`
+  whose first byte is not 0 as the text, `APIHandler::checkTransaction`). Below 5 KiB a transfer pays
+  the smallest fee. The text is public: anyone reads it on the chain. Vectors: `testdata/sign-vectors.py`,
+  built as `ci/testnet/fund.py` builds a string field, independently of the Go code; checked on a
+  private network of the community node (CI).
+- **Send tokens**: a signed call (`TT_ContractCall`, amount 0) of the token contract's
+  `transfer(String to, BigDecimal amount)` (or `transfer(String, String)`, older tokens), built as the
+  node's sample clients build a call (`samples/clients/go`, `call`): the `SmartContractInvocation`
+  with every non-optional field set, its Thrift binary serialization as the one user field (u32 size
+  + bytes in the signed bytes). Before signing the wallet reads the token's methods
+  (`SmartContractGet`, `ContractAllMethodsGet`), its decimals (`getDecimal()` as a getter), the
+  symbol and name (`TokenInfoGet`, or the getters `getSymbol`/`getName`) and the sender's token
+  balance (`balanceOf`); the amount must have at most the token's decimals and be within the balance.
+  The signed max fee is the same 1 CS; the node holds it back from the CS balance while a contract
+  call runs, so the balance must cover it. The fee shown is twice `ActualFeeGet` of the call's size
+  (the call and the new state it makes, 0.0175 CS on the private network) plus the execution, which
+  the node charges later. A token is identified only by its contract address: its code and name are what the contract
+  says of itself. The review shows the full address, labels code and name as self-declared, and
+  warns when the code or name looks like "CS" or "Credits", or another held token's code looks the
+  same: compared by a skeleton (confusable Cyrillic and Greek letters mapped to Latin ones, NFKD
+  compatibility folding such as fullwidth letters, combining marks and zero-width or bidi format
+  characters dropped, upper case); and whenever a code or name has any character outside printable
+  ASCII. A `transfer` that returns `false` is reported as a failure (no tokens moved,
+  the fee paid).
 
 ### 5.4 Delegations
 
 - Delegate CS to a node: without time limit (user field `delegated` = 1) or until a date (value = the
-  UTC expiry time), and withdraw a delegation without time limit (value = 2); the same encoding as the
-  node and `ci/testnet/fund.py`.
-- List current delegations with their expiry.
+  UTC expiry time, unix seconds, at least 4), and withdraw a delegation without time limit (value =
+  2); the same encoding as the node and `ci/testnet/fund.py`: the transaction signs count 1 + the
+  value as u64, and the API carries flag 0, count 1, id 5 (u32), type 1 (integer), the u64.
+- The node's rules, checked before signing: at least 5 CS (`Consensus::MinStakeDelegated`) for a
+  delegation and a withdrawal; not to the sending account; the expiry at least a minute ahead
+  (`--until 2027-01-31`, `"2027-01-31 18:00"` in UTC, or RFC 3339 with an offset); a withdrawal only
+  from the delegation without a time limit to that node and at most its amount (a delegation with a
+  time limit ends by itself: the nodes release it once a block is past the expiry), with a CS
+  balance that covers the signed max fee (the node refuses a withdrawal below it). A delegation takes
+  the amount from the balance; a withdrawal gives it back.
+- List the delegations made and received with their amount and expiry (`WalletDataGet`,
+  `DelegatedItem.validUntil`; 0 = no limit): `credits-wallet delegations`, the TUI's `[d]` screen.
 
 ### 5.5 Smart contracts
 
@@ -165,11 +200,33 @@ A pruned node keeps only recent blocks, so the history of an account may not be 
   1. the local node (default): what it has, with the oldest block it holds stated on screen ("history
      from block N"; the API has no call for it: the wallet finds it with a binary search over
      `PoolInfoGet`, about 28 calls on mainnet);
-  2. a **remote full node**, read-only, for the history only (`TransactionsGet`, `TokenTransfersGet`):
-     an operator's full node or the user's own full node with backfill. It receives only public
-     addresses; it is never used to send.
+  2. a **remote full node**, read-only, for the history only (`TransactionsGet`,
+     `TokenBalancesGet`, `TokenWalletTransfersGet`): an operator's full node or the user's own full
+     node with backfill, `history_node = "HOST:PORT"` in the node profile or `--history-node
+     HOST:PORT` (`--history-node local` for the profile's own node). It receives only public
+     addresses; it is never used to send: the wallet holds its client only behind the read-only
+     history source. Every history output names its source ("local node …" or "remote full node …
+     (read-only)"), the TUI in its own colour.
 - The history screen pages through transactions (date, block, counterparty, amount, fee, kind:
-  transfer, delegation, deploy, call, token transfer) and can export them to CSV.
+  transfer, delegation with its expiry, withdrawal, deploy, call, token transfer, user data) and can
+  export them to CSV.
+- Token transfers (`history --tokens`, `[t]` on the history screen): `TokenWalletTransfersGet` for the
+  tokens the account holds (`TokenBalancesGet`), those of its outgoing token transfers, and any given
+  with `--token ADDR` (a token whose whole balance was sent is no longer listed by the node). They
+  need the token cache on the source node.
+- The CSV export has the CS transactions and the token transfers in one table, newest first: the
+  token transfer the account initiated is merged with its contract call (same block and index). Its
+  columns: `time_utc, block, index, kind, direction, account, counterparty, amount_cs, fee_cs,
+  inner_id, token, token_code, token_amount, data, delegation_until_utc`. Every column whose text
+  others choose (user data, a token's code, a token amount that is not a plain number) gets a `'`
+  in front when it starts like a spreadsheet formula (`= + - @`, tab, CR). A merged row keeps the
+  call's own kind, direction and counterparty; the token transfer fills only the token columns.
+  Without the token cache the file has the CS transactions and the command warns.
+- Messages of the node in errors are escaped when the error is built, and every error line is
+  escaped again where it is printed (stderr, the TUI).
+- Text chosen by others (user data, token names and codes) is shown with control characters and
+  backslashes escaped, on screen and in the commands' output; `--json` also escapes the C1 controls
+  (U+0080-U+009F) and the Unicode format characters (such as U+202E) as `\uXXXX`.
 
 ## 6. Terminal interface
 
@@ -239,7 +296,10 @@ credits-wallet account new|import|export|list
 credits-wallet balance [account]
 credits-wallet send <account> <to> <amount> [--data TEXT] [--yes]
 credits-wallet delegate <account> <node> <amount> [--until DATE] | undelegate <account> <node> <amount>
-credits-wallet history <account> [--source URL] [--csv FILE]
+credits-wallet delegations <account|address>
+credits-wallet tokens <account|address>
+credits-wallet token info <token> | balance <token> <account|address> | send <account> <token> <to> <amount>
+credits-wallet history <account> [--tokens] [--token ADDR] [--csv FILE]
 credits-wallet contract compile <file.java>
 credits-wallet contract deploy <account> <file.java>
 credits-wallet contract methods <address>
@@ -253,12 +313,24 @@ use (documented with its risks).
 
 ## 8. Quality
 
-- Unit tests: signing (byte-identical to the node's tests and `ci/testnet/fund.py`), key store
+- Unit tests: signing (byte-identical to the node's tests and `ci/testnet/fund.py`; user data,
+  delegations and token calls against `testdata/sign-vectors.txt`, made by `testdata/sign-vectors.py`
+  the way `fund.py` and `samples/python/token_client.py` build them), key store
   round-trips and wrong passwords, seed phrases (vectors generated with the node's own code), amount
   parsing, contract address derivation.
-- Integration: CI starts a private network of the node (as the node repository's testnet workflow does),
-  and the wallet's commands create accounts, transfer, delegate, deploy and call the sample contracts,
-  checking balances, token balances and contract results.
+- Offline: the commands against `testdata/fake_node.py`, which checks every signature over the bytes
+  `fund.py` would sign (transfers with and without user fields, delegations, token calls) and plays a
+  token and a node without the token cache.
+- Integration (`.github/workflows/privnet.yml`, `ci/privnet/e2e.sh`): a private network of 5 community
+  nodes with their contract executors; the wallet's commands create and import accounts, transfer
+  with user data, delegate with and without a time limit, withdraw, read the history from node 1 and
+  from node 2 as a remote history node, and send tokens of the node's `TestToken` (deployed with the
+  node's Python sample client), checking balances, delegations, token balances, the token history and
+  the CSV. The executor and its JDK come from the community release package pinned in the workflow
+  (tag, the commit it must point to, and the package's SHA-256, bumped deliberately; an input tries
+  another release with its expected commit); the release's
+  node binary is a mainnet build (its genesis funds go to the mainnet genesis key), so the job builds
+  the same release commit with `-DCREDITS_TESTNET=ON`, cached per release commit.
 - Builds and releases for linux/amd64, linux/arm64, windows/amd64, darwin/arm64 with checksums.
 - Security review of keys, signing and the key store before the first release.
 
@@ -269,14 +341,16 @@ use (documented with its risks).
 2. ~~How the wallet tells mainnet from another network~~: settled (section 5.1): mainnet by default,
    test networks declared in the configuration, and a network-identifier call to add to the community
    node's API (a separate node PR, no consensus change).
-3. Fee estimate for contract calls (the API's `ActualFeeGet` covers transfers; calls are measured in
-   CI at about 0.0175 CS).
+3. ~~Fee estimate for contract calls~~: twice `ActualFeeGet` of the call's size (the call and its new
+   state; 0.0175 CS on the private network) plus the execution, which the node charges afterwards;
+   shown as an estimate.
 4. Whether the community node packages ship the wallet from the first release or a later one.
 
 ## 10. Milestones
 
 1. Accounts (new, import, key store), status, balances, transfers, history from the local node
-   (with its CSV export); the TUI shell and the commands. User data on transfers moves to 2.
-2. Delegations; tokens; history from a remote full node; CSV export.
+   (with its CSV export); the TUI shell and the commands. User data on transfers moves to 2. Done.
+2. Delegations; user data on transfers; tokens (balances, info, transfers); history from a remote
+   full node; token transfers in the history and the CSV export; CI on a private network. Done.
 3. Smart contracts: compile, deploy, methods, getters and calls; templates.
 4. Packaging in the node releases; user guide.

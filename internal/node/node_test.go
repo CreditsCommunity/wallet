@@ -2,6 +2,7 @@ package node
 
 import (
 	"crypto/ed25519"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,5 +74,13 @@ func TestJudge(t *testing.T) {
 	}
 	if ok, _ := Judge(0, 0, time.Time{}, now); ok {
 		t.Error("an empty node is synced")
+	}
+}
+
+// A message from the node is untrusted text: it reaches the terminal escaped.
+func TestAPIErrorEscapesTheNodeMessage(t *testing.T) {
+	err := check("TransactionFlow", &general.APIResponse{Code: 1, Message: "bad\x1b]0;owned\a\u009b2J"})
+	if msg := err.Error(); strings.ContainsAny(msg, "\x1b\a\u009b") || !strings.Contains(msg, `bad\x1b]0;owned\a\u009b2J`) {
+		t.Errorf("%q", msg)
 	}
 }

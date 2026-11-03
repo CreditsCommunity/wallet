@@ -4,13 +4,18 @@
 //	credits-wallet status
 //	credits-wallet account new|import|export|list
 //	credits-wallet balance [account|address...]
-//	credits-wallet send <account> <to> <amount> [--yes]
-//	credits-wallet history <account|address> [--csv FILE]
+//	credits-wallet send <account> <to> <amount> [--data TEXT] [--yes]
+//	credits-wallet delegate|undelegate <account> <node> <amount> [--until DATE]
+//	credits-wallet delegations <account|address>
+//	credits-wallet tokens <account|address>
+//	credits-wallet token info|send ...
+//	credits-wallet history <account|address> [--tokens] [--csv FILE]
 //
 // See README.md and docs/spec.md.
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,9 +50,24 @@ usage: credits-wallet [global flags] [command] [arguments]
   account export <name> [--format encrypted|base58|official] [--out FILE]
   account list                          the accounts and their addresses
   balance [account|address...]          CS balances (all accounts without arguments)
-  send <account> <to> <amount> [--yes] [--wait SECONDS]
-                                        sign and send CS; on MAINNET it spends real CS
-  history <account|address> [--limit N] [--offset N] [--csv FILE [--force]]
+  send <account> <to> <amount> [--data TEXT] [--yes] [--wait SECONDS]
+                                        sign and send CS, with optional user data (a text,
+                                        public on the chain); on MAINNET it spends real CS
+  delegate <account> <node> <amount> [--until DATE] [--yes]
+                                        delegate CS to a node, without a time limit or until
+                                        DATE (UTC: 2027-01-31, "2027-01-31 18:00" or RFC 3339)
+  undelegate <account> <node> <amount> [--yes]
+                                        withdraw CS from a delegation without a time limit
+  delegations <account|address>         delegations made and received, with their expiry
+  tokens <account|address>              token balances (the node needs [api] tokens_cache=true)
+  token info <token>                    a token: code, name, supply, decimals
+  token balance <token> <account|address>
+                                        one token balance, read from the contract
+  token send <account> <token> <to> <amount> [--yes]
+                                        sign and send tokens: a call of the token's transfer()
+  history <account|address> [--limit N] [--offset N] [--tokens] [--token ADDR]
+          [--csv FILE [--force]]        CS transactions, or token transfers with --tokens; the
+                                        CSV has both (--token adds a token not held any more)
   config                                print an example configuration file
   version
 
@@ -55,6 +75,10 @@ global flags (anywhere on the line):
   --config FILE         configuration file (default: <data folder>/config.toml)
   --profile NAME        node profile of the configuration
   --node HOST:PORT      node API address (an address no profile declares counts as MAINNET)
+  --history-node HOST:PORT
+                        read the history from this remote full node (read-only, never used
+                        to send); "local" for the node itself; default: the profile's
+                        history_node
   --json                machine-readable output
   --password-file FILE  read the password from the first line of FILE (unattended use: the
                         password is on disk in clear, keep the file chmod 600)
@@ -66,6 +90,7 @@ type app struct {
 	configPath   string
 	profile      string
 	nodeAddr     string
+	historyNode  string
 	json         bool
 	passwordFile string
 
@@ -79,6 +104,7 @@ func (a *app) globalFlags(fs *flag.FlagSet) {
 	fs.StringVar(&a.configPath, "config", "", "configuration file")
 	fs.StringVar(&a.profile, "profile", "", "node profile")
 	fs.StringVar(&a.nodeAddr, "node", "", "node API HOST:PORT")
+	fs.StringVar(&a.historyNode, "history-node", "", "history from a remote full node HOST:PORT")
 	fs.BoolVar(&a.json, "json", false, "JSON output")
 	fs.StringVar(&a.passwordFile, "password-file", "", "password file")
 }
@@ -124,6 +150,9 @@ func (a *app) open() error {
 	if err != nil {
 		return err
 	}
+	if p, err = config.ResolveHistory(p, a.historyNode); err != nil {
+		return err
+	}
 	a.w = wallet.New(cfg, p, dir)
 	for _, warning := range config.PermissionWarnings(dir) {
 		fmt.Fprintln(os.Stderr, "warning:", warning)
@@ -131,10 +160,20 @@ func (a *app) open() error {
 	return nil
 }
 
+// printJSON writes v as indented JSON, with the runes a terminal could obey escaped (echo.JSON).
 func (a *app) printJSON(v any) error {
-	enc := json.NewEncoder(a.out)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+	return writeJSON(a.out, v, "  ")
+}
+
+func writeJSON(w io.Writer, v any, indent string) error {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", indent)
+	if err := enc.Encode(v); err != nil {
+		return err
+	}
+	_, err := w.Write(echo.JSON(buf.Bytes()))
+	return err
 }
 
 func main() {
@@ -165,13 +204,13 @@ func run(args []string) int {
 	if err != nil {
 		var u usageError
 		if errors.As(err, &u) {
-			fmt.Fprintf(os.Stderr, "credits-wallet: %v\n\n%s", err, usageText)
+			fmt.Fprintf(os.Stderr, "credits-wallet: %s\n\n%s", echo.Terminal(err.Error()), usageText)
 			return 2
 		}
 		if a.json {
-			_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"error": err.Error()})
+			_ = writeJSON(os.Stdout, map[string]string{"error": err.Error()}, "")
 		}
-		fmt.Fprintln(os.Stderr, "credits-wallet:", err)
+		fmt.Fprintln(os.Stderr, "credits-wallet:", echo.Terminal(err.Error()))
 		return 1
 	}
 	return 0
@@ -179,7 +218,8 @@ func run(args []string) int {
 
 // valueFlags are the flags that take a value (the next argument, unless written --flag=value).
 var valueFlags = map[string]bool{"config": true, "profile": true, "node": true, "password-file": true,
-	"format": true, "out": true, "csv": true, "limit": true, "offset": true, "wait": true, "words-file": true}
+	"format": true, "out": true, "csv": true, "limit": true, "offset": true, "wait": true, "words-file": true,
+	"history-node": true, "data": true, "until": true, "token": true}
 
 // findCommand returns the first argument that is neither a flag nor a flag's value.
 func findCommand(args []string) string {
@@ -238,6 +278,14 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.cmdSend(ctx, args)
 	case "history":
 		return a.cmdHistory(ctx, args)
+	case "delegate", "undelegate":
+		return a.cmdDelegate(ctx, cmd, args)
+	case "delegations":
+		return a.cmdDelegations(ctx, args)
+	case "tokens":
+		return a.cmdTokens(ctx, args)
+	case "token":
+		return a.cmdToken(ctx, args)
 	}
 	return usagef("unknown command %s", echo.Quote(cmd))
 }
@@ -263,3 +311,6 @@ func plural(n int, word string) string {
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// printable: see echo.Printable.
+func printable(s string) string { return echo.Printable(s) }

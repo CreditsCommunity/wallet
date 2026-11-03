@@ -1,15 +1,21 @@
-// Package history reads an account's transactions from a history source and writes them as CSV.
-// Milestone 1 has one source, the local node; a remote full node comes in milestone 2.
+// Package history reads an account's transactions and token transfers from a history source (the
+// local node, or a remote full node read-only) and writes them as CSV.
 package history
 
 import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/binary"
 	"encoding/csv"
+	"encoding/hex"
+	"errors"
 	"io"
+	"regexp"
+	"sort"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/CreditsCommunity/wallet/internal/amount"
 	"github.com/CreditsCommunity/wallet/internal/keys"
@@ -28,6 +34,15 @@ type Entry struct {
 	Amount       amount.Amount `json:"-"` // signed: negative when it leaves the account
 	Fee          amount.Amount `json:"-"` // the fee charged (paid by the source)
 	InnerID      int64         `json:"inner_id"`
+	// Data is the transfer's user data (a text), when it has one.
+	Data string `json:"data,omitempty"`
+	// Until is the expiry of a delegation with a time limit.
+	Until time.Time `json:"delegation_until,omitzero"`
+	// Token transfers: the token's address and code, and the amount moved (decimal text, signed
+	// like Amount).
+	Token       string `json:"token,omitempty"`
+	TokenCode   string `json:"token_code,omitempty"`
+	TokenAmount string `json:"token_amount,omitempty"`
 }
 
 // Page is a page of entries.
@@ -37,14 +52,19 @@ type Page struct {
 	Total   int // the account's transaction count on the source (it may hold fewer: pruned)
 }
 
-// Source is where the history comes from.
+// Source is where the history comes from: only reads.
 type Source interface {
-	// Describe names the source: "local node 127.0.0.1:9090".
+	// Describe names the source: "local node 127.0.0.1:9090" or "remote full node ... (read-only)".
 	Describe() string
+	// Remote tells whether the source is a remote full node rather than the local node.
+	Remote() bool
 	// Page returns transactions offset..offset+limit-1, newest first.
 	Page(ctx context.Context, account ed25519.PublicKey, offset, limit int) (Page, error)
 	// OldestBlock is the oldest block the source holds (1 on a full node).
 	OldestBlock(ctx context.Context) (int64, error)
+	// TokenTransfers returns every token transfer of the account, newest first, for the tokens it
+	// holds and the extra ones given. node.ErrNoTokenCache when the source keeps no token cache.
+	TokenTransfers(ctx context.Context, account ed25519.PublicKey, extra []ed25519.PublicKey) ([]Entry, error)
 }
 
 var kinds = map[api.TransactionType]string{
@@ -67,6 +87,27 @@ func Kind(t api.TransactionType) string {
 		return k
 	}
 	return "type " + strconv.Itoa(int(t))
+}
+
+// delegationValue reads the delegated field as the node returns it in userFields (flag 0, count 1,
+// id 5, type 1, u64).
+func delegationValue(uf []byte) (uint64, bool) {
+	if len(uf) != 15 || uf[0] != 0 || uf[1] != 1 || binary.LittleEndian.Uint32(uf[2:6]) != 5 || uf[6] != 1 {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint64(uf[7:]), true
+}
+
+// userText is the user data of a transfer: the node returns the text field as it is. Text that is
+// not UTF-8 is shown as hex.
+func userText(uf []byte) string {
+	if len(uf) == 0 || uf[0] == 0 {
+		return ""
+	}
+	if utf8.Valid(uf) {
+		return string(uf)
+	}
+	return "0x" + hex.EncodeToString(uf)
 }
 
 // FromSealed reads a transaction of the node as seen from account.
@@ -93,21 +134,147 @@ func FromSealed(account ed25519.PublicKey, s *api.SealedTransaction) Entry {
 	default:
 		e.Direction, e.Counterparty, e.Amount = "in", keys.Address([]byte(t.Source)), a
 	}
+	switch t.Type {
+	case api.TransactionType_TT_Delegation, api.TransactionType_TT_RevokeDelegation, api.TransactionType_TT_Release:
+		// a delegation takes the CS from the delegator's balance; a withdrawal gives them back
+		if t.Type == api.TransactionType_TT_RevokeDelegation && e.Direction != "self" {
+			e.Amount = e.Amount.Neg()
+		}
+		if v, ok := delegationValue(t.UserFields); ok && v >= 4 {
+			e.Until = time.Unix(int64(v), 0).UTC()
+		}
+	case api.TransactionType_TT_Transfer:
+		e.Data = userText(t.UserFields)
+	case api.TransactionType_TT_TokenTransfer:
+		if info := t.SmartInfo; info != nil && info.VTokenTransfer != nil {
+			x := info.VTokenTransfer
+			e.Token, e.TokenCode = keys.Address([]byte(t.Target)), string(x.Code)
+			e.TokenAmount = signedText(string(x.Amount), bytes.Equal(x.Sender, account) && !bytes.Equal(x.Receiver, account))
+			if bytes.Equal(x.Receiver, account) && !bytes.Equal(x.Sender, account) {
+				e.Direction, e.Counterparty = "in", keys.Address([]byte(x.Sender))
+			} else if len(x.Receiver) == ed25519.PublicKeySize {
+				e.Counterparty = keys.Address([]byte(x.Receiver))
+			}
+		}
+	}
 	if t.Fee != nil {
 		e.Fee = amount.Commission(uint16(t.Fee.Commission)).Amount()
 	}
 	return e
 }
 
+func signedText(amt string, out bool) string {
+	if out && amt != "" && amt[0] != '-' {
+		return "-" + amt
+	}
+	return amt
+}
+
+var zeroKey = make([]byte, ed25519.PublicKeySize)
+
+// FromTokenTransfer reads a token transfer as seen from account.
+func FromTokenTransfer(account ed25519.PublicKey, t *api.TokenTransfer) Entry {
+	var e Entry
+	if t == nil {
+		return e
+	}
+	sender := t.Sender
+	if len(sender) != ed25519.PublicKeySize || bytes.Equal(sender, zeroKey) {
+		sender = t.Initiator // transfer(): the initiator sends
+	}
+	if t.Transaction != nil {
+		e.Block, e.Index = t.Transaction.PoolSeq, t.Transaction.Index
+	}
+	e.Time = time.UnixMilli(int64(t.Time)).UTC()
+	e.Kind = "token transfer"
+	e.Token, e.TokenCode = keys.Address([]byte(t.Token)), string(t.Code)
+	out := bytes.Equal(sender, account)
+	in := bytes.Equal(t.Receiver, account)
+	switch {
+	case out && in:
+		e.Direction, e.Counterparty, e.TokenAmount = "self", keys.Address([]byte(t.Receiver)), string(t.Amount)
+	case out:
+		e.Direction, e.Counterparty, e.TokenAmount = "out", keys.Address([]byte(t.Receiver)), signedText(string(t.Amount), true)
+	default:
+		e.Direction, e.Counterparty, e.TokenAmount = "in", keys.Address([]byte(sender)), string(t.Amount)
+	}
+	if out && t.Fee != nil {
+		e.Fee = amount.Commission(uint16(t.Fee.Commission)).Amount()
+	}
+	if bytes.Equal(t.Initiator, account) || out {
+		e.Data = userText(t.UserFields)
+	}
+	return e
+}
+
+// Merge adds the token transfers to the CS transactions: a token transfer the account initiated is
+// also one of its transactions (the contract call), whose token columns it fills, the CS fields
+// left as the node recorded the transaction; the others (received) are added. Newest first.
+func Merge(cs, tokens []Entry) []Entry {
+	at := map[[2]int64]int{}
+	out := append([]Entry(nil), cs...)
+	for i, e := range out {
+		if e.Block > 0 {
+			at[[2]int64{e.Block, int64(e.Index)}] = i
+		}
+	}
+	for _, t := range tokens {
+		if i, ok := at[[2]int64{t.Block, int64(t.Index)}]; ok && t.Block > 0 {
+			// the CS entry is the transaction itself: its kind, direction and counterparty stay;
+			// the token transfer only fills the token columns
+			e := &out[i]
+			e.Token, e.TokenCode, e.TokenAmount = t.Token, t.TokenCode, t.TokenAmount
+			continue
+		}
+		out = append(out, t)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Block != out[j].Block {
+			return out[i].Block > out[j].Block
+		}
+		return out[i].Index > out[j].Index
+	})
+	return out
+}
+
+// TokensSent lists the token contracts of the account's outgoing token transfers among entries.
+func TokensSent(entries []Entry) []ed25519.PublicKey {
+	var out []ed25519.PublicKey
+	seen := map[string]bool{}
+	for _, e := range entries {
+		addr := e.Token
+		if addr == "" && e.Kind == "token transfer" && e.Direction == "out" {
+			addr = e.Counterparty
+		}
+		if addr == "" || seen[addr] {
+			continue
+		}
+		if pub, err := keys.ParseAddress(addr); err == nil {
+			seen[addr] = true
+			out = append(out, pub)
+		}
+	}
+	return out
+}
+
+// CSVHeader is the first line of an export.
+var CSVHeader = []string{"time_utc", "block", "index", "kind", "direction", "account", "counterparty", "amount_cs", "fee_cs",
+	"inner_id", "token", "token_code", "token_amount", "data", "delegation_until_utc"}
+
 // WriteCSV writes entries as CSV with a header line. Amounts are exact decimals with '.'.
 func WriteCSV(w io.Writer, account string, entries []Entry) error {
 	c := csv.NewWriter(w)
-	if err := c.Write([]string{"time_utc", "block", "index", "kind", "direction", "account", "counterparty", "amount_cs", "fee_cs", "inner_id"}); err != nil {
+	if err := c.Write(CSVHeader); err != nil {
 		return err
 	}
 	for _, e := range entries {
+		until := ""
+		if !e.Until.IsZero() {
+			until = e.Until.Format(time.RFC3339)
+		}
 		if err := c.Write([]string{e.Time.Format(time.RFC3339), strconv.FormatInt(e.Block, 10), strconv.Itoa(int(e.Index)),
-			e.Kind, e.Direction, account, e.Counterparty, e.Amount.String(), e.Fee.String(), strconv.FormatInt(e.InnerID, 10)}); err != nil {
+			e.Kind, e.Direction, account, e.Counterparty, e.Amount.String(), e.Fee.String(), strconv.FormatInt(e.InnerID, 10),
+			e.Token, csvSafe(e.TokenCode), csvAmount(e.TokenAmount), csvSafe(e.Data), until}); err != nil {
 			return err
 		}
 	}
@@ -115,32 +282,121 @@ func WriteCSV(w io.Writer, account string, entries []Entry) error {
 	return c.Error()
 }
 
-// LocalNode is the history the local node holds.
-type LocalNode struct{ Node *node.Client }
+// csvSafe keeps a column chosen by others (user data, a token's code, a token amount written by
+// the sender of a transfer(String, String)) from being read as a formula by a spreadsheet. The
+// other columns are written by the wallet: numbers, dates, base58 addresses, its own words.
+func csvSafe(s string) string {
+	if s != "" && (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@' || s[0] == '\t' || s[0] == '\r') {
+		return "'" + s
+	}
+	return s
+}
+
+// Reader is the part of a node client a history source may use: reads only. A source holds its
+// node behind this interface, so that a remote history node cannot be used to send by construction
+// (node.Client.Send is not in it).
+type Reader interface {
+	Transactions(ctx context.Context, address ed25519.PublicKey, offset, limit int64) ([]*api.SealedTransaction, int, error)
+	Status(ctx context.Context) (node.Status, error)
+	OldestBlock(ctx context.Context, last int64) (int64, error)
+	TokenBalances(ctx context.Context, address ed25519.PublicKey) ([]node.TokenBalance, error)
+	TokenTransfers(ctx context.Context, token, address ed25519.PublicKey, offset, limit int64) ([]*api.TokenTransfer, int, error)
+}
+
+var decimalNumber = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
+
+// csvAmount keeps a token amount a number when it is one (a negative amount is the wallet's sign),
+// and guards it as text otherwise (a transfer(String, String) amount is the sender's text).
+func csvAmount(s string) string {
+	if decimalNumber.MatchString(s) {
+		return s
+	}
+	return csvSafe(s)
+}
+
+// NodeSource is the history a node holds: the local node, or a remote full node (read-only). Its
+// fields are unexported: only the read-only Reader is reachable through it.
+type NodeSource struct {
+	node     Reader
+	address  string
+	isRemote bool
+}
+
+// Local is the local node's history.
+func Local(n *node.Client) NodeSource { return NodeSource{node: n, address: n.Address} }
+
+// RemoteNode is a remote full node's history: it is only read.
+func RemoteNode(n *node.Client) NodeSource {
+	return NodeSource{node: n, address: n.Address, isRemote: true}
+}
 
 // Describe implements Source.
-func (l LocalNode) Describe() string { return "node " + l.Node.Address }
+func (s NodeSource) Describe() string {
+	if s.isRemote {
+		return "remote full node " + s.address + " (read-only)"
+	}
+	return "local node " + s.address
+}
+
+// Remote implements Source.
+func (s NodeSource) Remote() bool { return s.isRemote }
 
 // Page implements Source.
-func (l LocalNode) Page(ctx context.Context, account ed25519.PublicKey, offset, limit int) (Page, error) {
-	list, total, err := l.Node.Transactions(ctx, account, int64(offset), int64(limit))
+func (s NodeSource) Page(ctx context.Context, account ed25519.PublicKey, offset, limit int) (Page, error) {
+	list, total, err := s.node.Transactions(ctx, account, int64(offset), int64(limit))
 	if err != nil {
 		return Page{}, err
 	}
 	p := Page{Offset: offset, Total: total, Entries: make([]Entry, 0, len(list))}
-	for _, s := range list {
-		p.Entries = append(p.Entries, FromSealed(account, s))
+	for _, x := range list {
+		p.Entries = append(p.Entries, FromSealed(account, x))
 	}
 	return p, nil
 }
 
 // OldestBlock implements Source.
-func (l LocalNode) OldestBlock(ctx context.Context) (int64, error) {
-	st, err := l.Node.Status(ctx)
+func (s NodeSource) OldestBlock(ctx context.Context) (int64, error) {
+	st, err := s.node.Status(ctx)
 	if err != nil {
 		return 0, err
 	}
-	return l.Node.OldestBlock(ctx, st.LastBlock)
+	return s.node.OldestBlock(ctx, st.LastBlock)
+}
+
+// TokenTransfers implements Source.
+func (s NodeSource) TokenTransfers(ctx context.Context, account ed25519.PublicKey, extra []ed25519.PublicKey) ([]Entry, error) {
+	held, err := s.node.TokenBalances(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	tokens := append([]ed25519.PublicKey(nil), extra...)
+	for _, b := range held {
+		tokens = append(tokens, b.Token)
+	}
+	seen := map[string]bool{}
+	var out []Entry
+	for _, token := range tokens {
+		if seen[string(token)] {
+			continue
+		}
+		seen[string(token)] = true
+		for offset := int64(0); ; offset += 100 {
+			list, count, err := s.node.TokenTransfers(ctx, token, account, offset, 100)
+			if errors.Is(err, node.ErrNotAToken) {
+				break // an extra address that is not a token
+			}
+			if err != nil {
+				return out, err
+			}
+			for _, t := range list {
+				out = append(out, FromTokenTransfer(account, t))
+			}
+			if len(list) < 100 || offset+100 >= int64(count) {
+				break
+			}
+		}
+	}
+	return Merge(nil, out), nil
 }
 
 // All reads every transaction the source returns for the account, page by page (for CSV).
@@ -156,4 +412,18 @@ func All(ctx context.Context, src Source, account ed25519.PublicKey, pageSize in
 			return all, nil
 		}
 	}
+}
+
+// AllWithTokens is All with the token transfers merged in. When the source keeps no token cache
+// the CS transactions are returned with node.ErrNoTokenCache as tokenErr.
+func AllWithTokens(ctx context.Context, src Source, account ed25519.PublicKey, pageSize int, extra []ed25519.PublicKey) (entries []Entry, tokenErr, err error) {
+	cs, err := All(ctx, src, account, pageSize)
+	if err != nil {
+		return cs, nil, err
+	}
+	tokens, tokenErr := src.TokenTransfers(ctx, account, append(TokensSent(cs), extra...))
+	if tokenErr != nil {
+		return cs, tokenErr, nil
+	}
+	return Merge(cs, tokens), nil, nil
 }

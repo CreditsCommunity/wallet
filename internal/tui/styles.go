@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -113,3 +114,6 @@ func (f *form) wipe() {
 		f.inputs[i].SetValue("")
 	}
 }
+
+// printable: see echo.Printable.
+func printable(s string) string { return echo.Printable(s) }

@@ -206,3 +206,63 @@ func EncodeCommission(value float64) Commission {
 	}
 	return Commission((((expi + 18) & 0x1F) << 10) | (int(math.Round(v*1024)) & 0x3FF))
 }
+
+// ---- token amounts -------------------------------------------------------------------------------
+
+// MaxTokenDecimals bounds the decimals a token may declare (getDecimal); more is not a token the
+// wallet handles.
+const MaxTokenDecimals = 36
+
+// ParseToken reads a positive token amount with at most decimals fractional digits, with the same
+// rules as Parse (digits and one '.', no sign, no exponent, no separators). It returns the amount
+// as the plain decimal text the contract receives (no leading zeros, trailing fractional zeros
+// dropped: "0012.50" -> "12.5").
+func ParseToken(text string, decimals int) (string, error) {
+	if decimals < 0 || decimals > MaxTokenDecimals {
+		return "", fmt.Errorf("the token declares %d decimals: not supported", decimals)
+	}
+	s := strings.TrimSpace(text)
+	whole, frac, _ := strings.Cut(s, ".")
+	if s == "" || (whole == "" && frac == "") {
+		return "", fmt.Errorf("%s: not an amount", echo.Quote(text))
+	}
+	for _, part := range []string{whole, frac} {
+		for _, c := range part {
+			if c < '0' || c > '9' {
+				return "", fmt.Errorf("%s: not an amount (digits and one '.' only)", echo.Quote(text))
+			}
+		}
+	}
+	frac = strings.TrimRight(frac, "0")
+	if len(frac) > decimals {
+		return "", fmt.Errorf("%s: this token has %d decimals", echo.Quote(text), decimals)
+	}
+	whole = strings.TrimLeft(whole, "0")
+	if whole == "" {
+		whole = "0"
+	}
+	if whole == "0" && frac == "" {
+		return "", fmt.Errorf("%s: the amount must be more than 0", echo.Quote(text))
+	}
+	if len(whole) > 40 {
+		return "", fmt.Errorf("%s: too large", echo.Quote(text))
+	}
+	if frac == "" {
+		return whole, nil
+	}
+	return whole + "." + frac, nil
+}
+
+// CompareDecimal compares two decimal texts as the node and contracts write them (a BigDecimal's
+// toString, possibly with an exponent): -1, 0 or +1, and false when one is not a number.
+func CompareDecimal(a, b string) (int, bool) {
+	x, ok1 := new(big.Rat).SetString(strings.TrimSpace(a))
+	y, ok2 := new(big.Rat).SetString(strings.TrimSpace(b))
+	if !ok1 || !ok2 {
+		return 0, false
+	}
+	return x.Cmp(y), true
+}
+
+// IsZero tells whether the amount is 0.
+func (a Amount) IsZero() bool { return a.units.Sign() == 0 }

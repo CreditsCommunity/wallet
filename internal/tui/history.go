@@ -21,16 +21,21 @@ type historyScreen struct {
 	loading  bool
 	note     string
 	err      error
+	// tokens: the token transfers instead of the CS transactions
+	tokens    bool
+	tokenList []history.Entry
 }
 
 type historyMsg struct {
-	page history.Page
-	err  error
+	page   history.Page
+	tokens []history.Entry
+	err    error
 }
 type exportedMsg struct {
-	file string
-	n    int
-	err  error
+	file     string
+	n        int
+	tokenErr error
+	err      error
 }
 
 func newHistoryScreen(f *keys.File, pageSize int) *historyScreen {
@@ -41,7 +46,7 @@ func (s *historyScreen) title() string { return "History  " + s.account.Name }
 
 func (s *historyScreen) load(m *model) tea.Cmd {
 	s.loading = true
-	offset, size := s.offset, s.pageSize
+	offset, size, tokens := s.offset, s.pageSize, s.tokens
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 		defer cancel()
@@ -49,8 +54,12 @@ func (s *historyScreen) load(m *model) tea.Cmd {
 		if err != nil {
 			return historyMsg{err: err}
 		}
+		if tokens {
+			list, err := m.w.History().TokenTransfers(ctx, pub, nil)
+			return historyMsg{tokens: list, err: err}
+		}
 		p, err := m.w.History().Page(ctx, pub, offset, size)
-		return historyMsg{p, err}
+		return historyMsg{page: p, err: err}
 	}
 }
 
@@ -63,7 +72,7 @@ func (s *historyScreen) export(m *model) tea.Cmd {
 		if err != nil {
 			return exportedMsg{err: err}
 		}
-		all, err := history.All(ctx, m.w.History(), pub, 100)
+		all, tokenErr, err := history.AllWithTokens(ctx, m.w.History(), pub, 100, nil)
 		if err != nil {
 			return exportedMsg{err: err}
 		}
@@ -76,7 +85,7 @@ func (s *historyScreen) export(m *model) tea.Cmd {
 			out.Close()
 			return exportedMsg{err: err}
 		}
-		return exportedMsg{file: name, n: len(all), err: out.Close()}
+		return exportedMsg{file: name, n: len(all), tokenErr: tokenErr, err: out.Close()}
 	}
 }
 
@@ -84,13 +93,21 @@ func (s *historyScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case historyMsg:
 		s.loading = false
-		s.page, s.err = msg.page, msg.err
+		s.err = msg.err
+		if s.tokens {
+			s.tokenList = msg.tokens
+		} else {
+			s.page = msg.page
+		}
 	case exportedMsg:
 		if msg.err != nil {
 			s.note, s.err = "", msg.err
 		} else {
 			wd, _ := os.Getwd()
 			s.note = fmt.Sprintf("%d transactions written to %s in %s", msg.n, msg.file, wd)
+			if msg.tokenErr != nil {
+				s.note += " (without token transfers: the node has no token cache)"
+			}
 		}
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -108,6 +125,9 @@ func (s *historyScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			}
 		case "e":
 			return s.export(m)
+		case "t":
+			s.tokens, s.err = !s.tokens, nil
+			return s.load(m)
 		case "r":
 			return s.load(m)
 		}
@@ -117,30 +137,53 @@ func (s *historyScreen) update(m *model, msg tea.Msg) tea.Cmd {
 
 func (s *historyScreen) view(m *model) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s on %s, %d transactions in all", s.account.Public, m.w.History().Describe(), s.page.Total)
-	if m.oldest > 1 {
-		fmt.Fprintf(&b, "; history from block %s on this node (pruned)", groupInt(m.oldest))
+	src := m.w.History()
+	source := "Source: " + src.Describe()
+	if src.Remote() {
+		b.WriteString(stWarn.Render(source) + "\n")
+	} else {
+		b.WriteString(stDim.Render(source) + "\n")
 	}
-	b.WriteString("\n\n")
+	if s.tokens {
+		fmt.Fprintf(&b, "%s: %d token transfers\n\n", s.account.Public, len(s.tokenList))
+	} else {
+		fmt.Fprintf(&b, "%s: %d transactions in all", s.account.Public, s.page.Total)
+		if m.oldest > 1 && !src.Remote() {
+			fmt.Fprintf(&b, "; from block %s (pruned)", groupInt(m.oldest))
+		}
+		b.WriteString("\n\n")
+	}
+	width := m.width - 2
+	rows := max(m.height-8, 3)
 	switch {
+	case s.tokens && s.loading && len(s.tokenList) == 0:
+		b.WriteString(stDim.Render("loading…") + "\n")
+	case s.tokens:
+		for i, e := range s.tokenList {
+			if i >= rows {
+				fmt.Fprintf(&b, "%s\n", stDim.Render(fmt.Sprintf("… %d more (the CSV export has them all)", len(s.tokenList)-i)))
+				break
+			}
+			b.WriteString(entryLine(e, width) + "\n")
+		}
 	case s.loading && len(s.page.Entries) == 0:
 		b.WriteString(stDim.Render("loading…") + "\n")
 	case len(s.page.Entries) == 0 && s.page.Total > 0:
-		b.WriteString(stDim.Render("None of them is on this node: it may be pruned; a full node has the older history.") + "\n")
+		b.WriteString(stDim.Render("None of them is on this node: it may be pruned; a full node has the older history (history_node).") + "\n")
 	case len(s.page.Entries) == 0:
 		b.WriteString(stDim.Render("no transactions") + "\n")
 	}
-	width := m.width - 2
-	rows := max(m.height-7, 3)
-	for i, e := range s.page.Entries {
-		if i >= rows {
-			break
+	if !s.tokens {
+		for i, e := range s.page.Entries {
+			if i >= rows {
+				break
+			}
+			line := entryLine(e, width-16)
+			b.WriteString(line + stDim.Render(fmt.Sprintf("  fee %s", e.Fee.Fixed(6))) + "\n")
 		}
-		line := entryLine(e, width-16)
-		b.WriteString(line + stDim.Render(fmt.Sprintf("  fee %s", e.Fee.Fixed(6))) + "\n")
-	}
-	if n := len(s.page.Entries); n > 0 {
-		fmt.Fprintf(&b, "\n%s\n", stDim.Render(fmt.Sprintf("%d–%d of %d", s.offset+1, s.offset+n, s.page.Total)))
+		if n := len(s.page.Entries); n > 0 {
+			fmt.Fprintf(&b, "\n%s\n", stDim.Render(fmt.Sprintf("%d–%d of %d", s.offset+1, s.offset+n, s.page.Total)))
+		}
 	}
 	if s.note != "" {
 		b.WriteString(stOK.Render(s.note) + "\n")
@@ -148,6 +191,10 @@ func (s *historyScreen) view(m *model) string {
 	if s.err != nil {
 		b.WriteString(stBad.Render(oneLine(s.err.Error())) + "\n")
 	}
-	b.WriteString(keyHelp("←/→", "page", "e", "export CSV", "r", "refresh", "Esc", "back"))
+	other := "token transfers"
+	if s.tokens {
+		other = "CS transactions"
+	}
+	b.WriteString(keyHelp("←/→", "page", "t", other, "e", "export CSV", "r", "refresh", "Esc", "back"))
 	return b.String()
 }

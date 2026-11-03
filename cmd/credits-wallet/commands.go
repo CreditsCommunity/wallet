@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/history"
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/internal/wallet"
@@ -409,12 +412,13 @@ func (a *app) cmdBalance(ctx context.Context, args []string) error {
 	return nil
 }
 
-// ---- send --------------------------------------------------------------------------------------
+// ---- send ------------------------------------------------------------------------------------
 
 func (a *app) cmdSend(ctx context.Context, args []string) error {
 	fs := newFlagSet(a, "send")
 	yes := fs.Bool("yes", false, "send without asking (scripts)")
 	wait := fs.Int("wait", 120, "seconds to follow the transfer until it is in a block")
+	data := fs.String("data", "", "user data (text)")
 	pos, err := a.commandArgs(fs, args, 1)
 	if err != nil {
 		return err
@@ -422,20 +426,25 @@ func (a *app) cmdSend(ctx context.Context, args []string) error {
 	if len(pos) != 3 {
 		return usagef("send <account> <to> <amount>")
 	}
-	w := a.w
-	plan, err := w.PrepareSend(ctx, pos[0], pos[1], pos[2])
+	plan, err := a.w.PrepareSend(ctx, wallet.SendRequest{Account: pos[0], To: pos[1], Amount: pos[2], Data: *data})
 	if err != nil {
 		return err
 	}
-	if !*yes || !a.json {
+	return a.confirmAndSend(ctx, plan, *yes, *wait)
+}
+
+// confirmAndSend shows the plan, asks for the confirmation (on MAINNET: type 'send'), reads the
+// password and sends.
+func (a *app) confirmAndSend(ctx context.Context, plan *wallet.SendPlan, yes bool, wait int) error {
+	if !yes || !a.json {
 		printPlan(plan)
 	}
-	if !*yes {
+	if !yes {
 		if !stdinIsTerminal() {
 			return errors.New("no terminal to confirm on: add --yes to send from a script")
 		}
 		if plan.Network.IsMainnet() {
-			ans, err := ask("This sends real CS on MAINNET. Type 'send' to sign and send: ")
+			ans, err := ask(fmt.Sprintf("This sends a real %s on MAINNET. Type 'send' to sign and send: ", plan.Kind))
 			if err != nil || ans != "send" {
 				return errors.New("cancelled: nothing was sent")
 			}
@@ -450,35 +459,104 @@ func (a *app) cmdSend(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	res, err := w.Send(ctx, plan, pw, time.Duration(*wait)*time.Second)
+	res, err := a.w.Send(ctx, plan, pw, time.Duration(wait)*time.Second)
 	keys.Zero(pw)
 	if err != nil {
 		return err
 	}
 	if a.json {
-		return a.printJSON(map[string]any{"account": plan.Account, "from": keys.Address(plan.From), "to": keys.Address(plan.To),
+		out := map[string]any{"kind": plan.Kind, "account": plan.Account, "from": keys.Address(plan.From), "to": keys.Address(plan.To),
 			"amount_cs": plan.Amount.String(), "fee_cs": res.Fee.String(), "inner_id": res.InnerID, "block": res.Block,
-			"round": res.Round, "in_block": res.InBlock, "network": plan.Network})
+			"round": res.Round, "in_block": res.InBlock, "network": plan.Network}
+		if plan.Data != "" {
+			out["data"] = plan.Data
+		}
+		if !plan.Until.IsZero() {
+			out["until"] = plan.Until.UTC()
+		}
+		if t := plan.Token; t != nil {
+			out["token"], out["token_code"], out["token_amount"], out["returned"] = keys.Address(t.Contract), t.Code, t.Amount, res.Returned
+		}
+		return a.printJSON(out)
 	}
 	where := "in a block"
 	if res.Block > 0 {
 		where = fmt.Sprintf("in block %d", res.Block)
 	}
-	fmt.Fprintf(a.out, "sent %s CS to %s: %s, inner id %d, fee %s CS\n", plan.Amount.Grouped(), keys.Address(plan.To), where, res.InnerID, res.Fee.String())
+	what := plan.Amount.Grouped() + " CS"
+	switch plan.Kind {
+	case wallet.KindTransfer:
+		fmt.Fprintf(a.out, "sent %s to %s", what, keys.Address(plan.To))
+	case wallet.KindDelegate:
+		fmt.Fprintf(a.out, "delegated %s to %s%s", what, keys.Address(plan.To), untilText(plan.Until))
+	case wallet.KindUndelegate:
+		fmt.Fprintf(a.out, "withdrew %s from the delegation to %s", what, keys.Address(plan.To))
+	case wallet.KindToken:
+		fmt.Fprintf(a.out, "sent %s %s to %s (transfer returned %s)", plan.Token.Amount, tokenLabel(plan.Token), keys.Address(plan.To), printable(res.Returned))
+	}
+	fmt.Fprintf(a.out, ": %s, inner id %d, fee %s CS\n", where, res.InnerID, res.Fee.String())
 	return nil
 }
 
-func printPlan(p *wallet.SendPlan) {
-	fmt.Fprintf(os.Stderr, "Send CS                                          %s\n", p.Network.Label())
-	fmt.Fprintf(os.Stderr, "  From     %s  %s   balance %s CS\n", p.Account, keys.Address(p.From), p.Balance.Grouped())
-	fmt.Fprintf(os.Stderr, "  To       %s\n", keys.Address(p.To))
-	fmt.Fprintf(os.Stderr, "  Amount   %s CS\n", p.Amount.Grouped())
-	fmt.Fprintf(os.Stderr, "  Fee      %s CS expected (the node's current fee)\n", p.Fee.Fixed(6))
-	fmt.Fprintf(os.Stderr, "  Max fee  %s CS signed: the most the network may charge\n", p.MaxFee.Amount().String())
-	fmt.Fprintf(os.Stderr, "  Node     %s, block %d, inner id %d\n", p.Node, p.Status.LastBlock, p.InnerID)
+func untilText(t time.Time) string {
+	if t.IsZero() {
+		return " without a time limit"
+	}
+	return " until " + t.UTC().Format("2006-01-02 15:04:05 UTC") + " (" + t.Local().Format("2006-01-02 15:04 MST") + " local)"
 }
 
-// ---- history -----------------------------------------------------------------------------------
+func tokenLabel(t *wallet.TokenPlan) string {
+	if t.Code != "" {
+		return printable(t.Code)
+	}
+	return "tokens of " + keys.Short(keys.Address(t.Contract))
+}
+
+func printPlan(p *wallet.SendPlan) {
+	e := os.Stderr
+	titles := map[wallet.Kind]string{wallet.KindTransfer: "Send CS", wallet.KindDelegate: "Delegate CS",
+		wallet.KindUndelegate: "Withdraw a delegation", wallet.KindToken: "Send tokens"}
+	fmt.Fprintf(e, "%-49s%s\n", titles[p.Kind], p.Network.Label())
+	fmt.Fprintf(e, "  From     %s  %s   balance %s CS\n", p.Account, keys.Address(p.From), p.Balance.Grouped())
+	switch p.Kind {
+	case wallet.KindTransfer:
+		fmt.Fprintf(e, "  To       %s\n", keys.Address(p.To))
+		fmt.Fprintf(e, "  Amount   %s CS\n", p.Amount.Grouped())
+		if p.Data != "" {
+			fmt.Fprintf(e, "  Data     %q (public: anyone can read it on the chain)\n", p.Data)
+		}
+	case wallet.KindDelegate:
+		fmt.Fprintf(e, "  Node     %s\n", keys.Address(p.To))
+		fmt.Fprintf(e, "  Amount   %s CS delegated%s\n", p.Amount.Grouped(), untilText(p.Until))
+	case wallet.KindUndelegate:
+		fmt.Fprintf(e, "  Node     %s\n", keys.Address(p.To))
+		fmt.Fprintf(e, "  Amount   %s CS back, of the %s CS delegated without a time limit\n", p.Amount.Grouped(), p.Delegated.Grouped())
+	case wallet.KindToken:
+		t := p.Token
+		fmt.Fprintf(e, "  Token    %s  (the contract address: the only identity of a token)\n", keys.Address(t.Contract))
+		fmt.Fprintf(e, "  Calls itself  %s %s, %d decimals (as the contract calls itself)\n", printable(t.Code), printable(t.Name), t.Decimals)
+		for _, warning := range t.Warnings {
+			fmt.Fprintf(e, "  WARNING  %s\n", warning)
+		}
+		fmt.Fprintf(e, "  To       %s\n", keys.Address(p.To))
+		fmt.Fprintf(e, "  Amount   %s %s (token balance %s)\n", t.Amount, printable(t.Code), printable(t.Balance))
+	}
+	if p.Kind == wallet.KindToken {
+		fmt.Fprintf(e, "  Fee      about %s CS plus the execution (the node's current fees)\n", p.Fee.Fixed(6))
+	} else {
+		fmt.Fprintf(e, "  Fee      %s CS expected (the node's current fee)\n", p.Fee.Fixed(6))
+	}
+	fmt.Fprintf(e, "  Max fee  %s CS signed: the most the network may charge\n", p.MaxFee.Amount().String())
+	fmt.Fprintf(e, "  Node     %s, block %d, inner id %d\n", p.Node, p.Status.LastBlock, p.InnerID)
+}
+
+// ---- history ----------------------------------------------------------------------------------
+
+// addresses is a repeatable flag of addresses.
+type addresses []string
+
+func (l *addresses) String() string     { return strings.Join(*l, ",") }
+func (l *addresses) Set(v string) error { *l = append(*l, v); return nil }
 
 func (a *app) cmdHistory(ctx context.Context, args []string) error {
 	fs := newFlagSet(a, "history")
@@ -486,6 +564,9 @@ func (a *app) cmdHistory(ctx context.Context, args []string) error {
 	offset := fs.Int("offset", 0, "skip the newest N")
 	csvFile := fs.String("csv", "", "write every transaction the source has to FILE")
 	force := fs.Bool("force", false, "--csv: replace an existing file")
+	tokens := fs.Bool("tokens", false, "token transfers instead of CS transactions")
+	var extra addresses
+	fs.Var(&extra, "token", "a token to include (repeatable)")
 	pos, err := a.commandArgs(fs, args, 1)
 	if err != nil {
 		return err
@@ -496,14 +577,27 @@ func (a *app) cmdHistory(ctx context.Context, args []string) error {
 	if *limit <= 0 {
 		*limit = a.w.Config.HistoryPage
 	}
+	var extraKeys []ed25519.PublicKey
+	for _, t := range extra {
+		k, err := keys.ParseAddress(t)
+		if err != nil {
+			return fmt.Errorf("--token: %w", err)
+		}
+		extraKeys = append(extraKeys, k)
+	}
 	_, pub, err := a.w.Account(pos[0])
 	if err != nil {
 		return err
 	}
 	src := a.w.History()
+	where := "this node"
+	if src.Remote() {
+		where = "that node"
+		fmt.Fprintf(os.Stderr, "history source: %s; it receives only public addresses\n", src.Describe())
+	}
 	oldest, oldestErr := src.OldestBlock(ctx)
 	if *csvFile != "" {
-		all, err := history.All(ctx, src, pub, 100)
+		all, tokenErr, err := history.AllWithTokens(ctx, src, pub, 100, extraKeys)
 		if err != nil {
 			return err
 		}
@@ -525,7 +619,38 @@ func (a *app) cmdHistory(ctx context.Context, args []string) error {
 		if err := out.Close(); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "%s written to %s\n", plural(len(all), "transaction"), *csvFile)
+		fmt.Fprintf(os.Stderr, "%s written to %s (source: %s)\n", plural(len(all), "transaction"), *csvFile, src.Describe())
+		if tokenErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: without token transfers: %s\n", echo.Terminal(tokenErr.Error()))
+		}
+		return nil
+	}
+	type row struct {
+		history.Entry
+		Amount string `json:"amount_cs"`
+		Fee    string `json:"fee_cs"`
+	}
+	if *tokens {
+		list, err := src.TokenTransfers(ctx, pub, extraKeys)
+		if err != nil {
+			return err
+		}
+		total := len(list)
+		list = list[min(*offset, total):min(*offset+*limit, total)]
+		if a.json {
+			rows := []row{}
+			for _, e := range list {
+				rows = append(rows, row{e, e.Amount.String(), e.Fee.String()})
+			}
+			return a.printJSON(map[string]any{"address": keys.Address(pub), "source": src.Describe(), "remote": src.Remote(),
+				"total": total, "offset": *offset, "token_transfers": rows})
+		}
+		fmt.Fprintf(a.out, "%s on %s: %s\n", keys.Address(pub), src.Describe(), plural(total, "token transfer"))
+		for _, e := range list {
+			arrow := map[string]string{"out": "→", "in": "←", "self": "↺"}[e.Direction]
+			fmt.Fprintf(a.out, "%s  #%-11d %s %s  %s %s  %s\n", e.Time.Format("2006-01-02 15:04:05"), e.Block, arrow,
+				e.Counterparty, signed(printable(e.TokenAmount)), printable(e.TokenCode), keys.Short(e.Token))
+		}
 		return nil
 	}
 	page, err := src.Page(ctx, pub, *offset, *limit)
@@ -533,16 +658,12 @@ func (a *app) cmdHistory(ctx context.Context, args []string) error {
 		return err
 	}
 	if a.json {
-		type row struct {
-			history.Entry
-			Amount string `json:"amount_cs"`
-			Fee    string `json:"fee_cs"`
-		}
 		rows := []row{}
 		for _, e := range page.Entries {
 			rows = append(rows, row{e, e.Amount.String(), e.Fee.String()})
 		}
-		out := map[string]any{"address": keys.Address(pub), "source": src.Describe(), "total": page.Total, "offset": page.Offset, "transactions": rows}
+		out := map[string]any{"address": keys.Address(pub), "source": src.Describe(), "remote": src.Remote(), "total": page.Total,
+			"offset": page.Offset, "transactions": rows}
 		if oldestErr == nil {
 			out["oldest_block"] = oldest
 		}
@@ -550,19 +671,29 @@ func (a *app) cmdHistory(ctx context.Context, args []string) error {
 	}
 	fmt.Fprintf(a.out, "%s on %s: %s in all", keys.Address(pub), src.Describe(), plural(page.Total, "transaction"))
 	if oldestErr == nil {
-		fmt.Fprintf(a.out, ", history from block %d on this node", oldest)
+		fmt.Fprintf(a.out, ", history from block %d on %s", oldest, where)
 		if oldest > 1 {
 			fmt.Fprint(a.out, " (pruned: older transactions are not here)")
 		}
 	}
 	fmt.Fprintln(a.out)
 	if len(page.Entries) == 0 && page.Total > 0 {
-		fmt.Fprintln(a.out, "none of them is on this node: it may be pruned; ask a full node for older history")
+		fmt.Fprintln(a.out, "none of them is on "+where+": it may be pruned; ask a full node for older history (--history-node)")
 	}
 	for _, e := range page.Entries {
 		arrow := map[string]string{"out": "→", "in": "←", "self": "↺"}[e.Direction]
-		fmt.Fprintf(a.out, "%s  #%-11d %s %s  %s CS  fee %s  %s\n", e.Time.Format("2006-01-02 15:04:05"), e.Block, arrow,
+		fmt.Fprintf(a.out, "%s  #%-11d %s %s  %s CS  fee %s  %s", e.Time.Format("2006-01-02 15:04:05"), e.Block, arrow,
 			e.Counterparty, signed(e.Amount.Grouped()), e.Fee.Fixed(6), e.Kind)
+		if !e.Until.IsZero() {
+			fmt.Fprintf(a.out, " until %s", e.Until.Format("2006-01-02 15:04 UTC"))
+		}
+		if e.TokenAmount != "" {
+			fmt.Fprintf(a.out, " %s %s", printable(e.TokenAmount), printable(e.TokenCode))
+		}
+		if e.Data != "" {
+			fmt.Fprintf(a.out, "  data %s", strconv.Quote(e.Data))
+		}
+		fmt.Fprintln(a.out)
 	}
 	return nil
 }

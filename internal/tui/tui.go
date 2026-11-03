@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/CreditsCommunity/wallet/internal/config"
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/history"
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/internal/node"
@@ -51,6 +52,8 @@ type model struct {
 	balErr   map[string]error
 	recent   map[string][]history.Entry
 	total    map[string]int
+	tokens   map[string][]node.TokenBalance
+	tokErr   map[string]error
 
 	screen screen // nil: the main screen
 	flash  string // a one-line message on the main screen
@@ -58,7 +61,7 @@ type model struct {
 
 func newModel(w *wallet.Wallet) *model {
 	return &model{flash: strings.Join(config.PermissionWarnings(filepath.Dir(w.Store.Dir)), "; "), w: w, width: 80, height: 24, balances: map[string]node.Balance{}, balErr: map[string]error{},
-		recent: map[string][]history.Entry{}, total: map[string]int{}}
+		recent: map[string][]history.Entry{}, total: map[string]int{}, tokens: map[string][]node.TokenBalance{}, tokErr: map[string]error{}}
 }
 
 // ---- messages and commands -----------------------------------------------------------------------
@@ -77,6 +80,8 @@ type accountDataMsg struct {
 	bal     node.Balance
 	entries []history.Entry
 	total   int
+	tokens  []node.TokenBalance
+	tokErr  error
 	err     error
 }
 type tickMsg struct{}
@@ -119,7 +124,8 @@ func (m *model) loadAccount(f *keys.File) tea.Cmd {
 			return accountDataMsg{name: f.Name, err: err}
 		}
 		page, err := m.w.History().Page(ctx, pub, 0, 8)
-		return accountDataMsg{name: f.Name, bal: bal, entries: page.Entries, total: page.Total, err: err}
+		tokens, tokErr := m.w.Node.TokenBalances(ctx, pub)
+		return accountDataMsg{name: f.Name, bal: bal, entries: page.Entries, total: page.Total, tokens: tokens, tokErr: tokErr, err: err}
 	}
 }
 
@@ -168,6 +174,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			delete(m.balErr, msg.name)
 			m.balances[msg.name], m.recent[msg.name], m.total[msg.name] = msg.bal, msg.entries, msg.total
+			m.tokens[msg.name], m.tokErr[msg.name] = msg.tokens, msg.tokErr
 		}
 		return m, nil
 	case tickMsg:
@@ -222,6 +229,18 @@ func (m *model) updateMain(msg tea.Msg) tea.Cmd {
 				return nil
 			}
 			m.screen = newSendScreen(m.current())
+		case "d":
+			if f := m.current(); f != nil {
+				s := newDelegationsScreen(f)
+				m.screen = s
+				return s.load(m)
+			}
+		case "t":
+			if f := m.current(); f != nil {
+				s := newTokensScreen(f)
+				m.screen = s
+				return s.load(m)
+			}
 		case "h":
 			if f := m.current(); f != nil {
 				s := newHistoryScreen(f, m.w.Config.HistoryPage)
@@ -283,7 +302,7 @@ func (m *model) View() string {
 		footer = ""
 	} else {
 		body = m.mainView()
-		footer = keyHelp("s", "send", "h", "history", "n", "new", "i", "import", "S", "status", "?", "help", "q", "quit")
+		footer = keyHelp("s", "send", "d", "delegate", "t", "tokens", "h", "history", "n", "new", "S", "status", "?", "help", "q", "quit")
 	}
 	h := m.height - 2
 	if footer == "" {
@@ -336,6 +355,7 @@ func (m *model) mainView() string {
 			if b.DelegatedIn.Sign() != 0 {
 				right.WriteString(fmt.Sprintf("Delegated to it  %s CS\n", b.DelegatedIn.Grouped()))
 			}
+			right.WriteString(m.tokenLine(f.Name, rightW) + "\n")
 			right.WriteString("\n" + stTitle.Render("Last transactions") + " " + m.historyNote() + "\n")
 			entries := m.recent[f.Name]
 			if len(entries) == 0 {
@@ -368,7 +388,29 @@ func (m *model) mainView() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, leftCol, sep, " ", rightCol)
 }
 
+// tokenLine is "Tokens     CTT 998,900.50  XYZ 3" for the main screen.
+func (m *model) tokenLine(name string, width int) string {
+	if err := m.tokErr[name]; err != nil {
+		if errors.Is(err, node.ErrNoTokenCache) {
+			return stDim.Render("Tokens     the node has no token cache ([api] tokens_cache=true)")
+		}
+		return stDim.Render("Tokens     " + oneLine(err.Error()))
+	}
+	list := m.tokens[name]
+	if len(list) == 0 {
+		return stDim.Render("Tokens     none")
+	}
+	parts := make([]string, 0, len(list))
+	for _, t := range list {
+		parts = append(parts, printable(t.Code)+" "+printable(t.Balance))
+	}
+	return ansi.Truncate("Tokens     "+strings.Join(parts, "  "), width, "…")
+}
+
 func (m *model) historyNote() string {
+	if m.w.History().Remote() {
+		return stDim.Render("(from " + m.w.History().Describe() + ")")
+	}
 	if m.oldest > 1 {
 		return stDim.Render(fmt.Sprintf("(from block %s on this node)", groupInt(m.oldest)))
 	}
@@ -388,12 +430,20 @@ func entryLine(e history.Entry, width int) string {
 		what += " " + e.Kind
 	}
 	when := e.Time.Local().Format("01-02 15:04")
-	line := fmt.Sprintf("%s  #%s  %s  %s CS", when, groupInt(e.Block), what, amt)
+	value := amt + " CS"
+	if e.TokenAmount != "" {
+		ta := printable(e.TokenAmount)
+		if !strings.HasPrefix(ta, "-") {
+			ta = "+" + ta
+		}
+		value = ta + " " + printable(e.TokenCode)
+	}
+	line := fmt.Sprintf("%s  #%s  %s  %s", when, groupInt(e.Block), what, value)
 	if lipgloss.Width(line) > width {
-		line = fmt.Sprintf("%s  %s  %s CS", when, what, amt)
+		line = fmt.Sprintf("%s  %s  %s", when, what, value)
 	}
 	line = ansi.Truncate(line, width, "…")
-	if e.Amount.Sign() < 0 {
+	if e.Amount.Sign() < 0 || strings.HasPrefix(e.TokenAmount, "-") {
 		return line
 	}
 	return stOK.Render(line)
@@ -411,7 +461,9 @@ func groupInt(n int64) string {
 	return b.String()
 }
 
-func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+// oneLine puts a message (an error, which may carry text from the node) on one line, with what
+// could drive the terminal escaped.
+func oneLine(s string) string { return echo.Terminal(strings.Join(strings.Fields(s), " ")) }
 
 // ---- status and help ---------------------------------------------------------------------------
 
@@ -479,7 +531,9 @@ func (helpScreen) view(m *model) string {
 	return strings.Join([]string{
 		stTitle.Render("Main screen"),
 		"  ↑/↓ or j/k   select an account (or click it)",
-		"  s            send CS from the selected account",
+		"  s            send CS from the selected account (optional user data: public text)",
+		"  d            delegations: made and received; n delegate, w withdraw",
+		"  t            tokens: balances; s send a token, a send a token by its address",
 		"  h            history of the selected account (e: export CSV)",
 		"  n / i        new account / import a key, a 24-word phrase or a keys JSON",
 		"  S            node status        r  refresh        q  quit",
