@@ -80,8 +80,15 @@ docs/                    this specification, user guide
   (`SyncStateGet`, `PoolListGet`).
 - Refuse to send while the node is not at the head (a transaction sent to a lagging node is rejected
   or delayed), with a clear message.
-- Show which network the node is on (mainnet or another: by the genesis/uuid the API exposes, or by
-  configuration).
+- Show which network the node is on, and treat it accordingly:
+  - **mainnet by default**: without other information the wallet assumes mainnet, shows "MAINNET" and
+    asks for the full confirmation before sending; the only possible mistake is too much caution;
+  - a **test or private network** is declared in the configuration (`network = testnet` or
+    `network = private`, per node profile) and shown in another colour with a lighter confirmation;
+  - the **community node** gets an API call that returns the network identifier (the `uuid` the node
+    derives from block 1, known to pruned nodes too) and its version; when it is there, the wallet
+    recognises mainnet by itself, and refuses to send if the configuration says "testnet" for a mainnet
+    node or the other way round; with an official node, which lacks the call, the configuration decides.
 
 ### 5.2 Accounts and balances
 
@@ -226,7 +233,9 @@ use (documented with its risks).
 
 1. ~~The keys JSON of the official wallets~~: settled (section 4.1), checked with a file generated on
    wallet.credits.com on 2026-11-03.
-2. How the wallet tells mainnet from another network: an API field or a configured value.
+2. ~~How the wallet tells mainnet from another network~~: settled (section 5.1): mainnet by default,
+   test networks declared in the configuration, and a network-identifier call to add to the community
+   node's API (a separate node PR, no consensus change).
 3. Fee estimate for contract calls (the API's `ActualFeeGet` covers transfers; calls are measured in
    CI at about 0.0175 CS).
 4. Whether the community node packages ship the wallet from the first release or a later one.
