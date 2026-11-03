@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"crypto/ed25519"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -110,6 +111,44 @@ func TestNetworkMismatch(t *testing.T) {
 	}
 }
 
+// The network check before a send (security review M1): a pinned uuid or require_network_uuid
+// refuses a node that reports none; otherwise the review says whether the node confirmed it.
+func TestJudgeNetwork(t *testing.T) {
+	none := fmt.Errorf("%w: its diagnostic API 127.0.0.1:9088 does not answer", node.ErrNoNetworkID)
+	other := node.NetworkID{UUID: 1234}
+	for _, c := range []struct {
+		profile   config.Profile
+		id        node.NetworkID
+		err       error
+		ok        bool
+		confirmed bool
+		says      string
+	}{
+		{config.Profile{Network: config.Private}, node.NetworkID{}, none, true, false, "not confirmed by the node (its diagnostic API 127.0.0.1:9088 does not answer)"},
+		{config.Profile{Network: config.Private}, other, nil, true, true, "confirmed by the node (uuid 1234)"},
+		{config.Profile{Network: config.Mainnet}, node.NetworkID{}, none, true, false, "not confirmed"},
+		{config.Profile{Network: config.Private, NetworkUUID: "1234"}, node.NetworkID{}, none, false, false, "pins network_uuid = 1234, but the node did not report one"},
+		{config.Profile{Network: config.Private, NetworkUUID: "1234"}, node.NetworkID{Version: "x"}, node.ErrNoNetworkID, false, false, "pins network_uuid"},
+		{config.Profile{Network: config.Private, NetworkUUID: "1234"}, other, nil, true, true, "confirmed"},
+		{config.Profile{Network: config.Testnet, RequireNetworkUUID: true}, node.NetworkID{}, none, false, false, "require_network_uuid"},
+		{config.Profile{Network: config.Testnet, RequireNetworkUUID: true}, other, nil, true, true, "confirmed"},
+		{config.Profile{Network: config.Testnet, RequireNetworkUUID: true}, node.NetworkID{UUID: node.MainnetUUID}, nil, false, false, "reports MAINNET"},
+	} {
+		check, err := JudgeNetwork(c.profile, c.id, c.err)
+		if (err == nil) != c.ok || check.Confirmed != c.confirmed {
+			t.Errorf("%+v %+v: %+v %v", c.profile, c.id, check, err)
+			continue
+		}
+		got := check.Describe()
+		if err != nil {
+			got = err.Error()
+		}
+		if !strings.Contains(got, c.says) {
+			t.Errorf("%+v: %q, want %q", c.profile, got, c.says)
+		}
+	}
+}
+
 func TestLocalContractListAndMerge(t *testing.T) {
 	dir := t.TempDir()
 	w := &Wallet{DataDir: dir}
@@ -171,5 +210,47 @@ func TestLocalContractListAndMerge(t *testing.T) {
 	}
 	if rows[3].Local.File != "/y/Counter.java" || rows[3].Transactions != 3 {
 		t.Errorf("merged row: %+v", rows[3])
+	}
+}
+
+// Security review L3, L5: the local list and a source are read only from regular files.
+func TestNonRegularFilesRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links")
+	}
+	dir := t.TempDir()
+	w := &Wallet{DataDir: dir}
+	me := ed25519.NewKeyFromSeed(make([]byte, 32)).Public().(ed25519.PublicKey)
+	os.MkdirAll(ContractsDir(dir), 0o700)
+	target := filepath.Join(dir, "elsewhere.json")
+	os.WriteFile(target, []byte(`{"version":1,"deployer":"`+keys.Address(me)+`","contracts":[]}`), 0o600)
+	link := filepath.Join(ContractsDir(dir), keys.Address(me)+".json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.LocalContracts(me); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a link read as the list: %v", err)
+	}
+	if err := w.AddLocalContract(me, LocalContract{Address: keys.Address(me)}); err == nil {
+		t.Error("a list replaced through a link")
+	}
+	if data, _ := os.ReadFile(target); strings.Contains(string(data), `"address"`) {
+		t.Error("the link's target was written")
+	}
+
+	src := filepath.Join(dir, "A.java")
+	os.WriteFile(src, []byte("public class A {}\n"), 0o644)
+	if s, err := ReadSource(src); err != nil || s != "public class A {}\n" {
+		t.Errorf("a source: %q %v", s, err)
+	}
+	for name, path := range map[string]string{"a folder": dir, "a device": "/dev/zero", "missing": filepath.Join(dir, "none.java")} {
+		if _, err := ReadSource(path); err == nil {
+			t.Errorf("%s read as a source", name)
+		}
+	}
+	big := filepath.Join(dir, "Big.java")
+	os.WriteFile(big, []byte(strings.Repeat("x", MaxSource+1)), 0o644)
+	if _, err := ReadSource(big); err == nil {
+		t.Error("a source above the size cap")
 	}
 }

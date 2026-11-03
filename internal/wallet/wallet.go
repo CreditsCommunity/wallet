@@ -5,8 +5,8 @@ package wallet
 import (
 	"context"
 	"crypto/ed25519"
-	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/CreditsCommunity/wallet/internal/config"
 	"github.com/CreditsCommunity/wallet/internal/echo"
@@ -49,18 +49,55 @@ func (w *Wallet) History() history.Source {
 	return history.RemoteNode(w.historyNode)
 }
 
-// CheckNetwork compares the declared network with what the node says of itself, when it can say
-// it (spec 5.1): a community node's diagnostic API reports its network uuid. Without it (an
-// official node, an older community release, the diag port closed) the configuration decides.
-func (w *Wallet) CheckNetwork(ctx context.Context) error {
+// NetworkCheck is what the node said of its network before a send.
+type NetworkCheck struct {
+	ID node.NetworkID
+	// Confirmed: the node reported a network uuid and it agrees with the profile.
+	Confirmed bool
+	// Why the network is not confirmed (the node did not report it), "" when confirmed.
+	Why string
+}
+
+// Describe is the check for a review: "confirmed by the node (uuid …)" or "not confirmed by the
+// node: …".
+func (c NetworkCheck) Describe() string {
+	if c.Confirmed {
+		return fmt.Sprintf("confirmed by the node (uuid %d)", c.ID.UUID)
+	}
+	return "not confirmed by the node (" + c.Why + ")"
+}
+
+// CheckNetwork compares the declared network with what the node says of itself (spec 5.1): a
+// community node's diagnostic API reports its network uuid, which must agree with the profile.
+// When the node reports none (an official node, an older community release, the diag port closed
+// or off) the configuration decides, unless the profile pins network_uuid or sets
+// require_network_uuid: then nothing is sent.
+func (w *Wallet) CheckNetwork(ctx context.Context) (NetworkCheck, error) {
 	id, err := w.Node.NetworkIdentity(ctx)
-	if errors.Is(err, node.ErrNoNetworkID) {
-		return nil
+	return JudgeNetwork(w.Profile, id, err)
+}
+
+// JudgeNetwork is CheckNetwork on an answer of node.NetworkIdentity: the check, or why nothing may
+// be sent.
+func JudgeNetwork(p config.Profile, id node.NetworkID, err error) (NetworkCheck, error) {
+	if err != nil || !id.Known() {
+		// NetworkIdentity reports every failure as node.ErrNoNetworkID: no identity, whatever the reason
+		why := "the node does not tell its network"
+		if err != nil {
+			why = strings.TrimPrefix(err.Error(), node.ErrNoNetworkID.Error()+": ")
+		}
+		switch {
+		case p.PinnedUUID() != 0:
+			return NetworkCheck{}, fmt.Errorf("the profile pins network_uuid = %d, but the node did not report one (%s): refused", p.PinnedUUID(), why)
+		case p.RequireNetworkUUID:
+			return NetworkCheck{}, fmt.Errorf("the profile sets require_network_uuid, but the node did not report its network (%s): refused", why)
+		}
+		return NetworkCheck{ID: id, Why: why}, nil
 	}
-	if err != nil {
-		return err
+	if err := NetworkMismatch(p, id); err != nil {
+		return NetworkCheck{}, err
 	}
-	return NetworkMismatch(w.Profile, id)
+	return NetworkCheck{ID: id, Confirmed: true}, nil
 }
 
 // NetworkMismatch refuses a node whose network identity contradicts the profile: a profile that

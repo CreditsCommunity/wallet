@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -123,6 +125,36 @@ func CheckSource(source string) error {
 		return errors.New("the source is not UTF-8 text")
 	}
 	return nil
+}
+
+// ReadSource reads a contract's Java source file, for the commands and the TUI alike: a regular
+// file (not a device, a FIFO or a folder; a link to a regular file is followed), at most MaxSource
+// bytes (read through a limit, so a file that grows meanwhile is still bounded), UTF-8.
+func ReadSource(path string) (string, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !st.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", path)
+	}
+	if st.Size() > MaxSource {
+		return "", fmt.Errorf("%s has %d bytes, at most %d", path, st.Size(), MaxSource)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, MaxSource+1))
+	if err != nil {
+		return "", err
+	}
+	if len(b) > MaxSource {
+		return "", fmt.Errorf("%s has more than %d bytes", path, MaxSource)
+	}
+	source := string(b)
+	return source, CheckSource(source)
 }
 
 // Compilation is a source compiled by the node, with its methods.

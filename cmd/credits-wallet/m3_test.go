@@ -179,17 +179,23 @@ func TestNetworkIdentityAgainstFakeNode(t *testing.T) {
 		uuid     string // what the node reports ("": an official node, no field)
 		network  string
 		pin      string
+		require  bool
 		sends    bool
 		statusIs string
+		review   string // what the review says of the network (sent ones)
 	}{
-		{"1234567890123456789", "private", "", true, "not mainnet (uuid 1234567890123456789), community node"},
-		{"1234567890123456789", "mainnet", "", false, "MISMATCH"},
-		{"1234567890123456789", "private", "42", false, "MISMATCH"},
-		{"1234567890123456789", "private", "1234567890123456789", true, "not mainnet"},
-		{"mainnet", "testnet", "", false, "MAINNET (uuid 11024959585341937636)"},
-		{"", "private", "", true, "node says    : nothing"},
+		{"1234567890123456789", "private", "", false, true, "not mainnet (uuid 1234567890123456789), community node", "confirmed by the node (uuid 1234567890123456789)"},
+		{"1234567890123456789", "mainnet", "", false, false, "MISMATCH", ""},
+		{"1234567890123456789", "private", "42", false, false, "MISMATCH", ""},
+		{"1234567890123456789", "private", "1234567890123456789", false, true, "PRIVATE (declared in the configuration; confirmed by the node)", "confirmed by the node"},
+		{"mainnet", "testnet", "", false, false, "MAINNET (uuid 11024959585341937636)", ""},
+		{"", "private", "", false, true, "PRIVATE (declared in the configuration; not confirmed by the node)", "not confirmed by the node"},
+		// security review M1: a pinned uuid or require_network_uuid needs the node to report one
+		{"", "private", "1234567890123456789", false, false, "but the node did not report one", ""},
+		{"", "private", "", true, false, "require_network_uuid", ""},
+		{"1234567890123456789", "private", "", true, true, "confirmed by the node", "confirmed by the node (uuid"},
 	} {
-		t.Run(c.uuid+"-"+c.network+"-"+c.pin, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s-%s-%s-%v", c.uuid, c.network, c.pin, c.require), func(t *testing.T) {
 			diag := freePort(t)
 			args := []string{"--diag-port", fmt.Sprint(diag)}
 			if c.uuid != "" {
@@ -202,6 +208,9 @@ func TestNetworkIdentityAgainstFakeNode(t *testing.T) {
 			cfg := fmt.Sprintf("node = \"n\"\n[nodes.n]\naddress = %q\nnetwork = %q\ndiag = \"127.0.0.1:%d\"\n", fake.addr, c.network, diag)
 			if c.pin != "" {
 				cfg += fmt.Sprintf("network_uuid = %q\n", c.pin)
+			}
+			if c.require {
+				cfg += "require_network_uuid = true\n"
 			}
 			os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600)
 			pwFile := filepath.Join(home, "pw")
@@ -221,6 +230,9 @@ func TestNetworkIdentityAgainstFakeNode(t *testing.T) {
 			}
 			if !c.sends && (strings.Contains(fake.Log(), "ACCEPTED") || !strings.Contains(stderr, "refused")) {
 				t.Errorf("sent despite the mismatch:\n%s\n%s", stderr, fake.Log())
+			}
+			if c.sends && !strings.Contains(stderr, "Network  PRIVATE, "+c.review) {
+				t.Errorf("the review does not say %q:\n%s", c.review, stderr)
 			}
 			if !strings.Contains(fake.Log(), "DIAG GetNodeInfo") {
 				t.Error("the diagnostic API was not asked")

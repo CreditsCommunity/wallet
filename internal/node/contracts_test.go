@@ -1,9 +1,13 @@
 package node
 
 import (
+	"encoding/binary"
 	"errors"
+	"io"
+	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/CreditsCommunity/wallet/thrift/apidiag"
 	"github.com/CreditsCommunity/wallet/thrift/general"
@@ -75,5 +79,76 @@ func TestReadNodeInfo(t *testing.T) {
 	c.DiagAddress = "127.0.0.1:1"
 	if _, err := c.NetworkIdentity(t.Context()); !errors.Is(err, ErrNoNetworkID) {
 		t.Errorf("closed diag port: %v", err)
+	}
+}
+
+// hostileServer answers the first call on a connection with a reply that announces a string of
+// size bytes, then sends nothing more.
+func hostileServer(t *testing.T, size int32) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				// the call: version (4), name (4 + n), seqid (4), then the arguments
+				var head [8]byte
+				if _, err := io.ReadFull(conn, head[:]); err != nil {
+					return
+				}
+				name := make([]byte, binary.BigEndian.Uint32(head[4:]))
+				var seq [4]byte
+				if _, err := io.ReadFull(conn, name); err != nil {
+					return
+				}
+				if _, err := io.ReadFull(conn, seq[:]); err != nil {
+					return
+				}
+				var b []byte
+				b = binary.BigEndian.AppendUint32(b, 0x80010002) // a reply
+				b = binary.BigEndian.AppendUint32(b, uint32(len(name)))
+				b = append(b, name...)
+				b = append(b, seq[:]...)
+				b = append(b, 12, 0, 0)  // success: a struct
+				b = append(b, 11, 0, 99) // an unknown string field, skipped by reading it
+				b = binary.BigEndian.AppendUint32(b, uint32(size))
+				conn.Write(b)
+				time.Sleep(5 * time.Second) // and nothing more
+			}(conn)
+		}
+	}()
+	return l.Addr().String()
+}
+
+// Security review L4: an answer that announces a field larger than MaxThriftSize fails at once,
+// instead of the wallet allocating it and waiting for its bytes. Both connections: the API and the
+// diag port.
+func TestThriftSizeLimit(t *testing.T) {
+	addr := hostileServer(t, 64<<20)
+	c := New(addr)
+	c.SocketTimeout = 3 * time.Second
+	start := time.Now()
+	_, err := c.Status(t.Context())
+	if err == nil || time.Since(start) > 2*time.Second || !strings.Contains(err.Error(), "size") {
+		t.Errorf("API: %v after %v", err, time.Since(start))
+	}
+	c.DiagAddress = addr
+	start = time.Now()
+	if _, err := c.NetworkIdentity(t.Context()); !errors.Is(err, ErrNoNetworkID) || time.Since(start) > 2*time.Second || !strings.Contains(err.Error(), "size") {
+		t.Errorf("diag: %v after %v", err, time.Since(start))
+	}
+	// below the limit the bytes are awaited (here: until the socket times out)
+	small := New(hostileServer(t, 1<<20))
+	small.SocketTimeout = 500 * time.Millisecond
+	if _, err := small.Status(t.Context()); err == nil || strings.Contains(err.Error(), "size") {
+		t.Errorf("a field below the limit: %v", err)
 	}
 }

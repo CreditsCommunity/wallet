@@ -50,6 +50,10 @@ type Profile struct {
 	// NetworkUUID pins the network: the uuid the node must report (decimal), checked before
 	// sending when the node reports one. Optional.
 	NetworkUUID string `toml:"network_uuid"`
+	// RequireNetworkUUID refuses to send when the node does not report its network uuid (an
+	// official node, an older community release, the diag port closed): the network must be
+	// confirmed by the node, not only declared.
+	RequireNetworkUUID bool `toml:"require_network_uuid"`
 }
 
 // DiagOff is the value of diag that turns the network-identity call off.
@@ -114,7 +118,9 @@ network = "mainnet"
 # [nodes.lab]
 # address = "10.0.0.5:9090"
 # network = "testnet"
-# network_uuid = "1234567890123456789"   # optional: the uuid this network must have
+# network_uuid = "1234567890123456789"   # optional: the uuid this network must have (the node
+#                                        # must then report it, or nothing is sent)
+# require_network_uuid = true            # optional: send only when the node confirms its network
 `
 
 // Default is the configuration without a file: the local node, mainnet.
@@ -280,6 +286,7 @@ func (c *Config) Resolve(profile, addressOverride string) (Profile, error) {
 	out.HistoryNode = ""
 	out.Diag = ""
 	out.NetworkUUID = ""
+	out.RequireNetworkUUID = false
 	for _, n := range c.ProfileNames() {
 		if c.Nodes[n].Address == addressOverride {
 			o := *c.Nodes[n]

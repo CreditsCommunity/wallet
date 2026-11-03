@@ -119,14 +119,21 @@ network = "mainnet"      # or "testnet", "private"
 
 `--node` with an address that no profile declares is treated as mainnet.
 
+**Use separate accounts for test networks.** A signed transaction does not say which network it is
+for: one signed on a test network can be replayed on mainnet by whoever runs or watches that test
+node, if the account exists there (every key does) with the same next inner id. Never use an
+account that holds CS on mainnet on another network.
+
 A community node from release community.17 on tells its network through its diagnostic API
 (`[api] diag_port` in its `config.ini`, 9088 in the release packages). The wallet asks it
 (`diag = "HOST:PORT"` in the profile, by default the node's host with port 9088, `diag = "off"` not
 to ask) and **refuses to send** when the node is on mainnet and the profile says testnet or private,
 or the other way round (a profile without `network` counts as mainnet: declare a test network). A
-profile can also pin the network: `network_uuid = "…"` (the uuid `status` shows). An official node
-or an older release does not tell its network: the configuration decides. `status` shows what the
-node says.
+profile can also pin the network: `network_uuid = "…"` (the uuid `status` shows), and
+`require_network_uuid = true` sends only when the node confirms its network. An official node or
+an older release does not tell its network: the configuration decides (but a pinned or required
+uuid then refuses). Every confirmation says whether the node confirmed the network; `status` shows
+what the node says.
 
 ### Scripts
 
@@ -186,7 +193,8 @@ a node that passes them on). `contract get CONTRACT METHOD ARGS…` runs a metho
 nothing is kept (`--from ACCOUNT` sets the caller the contract sees). `contract call ACCOUNT
 CONTRACT METHOD ARGS…` signs a call, about 0.0175 CS plus the execution; the arguments are converted
 to the types the method declares (put `--` before an argument that starts with `-`), and the result
-and the contract's state are shown. A method that throws is refused by the node; the fee is paid.
+and the contract's state are shown. In the terminal interface the review lists every argument in
+full; when it is taller than the screen, scroll it to the end (PgDn) before signing. A method that throws is refused by the node; the fee is paid.
 `contract pay ACCOUNT CONTRACT AMOUNT [--data TEXT]` sends CS to a contract: the node runs its
 `payable()`, which may refuse them (they come back, the fee is paid). `contract info CONTRACT` shows
 the deployer and the state (the public fields: the node shows no others); `contract list ACCOUNT` the contracts the account deployed (the node's

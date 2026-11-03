@@ -163,14 +163,16 @@ type SendPlan struct {
 	// Contract is the contract side of a deploy, a call or a payment.
 	Contract *ContractPlan
 
-	Fee      amount.Amount // the fee the node charges now (estimate for a token transfer)
-	MaxFee   amount.Commission
-	Balance  amount.Amount
-	InnerID  int64
-	Network  config.Network
-	Node     string
-	Status   node.Status
-	Prepared time.Time
+	Fee     amount.Amount // the fee the node charges now (estimate for a token transfer)
+	MaxFee  amount.Commission
+	Balance amount.Amount
+	InnerID int64
+	Network config.Network
+	// NetworkCheck is what the node said of its network (confirmed or not).
+	NetworkCheck NetworkCheck
+	Node         string
+	Status       node.Status
+	Prepared     time.Time
 }
 
 // ErrNotSynced is returned when the node is not at the head of the chain.
@@ -193,7 +195,8 @@ func (w *Wallet) start(ctx context.Context, account string, kind Kind) (*SendPla
 	if !st.Synced {
 		return nil, fmt.Errorf("%w: %s; a transaction sent now would be refused or delayed. Wait until 'status' says synced", ErrNotSynced, st.Why)
 	}
-	if err := w.CheckNetwork(ctx); err != nil {
+	check, err := w.CheckNetwork(ctx)
+	if err != nil {
 		return nil, err
 	}
 	bal, err := w.Node.Balance(ctx, from)
@@ -201,7 +204,7 @@ func (w *Wallet) start(ctx context.Context, account string, kind Kind) (*SendPla
 		return nil, err
 	}
 	return &SendPlan{Kind: kind, Account: f.Name, From: from, MaxFee: tx.MaxFee, Balance: bal.CS, Network: w.Profile.Network,
-		Node: w.Profile.Address, Status: st}, nil
+		NetworkCheck: check, Node: w.Profile.Address, Status: st}, nil
 }
 
 // finish reads the inner id: the last step, so that the plan is as fresh as possible.

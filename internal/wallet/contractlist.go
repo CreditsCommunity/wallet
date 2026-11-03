@@ -51,9 +51,21 @@ func (w *Wallet) localListPath(deployer ed25519.PublicKey) string {
 	return filepath.Join(ContractsDir(w.DataDir), keys.Address(deployer)+".json")
 }
 
-// LocalContracts reads the local contract list of a deployer (none: an empty list).
+// LocalContracts reads the local contract list of a deployer (none: an empty list). Only a regular
+// file is read: a link, a FIFO or a device in its place is refused.
 func (w *Wallet) LocalContracts(deployer ed25519.PublicKey) ([]LocalContract, error) {
-	f, err := os.Open(w.localListPath(deployer))
+	path := w.localListPath(deployer)
+	st, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file (%v): refused, remove it", path, st.Mode().Type())
+	}
+	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -85,7 +97,10 @@ func (w *Wallet) LocalContracts(deployer ed25519.PublicKey) ([]LocalContract, er
 }
 
 // AddLocalContract adds a contract to the deployer's local list (an address already there is
-// replaced). The file is written whole to a temporary file, then renamed.
+// replaced). The file is written whole to a temporary file, then renamed over the old one (a
+// rename replaces a link itself, never what it points to; LocalContracts, called first, refuses
+// anything but a regular file). Two wallets adding at the same moment: the last writer wins, and
+// the other one's new entry is lost from the local list (the node still lists the contract).
 func (w *Wallet) AddLocalContract(deployer ed25519.PublicKey, c LocalContract) error {
 	if w.DataDir == "" {
 		return errors.New("no data folder")

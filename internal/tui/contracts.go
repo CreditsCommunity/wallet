@@ -263,19 +263,15 @@ func (s *sourceScreen) title() string { return "Contract  " + printable(filepath
 // reload reads the file and compiles it.
 func (s *sourceScreen) reload(m *model) tea.Cmd {
 	s.comp, s.failure, s.err, s.errLines = nil, nil, nil, nil
-	data, err := os.ReadFile(s.file)
-	if err == nil && len(data) > wallet.MaxSource {
-		err = fmt.Errorf("%s has %d bytes, at most %d", s.file, len(data), wallet.MaxSource)
-	}
+	source, err := wallet.ReadSource(s.file)
 	s.readErr = err
 	if err != nil {
 		s.lines = nil
 		return nil
 	}
-	s.source = string(data)
+	s.source = source
 	s.lines = strings.Split(strings.ReplaceAll(s.source, "\t", "    "), "\n")
 	s.compiling = true
-	source := s.source
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*callTimeout)
 		defer cancel()
@@ -285,20 +281,39 @@ func (s *sourceScreen) reload(m *model) tea.Cmd {
 }
 
 // editorCommand is the user's editor: $VISUAL or $EDITOR (a command and its arguments, no shell),
-// Notepad on Windows, otherwise nano or vi.
-func editorCommand(file string) *exec.Cmd {
+// Notepad on Windows, otherwise nano or vi. A relative file name that starts with - or + gets ./ in
+// front, so that the editor does not take it for an option or a command (vi +cmd).
+func editorCommand(file string) (*exec.Cmd, error) {
+	if !filepath.IsAbs(file) && (strings.HasPrefix(file, "-") || strings.HasPrefix(file, "+")) {
+		file = "." + string(filepath.Separator) + file
+	}
+	var argv []string
+	from := ""
 	for _, v := range []string{"VISUAL", "EDITOR"} {
 		if f := strings.Fields(os.Getenv(v)); len(f) > 0 {
-			return exec.Command(f[0], append(f[1:], file)...)
+			argv, from = f, "$"+v
+			break
 		}
 	}
-	if runtime.GOOS == "windows" {
-		return exec.Command("notepad", file)
+	if argv == nil {
+		switch {
+		case runtime.GOOS == "windows":
+			argv = []string{"notepad"}
+		default:
+			argv = []string{"vi"}
+			if _, err := exec.LookPath("nano"); err == nil {
+				argv = []string{"nano"}
+			}
+		}
 	}
-	if p, err := exec.LookPath("nano"); err == nil {
-		return exec.Command(p, file)
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		if from == "" {
+			return nil, fmt.Errorf("no editor found (%s): set $EDITOR", echo.Terminal(argv[0]))
+		}
+		return nil, fmt.Errorf("the editor of %s, %s, is not found or not executable: %s", from, echo.Quote(argv[0]), echo.Terminal(err.Error()))
 	}
-	return exec.Command("vi", file)
+	return exec.Command(path, append(argv[1:], file)...), nil
 }
 
 func (s *sourceScreen) update(m *model, msg tea.Msg) tea.Cmd {
@@ -347,7 +362,12 @@ func (s *sourceScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		case "pgdown", " ":
 			s.top = min(s.top+page, max(len(s.lines)-page, 0))
 		case "e":
-			return tea.ExecProcess(editorCommand(s.file), func(err error) tea.Msg { return editorDoneMsg{err} })
+			cmd, err := editorCommand(s.file)
+			if err != nil {
+				s.note = oneLine(err.Error())
+				return nil
+			}
+			return tea.ExecProcess(cmd, func(err error) tea.Msg { return editorDoneMsg{err} })
 		case "c":
 			return s.reload(m)
 		case "m":

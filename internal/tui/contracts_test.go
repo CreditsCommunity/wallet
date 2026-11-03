@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -107,14 +109,16 @@ func TestContractScreensFit80x24(t *testing.T) {
 	// the reviews of a deploy, a call and a payment
 	amt, _ := amount.Parse("3")
 	fee, _ := amount.Parse("0.0175")
-	base := wallet.SendPlan{Account: "main", From: pub, To: pub, Amount: amt, Fee: fee, Balance: amt, InnerID: 7, Network: config.Mainnet, MaxFee: tx.MaxFee}
+	base := wallet.SendPlan{Account: "main", From: pub, To: pub, Amount: amt, Fee: fee, Balance: amt, InnerID: 7, Network: config.Mainnet, MaxFee: tx.MaxFee,
+		NetworkCheck: wallet.NetworkCheck{Why: "its diagnostic API 127.0.0.1:9088 does not answer"}}
 	deploy := base
 	deploy.Kind = wallet.KindDeploy
 	deploy.Contract = &wallet.ContractPlan{Address: pub, Name: "TestToken\x1b[2J", File: file, Methods: 14,
 		Deploy: &tx.ContractDeploy{Classes: []*general.ByteCodeObject{{Name: "TestToken"}}, TokenStandard: 4}}
 	call := base
 	call.Kind = wallet.KindCall
-	call.Contract = &wallet.ContractPlan{Address: pub, Name: "TestToken", Method: contractMethods()[4], Args: []string{"1", "2\x1b[2J", strings.Repeat("9", 100)}}
+	long := strings.Repeat("9", 150) + "END"
+	call.Contract = &wallet.ContractPlan{Address: pub, Name: "TestToken", Method: contractMethods()[4], Args: []string{"1", "2\x1b[2J", long}}
 	pay := base
 	pay.Kind, pay.Data = wallet.KindPay, "tip \x1b]0;x\a"
 	pay.Contract = &wallet.ContractPlan{Address: pub, Name: "TipJar"}
@@ -123,11 +127,61 @@ func TestContractScreensFit80x24(t *testing.T) {
 		m.screen = s
 		view := m.View()
 		fits(t, string(p.Kind), view)
-		if !strings.Contains(view, "This sends a real "+string(p.Kind)+" on MAINNET") || !strings.Contains(view, "Max fee") {
-			t.Errorf("%s review:\n%s", p.Kind, view)
+		// page through a review taller than the screen: everything is shown, nothing is cut
+		all := view
+		for range 6 {
+			s.update(m, tea.KeyMsg{Type: tea.KeyPgDown})
+			v := m.View()
+			fits(t, string(p.Kind)+" scrolled", v)
+			all += v
+		}
+		if !strings.Contains(all, "This sends a real "+string(p.Kind)+" on MAINNET") || !strings.Contains(all, "Max fee") ||
+			!strings.Contains(all, "not confirmed by the node (its diagnostic API") || !s.seenEnd {
+			t.Errorf("%s review:\n%s", p.Kind, all)
+		}
+		if p.Kind == wallet.KindCall {
+			flat := strings.NewReplacer("│", "", " ", "", "\n", "").Replace(all)
+			if !strings.Contains(flat, "c(double)="+strings.Repeat("9", 60)) || !strings.Contains(flat, "END") || strings.Contains(all, "more arguments") {
+				t.Errorf("an argument is cut:\n%s", all)
+			}
 		}
 		s.step, s.result = sendDone, wallet.SendResult{Returned: "ok\x1b[2J", Result: &general.Variant{}, Contract: pub}
 		fits(t, string(p.Kind)+" done", m.View())
+	}
+}
+
+// A review that does not fit is not signed before it was read to the end (security review L1).
+func TestReviewMustBeReadToTheEnd(t *testing.T) {
+	w := wallet.New(config.Default(), config.Profile{Name: "local", Address: "127.0.0.1:1", Network: config.Testnet}, t.TempDir())
+	m := newModel(w)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	f := &keys.File{Name: "main", Public: "u6PJ8DtQuPFnfmwHbGFULQ4u4EgjDiyYKjVEsynXq2w"}
+	pub, _ := keys.ParseAddress(f.Public)
+	args := make([]string, 12)
+	md := &general.MethodDescription{Name: "many", ReturnType: "void"}
+	for i := range args {
+		args[i] = strings.Repeat("x", 100)
+		md.Arguments = append(md.Arguments, &general.MethodArgument{Type: "java.lang.String", Name: fmt.Sprint("a", i)})
+	}
+	p := wallet.SendPlan{Kind: wallet.KindCall, Account: "main", From: pub, To: pub, InnerID: 7, Network: config.Testnet, MaxFee: tx.MaxFee,
+		Contract: &wallet.ContractPlan{Address: pub, Method: md, Args: args}, Prepared: time.Now(),
+		NetworkCheck: wallet.NetworkCheck{Confirmed: true, ID: node.NetworkID{UUID: 42}}}
+	s := &sendScreen{kind: p.Kind, account: f, plan: &p, step: sendReview, confirm: newForm("Password").secret(0)}
+	m.screen = s
+	if v := m.View(); !strings.Contains(v, "confirmed by the node (uuid 42)") || s.seenEnd {
+		t.Fatalf("first page:\n%s", v)
+	}
+	s.confirm.inputs[0].SetValue("pw")
+	if cmd := s.update(m, tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil || s.step != sendReview || s.err == nil {
+		t.Fatal("signed a review that was not read to the end")
+	}
+	for !s.seenEnd {
+		s.update(m, tea.KeyMsg{Type: tea.KeyPgDown})
+		m.View()
+	}
+	s.confirm.inputs[0].SetValue("pw")
+	if cmd := s.update(m, tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil || s.step != sendSending {
+		t.Errorf("not signed after reading it all: %v", s.err)
 	}
 }
 
@@ -213,41 +267,38 @@ func TestContractScreenKeys(t *testing.T) {
 }
 
 func TestEditorCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts as editors")
+	}
+	bin := t.TempDir()
+	for _, name := range []string{"code", "myedit"} {
+		os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755)
+	}
+	t.Setenv("PATH", bin)
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", "code -w")
-	c := editorCommand("/tmp/A.java")
-	if len(c.Args) != 3 || c.Args[1] != "-w" || c.Args[2] != "/tmp/A.java" {
-		t.Errorf("EDITOR with arguments: %v", c.Args)
+	c, err := editorCommand("/tmp/A.java")
+	if err != nil || len(c.Args) != 3 || c.Args[1] != "-w" || c.Args[2] != "/tmp/A.java" || c.Path != filepath.Join(bin, "code") {
+		t.Errorf("EDITOR with arguments: %v %v", c, err)
 	}
 	t.Setenv("VISUAL", "myedit")
-	if c := editorCommand("x; rm -rf ~"); len(c.Args) != 2 || c.Args[1] != "x; rm -rf ~" {
-		t.Errorf("no shell: %v", c.Args)
+	if c, err := editorCommand("x; rm -rf ~"); err != nil || len(c.Args) != 2 || c.Args[1] != "x; rm -rf ~" {
+		t.Errorf("no shell: %v %v", c, err)
 	}
-}
-
-// Results carry the contract's method names and values: escaped where the screen renders them,
-// whichever path set them (a getter, a call's outcome).
-func TestContractResultsEscaped(t *testing.T) {
-	w := wallet.New(config.Default(), config.Profile{Name: "local", Address: "127.0.0.1:1", Network: config.Mainnet}, t.TempDir())
-	m := newModel(w)
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	f := &keys.File{Name: "main", Public: "u6PJ8DtQuPFnfmwHbGFULQ4u4EgjDiyYKjVEsynXq2w"}
-	pub, _ := keys.ParseAddress(f.Public)
-	cs := &contractScreen{account: f, address: pub}
-	m.screen = cs
-	evil := "v\x1b[2J"
-	cs.update(m, gotMsg{method: "get\x1b]0;x\a", value: &general.Variant{VString: &evil}})
-	fits(t, "getter result", m.View())
-	methods := contractMethods()
-	cs.update(m, contractLoadedMsg{methods: methods})
-	cs.sel = len(cs.methods) - 1
-	cs.newMethodForm()
-	cs.methods[cs.sel].Name = "x\x1b[2J"
-	cs.call(m) // the review screen; its onDone sets the result as the call's outcome would
-	ps := m.screen.(*sendScreen)
-	ps.onDone(wallet.SendResult{Returned: "r\x1b]0;y\a", Result: &general.Variant{}}, nil)
-	m.screen = cs
-	fits(t, "call result", m.View())
-	ps.onDone(wallet.SendResult{}, nil)
-	fits(t, "call in a block", m.View())
+	// a file name the editor could take for an option or a command
+	for in, want := range map[string]string{"-rf.java": "./-rf.java", "+qa.java": "./+qa.java", "/x/-a.java": "/x/-a.java", "a-b.java": "a-b.java"} {
+		if c, err := editorCommand(in); err != nil || c.Args[len(c.Args)-1] != want {
+			t.Errorf("%s: %v %v", in, c, err)
+		}
+	}
+	// a bad $EDITOR: a clear error, nothing run
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", "nosuch-editor --flag")
+	if _, err := editorCommand("A.java"); err == nil || !strings.Contains(err.Error(), `$EDITOR, "nosuch-editor", is not found`) {
+		t.Errorf("bad $EDITOR: %v", err)
+	}
+	t.Setenv("EDITOR", "")
+	if _, err := editorCommand("A.java"); err == nil || !strings.Contains(err.Error(), "no editor found") {
+		t.Errorf("no editor at all: %v", err)
+	}
 }

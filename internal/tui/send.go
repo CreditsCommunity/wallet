@@ -40,6 +40,11 @@ type sendScreen struct {
 	result  wallet.SendResult
 	err     error
 
+	// the review scrolls when it is taller than the screen (a call's arguments are never cut):
+	// scroll is its first line shown, seenEnd that its last line was shown, which signing needs
+	scroll  int
+	seenEnd bool
+
 	// a planned screen (contracts) has no fields: planFn checks the transaction, and the screen
 	// returns to parent, telling onDone the outcome
 	planFn func(ctx context.Context) (*wallet.SendPlan, error)
@@ -225,9 +230,23 @@ func (s *sendScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		}
 		return cmd
 	case sendReview:
+		if k, ok := msg.(tea.KeyMsg); ok {
+			switch k.String() {
+			case "pgdown", "ctrl+d":
+				s.scroll += max(m.height-15, 1)
+				return nil
+			case "pgup", "ctrl+u":
+				s.scroll = max(s.scroll-max(m.height-15, 1), 0)
+				return nil
+			}
+		}
 		cmd, done := s.confirm.update(msg)
 		if !done {
 			return cmd
+		}
+		if !s.seenEnd {
+			s.err = fmt.Errorf("the review does not fit the screen: read it to the end with PgDn before signing")
+			return nil
 		}
 		pwIndex := len(s.confirm.inputs) - 1
 		if s.plan.Network.IsMainnet() && s.confirm.value(0) != "send" {
@@ -277,6 +296,20 @@ func untilLocal(t time.Time) string {
 	return untilText(t) + " (" + t.Local().Format("15:04 MST") + " local)"
 }
 
+// reviewWidth is the width of a review's values (the box is 78 columns at most).
+const reviewWidth = 62
+
+// appendWrapped adds a row whose value is wrapped over as many rows as it needs, never cut.
+func appendWrapped(rows [][2]string, label, value string) [][2]string {
+	for i, line := range strings.Split(ansi.Hardwrap(value, reviewWidth, true), "\n") {
+		if i > 0 {
+			label = ""
+		}
+		rows = append(rows, [2]string{label, line})
+	}
+	return rows
+}
+
 // planLines is what the review shows of a plan, field by field.
 func planLines(p *wallet.SendPlan) [][2]string {
 	var rows [][2]string
@@ -317,14 +350,15 @@ func planLines(p *wallet.SendPlan) [][2]string {
 		rows = append(rows, [2]string{"Address", keys.Address(p.To)}, [2]string{"", stDim.Render(fmt.Sprintf("from the account, inner id %d and the byte code", p.InnerID))})
 	case wallet.KindCall:
 		c := p.Contract
-		rows = append(rows, [2]string{"Contract", keys.Address(p.To)}, [2]string{"", stDim.Render(printable(c.Name))},
-			[2]string{"Method", ansi.Truncate(node.Signature(c.Method), 64, "…")})
+		rows = append(rows, [2]string{"Contract", keys.Address(p.To)}, [2]string{"", stDim.Render(printable(c.Name))})
+		rows = appendWrapped(rows, "Method", node.Signature(c.Method))
+		// every argument in full, wrapped: they are what is signed
 		for i, arg := range c.Method.Arguments {
-			if i == 6 {
-				rows = append(rows, [2]string{"", stDim.Render(fmt.Sprintf("… %d more arguments", len(c.Args)-6))})
-				break
+			value := ""
+			if i < len(c.Args) {
+				value = printable(c.Args[i])
 			}
-			rows = append(rows, [2]string{"  " + ansi.Truncate(printable(arg.Name), 8, "…"), ansi.Truncate(printable(c.Args[i]), 64, "…")})
+			rows = appendWrapped(rows, fmt.Sprintf("Arg %d", i+1), printable(arg.Name+" ("+node.SimpleType(arg.Type)+")")+" = "+value)
 		}
 	case wallet.KindPay:
 		data := stDim.Render("(none)")
@@ -385,14 +419,35 @@ func (s *sendScreen) view(m *model) string {
 		}
 	case sendReview, sendSending:
 		p := s.plan
-		for _, row := range planLines(p) {
+		rows := planLines(p)
+		// what fits between the account line and the confirmation; the rest scrolls
+		avail := max(m.height-13, 4)
+		s.scroll = min(s.scroll, max(len(rows)-avail+1, 0))
+		first, last := 0, len(rows)
+		if len(rows) > avail {
+			first, last = s.scroll, min(s.scroll+avail-1, len(rows))
+		}
+		if last == len(rows) {
+			s.seenEnd = true
+		}
+		for _, row := range rows[first:last] {
 			fmt.Fprintf(&b, "%-10s %s\n", row[0], row[1])
 		}
+		if len(rows) > avail {
+			b.WriteString(stWarn.Render(fmt.Sprintf("lines %d-%d of %d  [PgUp/PgDn] scroll: read it all before signing", first+1, last, len(rows))) + "\n")
+		}
 		b.WriteString("\n")
+		check := ansi.Truncate(oneLine(p.NetworkCheck.Describe()), m.width-6, "…")
 		if p.Network.IsMainnet() {
 			b.WriteString(stBad.Render("This sends a real "+string(p.Kind)+" on MAINNET.") + "\n")
+			b.WriteString(stDim.Render(check) + "\n")
 		} else {
 			b.WriteString(stOK.Render("Network: "+p.Network.Label()+" (declared in the configuration)") + "\n")
+			if p.NetworkCheck.Confirmed {
+				b.WriteString(stOK.Render(check) + "\n")
+			} else {
+				b.WriteString(stWarn.Render(check) + "\n")
+			}
 		}
 		if s.step == sendSending {
 			b.WriteString("\n" + stDim.Render("signed and sent; waiting until it is in a block…") + "\n")

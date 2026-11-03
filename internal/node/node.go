@@ -65,13 +65,14 @@ func (c *Client) do(f func(a *api.APIClient) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.api == nil {
-		socket := thrift.NewTSocketConf(c.Address, &thrift.TConfiguration{ConnectTimeout: 10 * time.Second, SocketTimeout: c.SocketTimeout})
+		conf := thriftConf(10*time.Second, c.SocketTimeout)
+		socket := thrift.NewTSocketConf(c.Address, conf)
 		transport := thrift.NewTBufferedTransport(socket, 8192)
 		if err := transport.Open(); err != nil {
 			return fmt.Errorf("cannot reach the node at %s: %w", c.Address, err)
 		}
 		c.transport = transport
-		c.api = api.NewAPIClientFactory(transport, thrift.NewTBinaryProtocolFactoryConf(nil))
+		c.api = api.NewAPIClientFactory(transport, thrift.NewTBinaryProtocolFactoryConf(conf))
 	}
 	err := f(c.api)
 	var te thrift.TTransportException
@@ -81,6 +82,17 @@ func (c *Client) do(f func(a *api.APIClient) error) error {
 		return fmt.Errorf("node %s: %w", c.Address, err)
 	}
 	return err
+}
+
+// MaxThriftSize bounds every string, binary and container the node may announce in an answer (and
+// a frame): the largest legitimate one is a contract's source or byte code, below 100 KiB (the
+// node refuses larger transactions), so 8 MiB leaves room while a broken or hostile node cannot
+// make the wallet allocate Thrift's default 100 MB per field.
+const MaxThriftSize = 8 << 20
+
+// thriftConf is the configuration of the wallet's Thrift connections (the API and the diag port).
+func thriftConf(connect, socket time.Duration) *thrift.TConfiguration {
+	return &thrift.TConfiguration{ConnectTimeout: connect, SocketTimeout: socket, MaxMessageSize: MaxThriftSize, MaxFrameSize: MaxThriftSize}
 }
 
 // APIError is a call the node answered with a non-zero status.

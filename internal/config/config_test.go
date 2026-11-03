@@ -153,6 +153,7 @@ address = "127.0.0.1:9090"
 diag = "127.0.0.1:9401"
 network = "private"
 network_uuid = "1234"
+require_network_uuid = true
 [nodes.c]
 address = "[::1]:9090"
 diag = "off"
@@ -176,11 +177,11 @@ diag = "off"
 	}
 	// --node with an address a profile declares takes that profile's diag and pin; another one not
 	p, err := c.Resolve("a", "127.0.0.1:9090")
-	if err != nil || p.Diag != "127.0.0.1:9401" || p.NetworkUUID != "1234" || p.Network != Private {
+	if err != nil || p.Diag != "127.0.0.1:9401" || p.NetworkUUID != "1234" || p.Network != Private || !p.RequireNetworkUUID {
 		t.Errorf("resolve to b: %+v %v", p, err)
 	}
 	p, err = c.Resolve("b", "10.9.9.9:9090")
-	if err != nil || p.Diag != "" || p.NetworkUUID != "" || p.Network != Mainnet || p.DiagAddress() != "10.9.9.9:9088" {
+	if err != nil || p.Diag != "" || p.NetworkUUID != "" || p.RequireNetworkUUID || p.Network != Mainnet || p.DiagAddress() != "10.9.9.9:9088" {
 		t.Errorf("unknown address: %+v %v", p, err)
 	}
 }

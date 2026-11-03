@@ -44,7 +44,7 @@ func (a *app) cmdContract(ctx context.Context, args []string) error {
 	case sub == "compile" && len(rest) == 1:
 		return a.contractCompile(ctx, rest[0])
 	case sub == "deploy" && len(rest) == 2:
-		source, err := readSource(rest[1])
+		source, err := wallet.ReadSource(rest[1])
 		if err != nil {
 			return err
 		}
@@ -79,26 +79,6 @@ func (a *app) cmdContract(ctx context.Context, args []string) error {
 		return a.contractList(ctx, rest[0])
 	}
 	return usagef("contract %s: wrong arguments", echo.Quote(sub))
-}
-
-// readSource reads a contract's Java source file (at most wallet.MaxSource bytes).
-func readSource(path string) (string, error) {
-	st, err := os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-	if !st.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is not a file", path)
-	}
-	if st.Size() > wallet.MaxSource {
-		return "", fmt.Errorf("%s has %d bytes, at most %d", path, st.Size(), wallet.MaxSource)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	source := string(b)
-	return source, wallet.CheckSource(source)
 }
 
 func (a *app) contractTemplates() error {
@@ -161,7 +141,7 @@ type compileErrorRow struct {
 }
 
 func (a *app) contractCompile(ctx context.Context, file string) error {
-	source, err := readSource(file)
+	source, err := wallet.ReadSource(file)
 	if err != nil {
 		return err
 	}
@@ -218,7 +198,13 @@ func printCompileErrors(file string, f *node.CompileFailure) {
 		if e.Column > 0 {
 			where += fmt.Sprintf(":%d", e.Column)
 		}
-		fmt.Fprintf(os.Stderr, "%s: %s\n", where, strings.ReplaceAll(printable(e.Text), `\n`, "\n    "))
+		// a message on several lines: each line escaped on its own (an escaped "\n" in the text
+		// stays as it is), then the lines indented
+		lines := strings.Split(e.Text, "\n")
+		for i := range lines {
+			lines[i] = printable(lines[i])
+		}
+		fmt.Fprintf(os.Stderr, "%s: %s\n", where, strings.Join(lines, "\n    "))
 	}
 }
 

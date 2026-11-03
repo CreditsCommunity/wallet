@@ -76,7 +76,8 @@ func (c *Client) NetworkIdentity(ctx context.Context) (NetworkID, error) {
 	if c.DiagAddress == "" {
 		return NetworkID{}, fmt.Errorf("%w: no diagnostic API configured", ErrNoNetworkID)
 	}
-	socket := thrift.NewTSocketConf(c.DiagAddress, &thrift.TConfiguration{ConnectTimeout: diagTimeout, SocketTimeout: diagTimeout})
+	conf := thriftConf(diagTimeout, diagTimeout)
+	socket := thrift.NewTSocketConf(c.DiagAddress, conf)
 	transport := thrift.NewTBufferedTransport(socket, 8192)
 	if err := transport.Open(); err != nil {
 		return NetworkID{}, fmt.Errorf("%w: its diagnostic API %s does not answer", ErrNoNetworkID, c.DiagAddress)
@@ -84,7 +85,7 @@ func (c *Client) NetworkIdentity(ctx context.Context) (NetworkID, error) {
 	defer transport.Close()
 	ctx, cancel := context.WithTimeout(ctx, diagTimeout)
 	defer cancel()
-	client := apidiag.NewAPI_DIAGClientFactory(transport, thrift.NewTBinaryProtocolFactoryConf(nil))
+	client := apidiag.NewAPI_DIAGClientFactory(transport, thrift.NewTBinaryProtocolFactoryConf(conf))
 	r, err := client.GetNodeInfo(ctx, &apidiag.NodeInfoRequest{})
 	if err != nil {
 		return NetworkID{}, fmt.Errorf("%w: GetNodeInfo on %s: %s", ErrNoNetworkID, c.DiagAddress, echo.Printable(err.Error()))

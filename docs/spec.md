@@ -113,8 +113,11 @@ docs/                    this specification, user guide
     needs the mainnet uuid, one that says testnet or private needs another, and a profile may pin
     `network_uuid = "N"`, which must match; otherwise the wallet refuses. When the node reports no
     uuid (an official node or an older community release, the diag port closed or off, a node
-    without block 1) the configuration decides. `status` and the TUI's status screen show what the
-    node says and any mismatch.
+    without block 1) the configuration decides, except that a profile which pins `network_uuid`, or
+    sets `require_network_uuid = true`, then refuses to send. Every review (TUI and commands) says
+    whether the node confirmed the network ("confirmed by the node (uuid …)") or not ("not
+    confirmed by the node (why)"); `status` and the TUI's status screen show what the node says and
+    any mismatch.
 
 #### Trust in the node
 
@@ -126,7 +129,19 @@ wait); claim a transaction is in a block when it is not, or drop it; and make a 
 the **signed max fee** (shown in the confirmation, next to the expected fee). For contracts it also
 compiles the source: a deploy carries the byte code the node returns, and the contract's address
 is derived from it, so a dishonest node could have the user deploy other code than the source (the
-same holds for the method list, getters' results and the state it reports). An unsynced node is
+same holds for the method list, getters' results and the state it reports).
+
+Every string, binary and list an answer announces (API and diag port) is limited to 8 MiB
+(Thrift's `MaxMessageSize`/`MaxFrameSize`; the node's largest legitimate value, a contract's
+source or byte code, is below 100 KiB), so a broken or hostile node cannot make the wallet allocate
+more.
+
+**A signed transaction names no network.** Its bytes are the same on every network, and an
+account (its key) exists on every network at once. A transaction signed for a test network is
+therefore valid on mainnet too, as long as its inner id is the account's next one there: anyone
+who runs the test node, or sees its traffic, can send it to mainnet. Use **separate accounts** for
+test networks, never an account that holds CS on mainnet. The network identity (5.1) protects
+against sending to the wrong node by mistake, not against such a replay. An unsynced node is
 refused, a missing status in an answer is an error, an inner id is guessed only for a wallet the
 node reports "not found", and a transfer is reported in a block only when the sender's last inner
 id equals its own, or a later one is recorded and the transfer is among the account's latest
@@ -231,8 +246,10 @@ transactions. Running the wallet next to the user's own node is what the design 
   the constructor runs. After the deploy is in a block the wallet waits until the node lists the
   contract (`SmartContractGet`), shows its address, and adds it to the account's **local contract
   list**: `contracts/<deployer address>.json` in the data folder (mode 600, written whole then
-  renamed), public data only: address, class name, source file path, network and node, time, block,
-  inner id, token standard.
+  renamed; only a regular file is read or replaced, a link or device in its place is refused; two
+  wallets writing at once: the last one wins), public data only: address, class name, source file
+  path, network and node, time, block, inner id, token standard. Sources are read the same way by
+  the commands and the TUI: a regular file, at most 48 KiB, UTF-8.
 - **Methods** (`SmartContractGet` + `ContractAllMethodsGet`, as the samples; `ContractMethodsGet`
   is not needed): name, argument types and names, return type. **Getters** cannot be told apart
   through the node's API today: the contract API's `@Getter` (`com.credits.scapi.annotations.Getter`,
@@ -271,8 +288,10 @@ transactions. Running the wallet next to the user's own node is what the design 
 - **TUI** (`[c]`): the list; `o` open a `.java`, `n` new from a template, `a` a contract by address;
   the source screen compiles on opening, marks error lines, `e` edits in `$VISUAL`/`$EDITOR` (a
   command and its arguments, no shell; Notepad on Windows, otherwise nano or vi) and compiles again
-  on return, `d` deploys through the same review and confirmation as a transfer (on mainnet: type
-  `send` and the password); the contract screen lists the methods (getter and pay marks), a form
+  on return (a file name starting with `-` or `+` is passed as `./NAME`; an editor that is not found
+  is reported), `d` deploys through the same review and confirmation as a transfer (on mainnet: type
+  `send` and the password); a review lists every argument of a call in full, wrapped, and one taller
+  than the screen scrolls (PgUp/PgDn) and is signed only once it was shown to its end; the contract screen lists the methods (getter and pay marks), a form
   per method typed by argument, the result and the state.
 - Contract-to-contract calls are out of scope (disabled on mainnet).
 

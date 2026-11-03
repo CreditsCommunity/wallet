@@ -33,10 +33,7 @@ func (a *app) cmdStatus(ctx context.Context, args []string) error {
 	}
 	oldest, oldestErr := w.Node.OldestBlock(ctx, st.LastBlock)
 	id, idErr := w.Node.NetworkIdentity(ctx)
-	mismatch := error(nil)
-	if idErr == nil {
-		mismatch = wallet.NetworkMismatch(w.Profile, id)
-	}
+	check, mismatch := wallet.JudgeNetwork(w.Profile, id, idErr)
 	if a.json {
 		out := map[string]any{"node": w.Profile.Address, "profile": w.Profile.Name, "network": w.Profile.Network,
 			"last_block": st.LastBlock, "round": st.Round, "synced": st.Synced, "head_time": st.HeadTime.UTC()}
@@ -58,7 +55,7 @@ func (a *app) cmdStatus(ctx context.Context, args []string) error {
 		}
 		return a.printJSON(out)
 	}
-	fmt.Fprintf(a.out, "network      : %s%s\n", w.Profile.Network.Label(), networkNote(w, id))
+	fmt.Fprintf(a.out, "network      : %s%s\n", w.Profile.Network.Label(), networkNote(w, check, mismatch))
 	if idErr == nil {
 		fmt.Fprintf(a.out, "node says    : %s\n", id.Describe())
 	} else {
@@ -94,14 +91,20 @@ func reportProblems(problems []error) {
 	}
 }
 
-func networkNote(w *wallet.Wallet, id node.NetworkID) string {
-	switch {
-	case id.Known() && id.IsMainnet() == w.Profile.Network.IsMainnet():
-		return " (confirmed by the node)"
-	case w.Profile.Network.IsMainnet():
-		return " (assumed: no node profile declares it a test network, and the node does not tell its network)"
+// networkNote says where the network shown comes from: the configuration, and whether the node
+// confirmed it.
+func networkNote(w *wallet.Wallet, check wallet.NetworkCheck, mismatch error) string {
+	from := "declared in the configuration"
+	if w.Profile.Network.IsMainnet() && (w.Profile.Name == "" || w.Config.Path == "") {
+		from = "assumed: no node profile declares it a test network"
 	}
-	return " (declared in the configuration)"
+	switch {
+	case mismatch != nil:
+		return " (" + from + "; REFUSED: see below)"
+	case check.Confirmed:
+		return " (" + from + "; confirmed by the node)"
+	}
+	return " (" + from + "; not confirmed by the node)"
 }
 
 // ---- accounts ----------------------------------------------------------------------------------
@@ -644,6 +647,7 @@ func printPlan(p *wallet.SendPlan) {
 	}
 	fmt.Fprintf(e, "  Max fee  %s CS signed: the most the network may charge\n", p.MaxFee.Amount().String())
 	fmt.Fprintf(e, "  Node     %s, block %d, inner id %d\n", p.Node, p.Status.LastBlock, p.InnerID)
+	fmt.Fprintf(e, "  Network  %s, %s\n", p.Network.Label(), echo.Terminal(p.NetworkCheck.Describe()))
 }
 
 // ---- history ----------------------------------------------------------------------------------
