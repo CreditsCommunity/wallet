@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -98,8 +99,63 @@ func floatText(f float64) string {
 	return s
 }
 
-// Show renders a returned Variant as text, as the node's sample clients do.
-func Show(v *general.Variant) string {
+// Show renders a returned Variant as text, as the node's sample clients do; collections (a
+// contract's state) as [a, b] and {k: v}, sorted, at most maxShown elements each and maxDepth deep.
+// The text is the contract's: callers show it through echo.Printable.
+func Show(v *general.Variant) string { return show(v, 0) }
+
+const (
+	maxShown = 50
+	maxDepth = 4
+)
+
+func showList(items []*general.Variant, depth int, open, close string) string {
+	if depth >= maxDepth {
+		return open + "…" + close
+	}
+	parts := make([]string, 0, min(len(items), maxShown)+1)
+	for i, x := range items {
+		if i == maxShown {
+			parts = append(parts, fmt.Sprintf("… %d more", len(items)-maxShown))
+			break
+		}
+		parts = append(parts, show(x, depth+1))
+	}
+	return open + strings.Join(parts, ", ") + close
+}
+
+func showMap(m map[*general.Variant]*general.Variant, depth int) string {
+	if depth >= maxDepth {
+		return "{…}"
+	}
+	parts := make([]string, 0, len(m))
+	for k, v := range m {
+		parts = append(parts, show(k, depth+1)+": "+show(v, depth+1))
+	}
+	sort.Strings(parts)
+	if len(parts) > maxShown {
+		parts = append(parts[:maxShown], fmt.Sprintf("… %d more", len(parts)-maxShown))
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+func show(v *general.Variant, depth int) string {
+	switch {
+	case v != nil && v.VArray != nil:
+		return showList(v.VArray, depth, "[", "]")
+	case v != nil && v.VList != nil:
+		return showList(v.VList, depth, "[", "]")
+	case v != nil && v.VSet != nil:
+		sorted := append([]*general.Variant(nil), v.VSet...)
+		sort.Slice(sorted, func(i, j int) bool { return show(sorted[i], maxDepth) < show(sorted[j], maxDepth) })
+		return showList(sorted, depth, "{", "}")
+	case v != nil && v.VMap != nil:
+		return showMap(v.VMap, depth)
+	case v != nil && v.VAmount != nil:
+		return fmt.Sprintf("%d.%018d", v.VAmount.Integral, v.VAmount.Fraction)
+	case v != nil && v.VObject != nil:
+		return fmt.Sprintf("(object of %d bytes)", len(v.VObject.Instance))
+	}
 	switch {
 	case v == nil:
 		return "(nothing)"

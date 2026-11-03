@@ -31,6 +31,9 @@ type Client struct {
 	Address string
 	// SocketTimeout bounds one call; TransactionFlow waits for the block, so it is long.
 	SocketTimeout time.Duration
+	// DiagAddress is the node's diagnostic API (HOST:PORT), asked only for the network identity;
+	// "" when it is not used.
+	DiagAddress string
 
 	mu        sync.Mutex
 	transport thrift.TTransport
@@ -206,26 +209,6 @@ func (c *Client) OldestBlock(ctx context.Context, last int64) (int64, error) {
 		}
 	}
 	return hi, nil
-}
-
-// NetworkID is what a community node will answer about its network: the uuid it derives from
-// block 1 and its version (spec 5.1).
-type NetworkID struct {
-	UUID    string
-	Version string
-}
-
-// ErrNoNetworkID: the node's API has no call that names its network (official nodes, and the
-// community node until it adds one).
-var ErrNoNetworkID = errors.New("the node does not tell its network")
-
-// MainnetUUID is the uuid of mainnet, to fill in once the node's API returns it.
-const MainnetUUID = ""
-
-// NetworkIdentity is the hook for the network-identifier call of the community node (spec 5.1).
-// The API has no such call yet: it always returns ErrNoNetworkID, and the configuration decides.
-func (c *Client) NetworkIdentity(ctx context.Context) (NetworkID, error) {
-	return NetworkID{}, ErrNoNetworkID
 }
 
 // ---- wallets -----------------------------------------------------------------------------------

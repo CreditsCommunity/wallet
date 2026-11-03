@@ -93,6 +93,17 @@ func startFakeNode(t *testing.T, extra ...string) *fakeNode {
 	case <-time.After(20 * time.Second):
 		t.Fatalf("the fake node did not start:\n%s", f.Log())
 	}
+	// it prints "listening" before its server binds the port: wait until it accepts connections
+	for end := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		c, err := net.DialTimeout("tcp", f.addr, time.Second)
+		if err == nil {
+			c.Close()
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the fake node does not accept connections: %v\n%s", err, f.Log())
+		}
+	}
 	return f
 }
 
@@ -320,8 +331,8 @@ func TestHistoryCSVDoesNotOverwrite(t *testing.T) {
 	if data, _ := os.ReadFile(csv); string(data) != "keep me" {
 		t.Fatal("the existing file changed")
 	}
-	if _, code := runWallet(t, "history", toAddr, "--node", fake.addr, "--csv", csv, "--force"); code != 0 {
-		t.Fatal("--force")
+	if out, stderr, code := runWallet2(t, "history", toAddr, "--node", fake.addr, "--csv", csv, "--force"); code != 0 {
+		t.Fatalf("--force: %s %s", out, stderr)
 	}
 }
 

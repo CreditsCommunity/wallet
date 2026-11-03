@@ -47,6 +47,8 @@ type model struct {
 	status    node.Status
 	statusErr error
 	oldest    int64 // oldest block on the node (0: unknown)
+	netID     node.NetworkID
+	netIDErr  error
 
 	balances map[string]node.Balance
 	balErr   map[string]error
@@ -74,6 +76,8 @@ type statusMsg struct {
 	st     node.Status
 	oldest int64
 	err    error
+	id     *node.NetworkID // asked with the oldest block (the status screen)
+	idErr  error
 }
 type accountDataMsg struct {
 	name    string
@@ -103,11 +107,13 @@ func (m *model) loadStatus(withOldest bool) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 		defer cancel()
 		st, err := m.w.Node.Status(ctx)
-		var oldest int64
+		msg := statusMsg{st: st, err: err}
 		if err == nil && withOldest {
-			oldest, _ = m.w.Node.OldestBlock(ctx, st.LastBlock)
+			msg.oldest, _ = m.w.Node.OldestBlock(ctx, st.LastBlock)
+			id, idErr := m.w.Node.NetworkIdentity(ctx)
+			msg.id, msg.idErr = &id, idErr
 		}
-		return statusMsg{st, oldest, err}
+		return msg
 	}
 }
 
@@ -166,6 +172,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status, m.statusErr = msg.st, msg.err
 		if msg.oldest > 0 {
 			m.oldest = msg.oldest
+		}
+		if msg.id != nil {
+			m.netID, m.netIDErr = *msg.id, msg.idErr
 		}
 		return m, nil
 	case accountDataMsg:
@@ -241,6 +250,12 @@ func (m *model) updateMain(msg tea.Msg) tea.Cmd {
 				m.screen = s
 				return s.load(m)
 			}
+		case "c":
+			if f := m.current(); f != nil {
+				s := newContractsScreen(f)
+				m.screen = s
+				return s.load(m)
+			}
 		case "h":
 			if f := m.current(); f != nil {
 				s := newHistoryScreen(f, m.w.Config.HistoryPage)
@@ -302,7 +317,10 @@ func (m *model) View() string {
 		footer = ""
 	} else {
 		body = m.mainView()
-		footer = keyHelp("s", "send", "d", "delegate", "t", "tokens", "h", "history", "n", "new", "S", "status", "?", "help", "q", "quit")
+		footer = keyHelp("s", "send", "d", "delegate", "c", "contracts", "h", "history", "t", "tokens", "?", "help", "q", "quit")
+		if lipgloss.Width(footer) > m.width {
+			footer = strings.ReplaceAll(footer, "  ", " ")
+		}
 	}
 	h := m.height - 2
 	if footer == "" {
@@ -491,6 +509,16 @@ func (statusScreen) view(m *model) string {
 		b.WriteString(stDim.Render("  declared in the configuration"))
 	}
 	b.WriteString("\n")
+	if m.netID.Known() {
+		line := "Node says    " + m.netID.Describe()
+		if err := wallet.NetworkMismatch(p, m.netID); err != nil {
+			b.WriteString(stBad.Render(ansi.Truncate(line, m.width, "…")) + "\n" + stBad.Render(ansi.Truncate(oneLine(err.Error()), 2*m.width, "…")) + "\n")
+		} else {
+			b.WriteString(stOK.Render(ansi.Truncate(line, m.width, "…")) + "\n")
+		}
+	} else if m.netIDErr != nil {
+		b.WriteString(stDim.Render(ansi.Truncate("Node says    nothing: the configuration decides ("+oneLine(m.netIDErr.Error())+")", m.width, "…")) + "\n")
+	}
 	fmt.Fprintf(&b, "Node         %s %s\n", p.Address, stDim.Render(p.Name))
 	if m.statusErr != nil {
 		b.WriteString(stBad.Render(oneLine(m.statusErr.Error())) + "\n")
@@ -534,6 +562,9 @@ func (helpScreen) view(m *model) string {
 		"  s            send CS from the selected account (optional user data: public text)",
 		"  d            delegations: made and received; n delegate, w withdraw",
 		"  t            tokens: balances; s send a token, a send a token by its address",
+		"  c            contracts: o open a .java, n new from a template, a open an address;",
+		"               a source compiles on the node (e edits it in $EDITOR, d deploys);",
+		"               a contract's methods: Enter reads a @Getter free or signs a call",
 		"  h            history of the selected account (e: export CSV)",
 		"  n / i        new account / import a key, a 24-word phrase or a keys JSON",
 		"  S            node status        r  refresh        q  quit",

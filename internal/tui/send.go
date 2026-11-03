@@ -3,10 +3,14 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/CreditsCommunity/wallet/internal/node"
 
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/internal/wallet"
@@ -35,6 +39,29 @@ type sendScreen struct {
 	plan    *wallet.SendPlan
 	result  wallet.SendResult
 	err     error
+
+	// a planned screen (contracts) has no fields: planFn checks the transaction, and the screen
+	// returns to parent, telling onDone the outcome
+	planFn func(ctx context.Context) (*wallet.SendPlan, error)
+	parent screen
+	onDone func(wallet.SendResult, error)
+}
+
+// newPlannedScreen reviews, confirms and sends a transaction that planFn prepares (a deploy, a
+// contract call, a payment), with the same confirmation as a transfer; it returns to parent.
+func newPlannedScreen(m *model, kind wallet.Kind, f *keys.File, parent screen, planFn func(ctx context.Context) (*wallet.SendPlan, error),
+	onDone func(wallet.SendResult, error)) (*sendScreen, tea.Cmd) {
+	s := &sendScreen{kind: kind, account: f, step: sendPreparing, planFn: planFn, parent: parent, onDone: onDone}
+	return s, s.prepare(m)
+}
+
+// leave goes back to where the screen was opened from.
+func (s *sendScreen) leave(m *model) tea.Cmd {
+	if s.parent != nil {
+		m.screen = s.parent
+		return m.refreshCurrent()
+	}
+	return m.back(m.refreshCurrent())
 }
 
 type preparedMsg struct {
@@ -88,11 +115,26 @@ func (s *sendScreen) title() string {
 		return "Withdraw a delegation"
 	case wallet.KindToken:
 		return "Send tokens"
+	case wallet.KindDeploy:
+		return "Deploy a contract"
+	case wallet.KindCall:
+		return "Call a contract"
+	case wallet.KindPay:
+		return "Pay a contract"
 	}
 	return "Send CS"
 }
 
 func (s *sendScreen) prepare(m *model) tea.Cmd {
+	if s.planFn != nil {
+		planFn := s.planFn
+		return func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*callTimeout)
+			defer cancel()
+			plan, err := planFn(ctx)
+			return preparedMsg{plan, err}
+		}
+	}
 	account, v := s.account.Name, s.fields.value
 	kind := s.kind
 	var data string
@@ -146,6 +188,9 @@ func (s *sendScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	case sentMsg:
 		s.result, s.err = msg.res, msg.err
 		s.step = sendDone
+		if s.onDone != nil {
+			s.onDone(msg.res, msg.err)
+		}
 		return m.refreshCurrent()
 	case tea.KeyMsg:
 		if msg.String() == "esc" {
@@ -154,14 +199,25 @@ func (s *sendScreen) update(m *model, msg tea.Msg) tea.Cmd {
 				return nil // the transaction is on its way: wait for the answer
 			case sendReview:
 				s.confirm.wipe()
+				if s.planFn != nil {
+					return s.leave(m)
+				}
 				s.step, s.err = sendFields, nil
 				return nil
 			}
-			return m.back(m.refreshCurrent())
+			return s.leave(m)
 		}
 	}
 	switch s.step {
 	case sendFields:
+		if s.fields == nil {
+			// a planned screen whose check failed: Enter checks again
+			if k, ok := msg.(tea.KeyMsg); ok && k.String() == "enter" {
+				s.step, s.err = sendPreparing, nil
+				return s.prepare(m)
+			}
+			return nil
+		}
 		cmd, done := s.fields.update(msg)
 		if done {
 			s.step, s.err = sendPreparing, nil
@@ -200,7 +256,7 @@ func (s *sendScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		}
 	case sendDone:
 		if _, ok := msg.(tea.KeyMsg); ok {
-			return m.back(m.refreshCurrent())
+			return s.leave(m)
 		}
 	}
 	return nil
@@ -248,10 +304,42 @@ func planLines(p *wallet.SendPlan) [][2]string {
 		rows = append(rows,
 			[2]string{"To", keys.Address(p.To) + " " + stOK.Render("✓")},
 			[2]string{"Amount", t.Amount + " " + printable(t.Code) + stDim.Render("  balance "+printable(t.Balance))})
+	case wallet.KindDeploy:
+		c := p.Contract
+		what := fmt.Sprintf("%s, %d classes", printable(c.Name), len(c.Deploy.Classes))
+		if c.Methods >= 0 {
+			what += fmt.Sprintf(", %d methods", c.Methods)
+		}
+		rows = append(rows, [2]string{"Source", printable(filepath.Base(c.File))}, [2]string{"", stDim.Render(what)})
+		if c.Deploy.TokenStandard != 0 {
+			rows = append(rows, [2]string{"Token", fmt.Sprintf("standard %d: listed as a token", c.Deploy.TokenStandard)})
+		}
+		rows = append(rows, [2]string{"Address", keys.Address(p.To)}, [2]string{"", stDim.Render(fmt.Sprintf("from the account, inner id %d and the byte code", p.InnerID))})
+	case wallet.KindCall:
+		c := p.Contract
+		rows = append(rows, [2]string{"Contract", keys.Address(p.To)}, [2]string{"", stDim.Render(printable(c.Name))},
+			[2]string{"Method", ansi.Truncate(node.Signature(c.Method), 64, "…")})
+		for i, arg := range c.Method.Arguments {
+			if i == 6 {
+				rows = append(rows, [2]string{"", stDim.Render(fmt.Sprintf("… %d more arguments", len(c.Args)-6))})
+				break
+			}
+			rows = append(rows, [2]string{"  " + ansi.Truncate(printable(arg.Name), 8, "…"), ansi.Truncate(printable(c.Args[i]), 64, "…")})
+		}
+	case wallet.KindPay:
+		data := stDim.Render("(none)")
+		if p.Data != "" {
+			data = printable(p.Data) + stDim.Render("  public, payable()'s userData")
+		}
+		rows = append(rows, [2]string{"Contract", keys.Address(p.To)}, [2]string{"", stDim.Render(printable(p.Contract.Name) + ": its payable() runs")},
+			[2]string{"Amount", p.Amount.Grouped() + " CS"}, [2]string{"Data", data})
 	}
 	fee := p.Fee.Fixed(6) + " CS expected"
-	if p.Kind == wallet.KindToken {
+	switch p.Kind {
+	case wallet.KindToken, wallet.KindCall, wallet.KindPay:
 		fee = "about " + p.Fee.Fixed(6) + " CS + execution"
+	case wallet.KindDeploy:
+		fee = "about " + p.Fee.Fixed(6) + " CS + the constructor's execution"
 	}
 	rows = append(rows, [2]string{"Fee", fee},
 		[2]string{"Max fee", stWarn.Render(p.MaxFee.Amount().String() + " CS signed: the most the network may charge")})
@@ -267,6 +355,14 @@ func (s *sendScreen) view(m *model) string {
 	fmt.Fprintf(&b, "%-10s %s  %s   balance %s\n", "From", s.account.Name, keys.Short(s.account.Public), bal)
 	switch s.step {
 	case sendFields, sendPreparing:
+		if s.fields == nil {
+			if s.step == sendPreparing {
+				b.WriteString("\n" + stDim.Render("checking: node synced, network, compile or method, fee, balance, inner id…") + "\n")
+			} else {
+				b.WriteString("\n" + keyHelp("Enter", "check again", "Esc", "back") + "\n")
+			}
+			break
+		}
 		b.WriteString(s.fields.view())
 		addrField := 0
 		if s.kind == wallet.KindToken {
@@ -330,6 +426,12 @@ func doneText(p *wallet.SendPlan, r wallet.SendResult) string {
 		return fmt.Sprintf("withdrew %s CS from %s", p.Amount.Grouped(), to)
 	case wallet.KindToken:
 		return fmt.Sprintf("sent %s %s to %s (returned %s)", p.Token.Amount, printable(p.Token.Code), to, printable(r.Returned))
+	case wallet.KindDeploy:
+		return fmt.Sprintf("deployed %s at %s", printable(p.Contract.Name), keys.Address(p.To))
+	case wallet.KindCall:
+		return fmt.Sprintf("called %s: returned %s", printable(p.Contract.Method.Name), ansi.Truncate(printable(r.Returned), 40, "…"))
+	case wallet.KindPay:
+		return fmt.Sprintf("paid %s CS to %s (returned %s)", p.Amount.Grouped(), to, ansi.Truncate(printable(r.Returned), 30, "…"))
 	}
 	return fmt.Sprintf("sent %s CS to %s", p.Amount.Grouped(), to)
 }

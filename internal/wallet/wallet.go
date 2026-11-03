@@ -23,6 +23,8 @@ type Wallet struct {
 	Node    *node.Client
 	// KDF is the key derivation of new key files (keys.DefaultKDF; lighter only in tests).
 	KDF keys.KDFParams
+	// DataDir is the data folder (the local contract lists are in it).
+	DataDir string
 
 	historyNode *node.Client // the remote history node, when the profile names one
 }
@@ -30,7 +32,8 @@ type Wallet struct {
 // New opens a wallet on the data folder and the chosen node profile.
 func New(cfg *config.Config, profile config.Profile, dataDir string) *Wallet {
 	w := &Wallet{Config: cfg, Profile: profile, Store: keys.Store{Dir: config.AccountsDir(dataDir)},
-		Node: node.New(profile.Address), KDF: keys.DefaultKDF}
+		Node: node.New(profile.Address), KDF: keys.DefaultKDF, DataDir: dataDir}
+	w.Node.DiagAddress = profile.DiagAddress()
 	if profile.HistoryNode != "" {
 		w.historyNode = node.New(profile.HistoryNode)
 	}
@@ -47,7 +50,8 @@ func (w *Wallet) History() history.Source {
 }
 
 // CheckNetwork compares the declared network with what the node says of itself, when it can say
-// it (spec 5.1). Today's nodes cannot: the configuration decides.
+// it (spec 5.1): a community node's diagnostic API reports its network uuid. Without it (an
+// official node, an older community release, the diag port closed) the configuration decides.
 func (w *Wallet) CheckNetwork(ctx context.Context) error {
 	id, err := w.Node.NetworkIdentity(ctx)
 	if errors.Is(err, node.ErrNoNetworkID) {
@@ -56,20 +60,24 @@ func (w *Wallet) CheckNetwork(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return NetworkMismatch(w.Profile.Network, id)
+	return NetworkMismatch(w.Profile, id)
 }
 
-// NetworkMismatch refuses a node whose network identifier contradicts the configuration.
-func NetworkMismatch(declared config.Network, id node.NetworkID) error {
-	if node.MainnetUUID == "" || id.UUID == "" {
-		return nil // nothing to compare with
+// NetworkMismatch refuses a node whose network identity contradicts the profile: a profile that
+// says mainnet (declared, or assumed without a declaration) needs the mainnet uuid; one that says
+// testnet or private needs another uuid; a profile that pins network_uuid needs that one.
+func NetworkMismatch(p config.Profile, id node.NetworkID) error {
+	if !id.Known() {
+		return nil // nothing to compare with: the configuration decides
 	}
-	isMainnet := id.UUID == node.MainnetUUID
-	if isMainnet && !declared.IsMainnet() {
-		return fmt.Errorf("the configuration says %s, but the node is on MAINNET: fix the configuration", declared)
+	if pin := p.PinnedUUID(); pin != 0 && id.UUID != pin {
+		return fmt.Errorf("the node reports network uuid %d, but the profile pins network_uuid = %d: refused, check the node or the configuration", id.UUID, pin)
 	}
-	if !isMainnet && declared.IsMainnet() {
-		return fmt.Errorf("the configuration says mainnet, but the node is on another network (%s)", id.UUID)
+	switch {
+	case id.IsMainnet() && !p.Network.IsMainnet():
+		return fmt.Errorf("the configuration says %s, but the node reports MAINNET (uuid %d): refused; fix the configuration (network = \"mainnet\")", p.Network, id.UUID)
+	case !id.IsMainnet() && p.Network.IsMainnet():
+		return fmt.Errorf("the configuration says mainnet (declared or assumed), but the node reports another network (uuid %d): refused; declare it with network = \"testnet\" or \"private\" in its node profile", id.UUID)
 	}
 	return nil
 }

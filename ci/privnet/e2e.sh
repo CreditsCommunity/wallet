@@ -5,19 +5,22 @@
 # confidants, each with its contract executor (CONTRACTS=1), the genesis funds going to a master key
 # made here; then runs the wallet's commands against node 1's API: status, account import and new,
 # balance, send (with user data), delegate (with and without a time limit), delegations, undelegate,
-# history (from node 1, and from node 2 as a remote history node), and with CONTRACTS=1 deploys the
-# node's samples/contracts/TestToken.java with the node's Python sample client, then sends tokens
-# with the wallet and checks token balances, the token history and the CSV export.
+# history (from node 1, and from node 2 as a remote history node), the network identity from node 1's
+# diagnostic API, and with CONTRACTS=1 the smart contracts with the wallet itself: its templates
+# compared with the node's samples/contracts, a compile error with its line, TestToken deployed,
+# tokens sent (token balances, the token history and the CSV export), Counter deployed, its methods,
+# getters and calls, TipJar deployed and paid (payable()), and the account's contract list.
 #
 # The network part is a minimal subset of CreditsCommunity/node ci/testnet/run.sh (AGPL-3.0): the
 # same node configuration (hosts.txt, trusted.txt, config.ini, executor.sh, settings.properties),
 # ports (p2p 6000 + i, API 9090 for node 1 and 9100 + i for the others, apiexec 9200 + i, executor
-# 9300 + i) and genesis/starter key hooks (CS_TESTNET_GENESIS_KEY, CS_TESTNET_STARTER_KEY, read only by
+# 9300 + i, diag 9400 + i) and genesis/starter key hooks (CS_TESTNET_GENESIS_KEY, CS_TESTNET_STARTER_KEY, read only by
 # -DCREDITS_TESTNET=ON builds).
 #
 # Env: NODE_BIN    the node binary (a -DCREDITS_TESTNET=ON build)
 #      PKG         the csnode folder of the community release package (contract-executor.jar, its JDK)
-#      NODE_FILES  folder with credits_client.py and TestToken.java of the node repository (CONTRACTS=1)
+#      NODE_FILES  folder with Counter.java, TestToken.java and TipJar.java of the node repository's
+#                  samples/contracts at the commit of the wallet's templates (CONTRACTS=1)
 #      IDL         the Thrift IDL folder (this repository's submodule)
 #      WALLET      the credits-wallet binary
 #      WORK        work folder (default ./privnet-run), NODES (5), CONTRACTS (1)
@@ -146,7 +149,7 @@ port=$((6000 + i))
 [api]
 $api
 ajax_port=0
-diag_port=0
+diag_port=$((9400 + i))
 
 [snapshot]
 fetch=off
@@ -177,6 +180,11 @@ node = "n1"
 [nodes.n1]
 address = "127.0.0.1:9090"
 network = "private"
+diag = "127.0.0.1:9401"
+[nodes.n1main]
+address = "127.0.0.1:9090"
+network = "mainnet"
+diag = "127.0.0.1:9401"
 [nodes.n2]
 address = "127.0.0.1:9102"
 network = "private"
@@ -209,6 +217,19 @@ done
 log "network up: block $(jq -r .last_block <<< "$st")"
 expect "network      : PRIVATE" status
 
+# the network identity (node 1's diagnostic API): a community node from release community.17 reports
+# a uuid (random on a private network, never mainnet's); an older one reports none and the
+# configuration decides
+uuid=$(jq -r '.network_uuid // empty' <<< "$st")
+if [ -n "$uuid" ]; then
+    log "node 1 reports network uuid $uuid ($(jq -r '.community_version // "?"' <<< "$st"))"
+    [ "$(jq -r .node_says_mainnet <<< "$st")" = false ] || fail "a private network reported as mainnet"
+    expect "MISMATCH" status --profile n1main
+else
+    expect "node says    : nothing" status
+    log "node 1 does not report its network (release without CreditsCommunity/node#162): the configuration decides"
+fi
+
 echo "$MASTER_SEED" > "$WORK/master.txt"
 python3 -c 'import base58, nacl.signing, sys; s = base58.b58decode(open(sys.argv[1]).read().strip()); k = nacl.signing.SigningKey(s); print(base58.b58encode(s + bytes(k.verify_key)).decode())' \
     "$WORK/master.txt" > "$WORK/master-key.txt"
@@ -226,6 +247,7 @@ expect "sent 100,000 CS to $ALICE" send master "$ALICE" 100000 --yes
 expect "sent 100 CS to $BOB" send master "$BOB" 100 --yes
 expect "sent 12.5 CS to $BOB" send alice "$BOB" 12.5 --data "e2e invoice 42 — paid" --yes
 refused send bob "$ALICE" 1000 --yes
+if [ -n "$uuid" ]; then refused send master "$BOB" 1 --yes --profile n1main; fi   # declared mainnet, the node says otherwise
 expect "112.5 CS" balance bob
 
 # delegations
@@ -255,12 +277,24 @@ grep -q ",delegation,out,$ALICE,$N3," "$WORK/alice.csv" || fail "CSV without the
 log "CS, delegations and history: ok"
 
 if [ "$CONTRACTS" = 1 ]; then
-    # TestToken, deployed by the master key with the node's Python sample client
-    out=$(python3 "$NODE_FILES/credits_client.py" --node 127.0.0.1:9090 --idl "$IDL" deploy "$WORK/master-key.txt" "$NODE_FILES/TestToken.java" 2>&1) \
-        || { echo "$out"; fail "TestToken deploy"; }
+    # the templates are the node's samples/contracts, unchanged
+    for c in Counter TestToken TipJar; do
+        w contract new "$c" "$WORK/$c.java" >/dev/null
+        cmp "$WORK/$c.java" "$NODE_FILES/$c.java" || fail "template $c differs from the node's samples/contracts/$c.java"
+    done
+    # a compile error, reported with its line
+    sed 's/value += 1;/value += 1/' "$WORK/Counter.java" > "$WORK/Broken.java"
+    line=$(grep -n 'value += 1$' "$WORK/Broken.java" | head -1 | cut -d: -f1)
+    if out=$(w contract compile "$WORK/Broken.java" 2>&1); then echo "$out"; fail "a broken source compiled"; fi
     echo "$out" | sed 's/^/    /'
-    TOKEN=$(sed -n 's/^contract: //p' <<< "$out")
-    [ -n "$TOKEN" ] || fail "no contract address"
+    grep -qE "Broken.java:($line|$((line + 1))): " <<< "$out" || fail "no compile error on line $line"
+    expect "compiled: 1 class, Counter" contract compile "$WORK/Counter.java"
+
+    # TestToken, deployed by the master key with the wallet
+    dep=$(json contract deploy master "$WORK/TestToken.java" --yes) || { echo "$dep"; fail "TestToken deploy"; }
+    echo "$dep" | jq -c '{contract, inner_id, block, fee_cs, listed}'
+    TOKEN=$(jq -r .contract <<< "$dep")
+    [ "$(jq -r .listed <<< "$dep")" = true ] || fail "TestToken not listed after its deploy"
     log "TestToken at $TOKEN"
     expect "decimals  : 2" token info "$TOKEN"
     refused token send master "$TOKEN" "$ALICE" 0.001 --yes
@@ -275,6 +309,35 @@ if [ "$CONTRACTS" = 1 ]; then
     w history alice --csv "$WORK/alice-tokens.csv"
     grep -q ",$TOKEN,CTT,250.5," "$WORK/alice-tokens.csv" || { cat "$WORK/alice-tokens.csv"; fail "CSV without the token transfers"; }
     log "tokens: ok"
+
+    # Counter, deployed by alice: methods, getters, calls
+    COUNTER=$(json contract deploy alice "$WORK/Counter.java" --yes | jq -r .contract)
+    [ -n "$COUNTER" ] && [ "$COUNTER" != null ] || fail "Counter deploy"
+    expect "getValue() : int  getter" contract methods "$COUNTER"
+    [ "$(json contract get "$COUNTER" getValue | jq -r .result)" = 0 ] || fail "Counter getValue before"
+    expect "returned: 4" contract call alice "$COUNTER" add 4 --yes
+    expect "returned: 5" contract call bob "$COUNTER" increment --yes
+    [ "$(json contract get "$COUNTER" getValue | jq -r .result)" = 5 ] || fail "Counter getValue after the calls"
+    expect "$ALICE" contract get "$COUNTER" getOwner
+    refused contract call alice "$COUNTER" add --yes -- -1   # an int, but add() throws for n < 1: the node refuses
+    refused contract call alice "$COUNTER" add four --yes    # not an int: refused before signing
+    log "Counter: ok"
+
+    # TipJar, deployed by master, paid by alice: a CS transfer runs payable()
+    TIPJAR=$(json contract deploy master "$WORK/TipJar.java" --yes | jq -r .contract)
+    expect "paid 3 CS to contract $TIPJAR" contract pay alice "$TIPJAR" 3 --data "e2e tip" --yes
+    jq -e '(.result | tonumber) == 3' <<< "$(json contract get "$TIPJAR" paidBy "$ALICE")" >/dev/null || fail "TipJar paidBy alice"
+    [ "$(json contract get "$TIPJAR" getPayments | jq -r .result)" = 1 ] || fail "TipJar payments"
+    refused contract pay alice "$COUNTER" 1 --yes            # Counter's payable() refuses CS
+    log "TipJar: ok"
+
+    # the contract lists: the node's and the local one
+    l=$(json contract list alice)
+    jq -e --arg c "$COUNTER" '.contracts[] | select(.address == $c and .on_node and .local and .name == "Counter")' <<< "$l" >/dev/null \
+        || { echo "$l"; fail "alice's contract list"; }
+    [ "$(json contract list master | jq '[.contracts[] | select(.on_node and .local)] | length')" = 2 ] || fail "master's contract list"
+    expect "state:" contract info "$TIPJAR"
+    log "contracts: ok"
 fi
 log "PASS"
 if [ "${KEEP:-0}" = 1 ]; then

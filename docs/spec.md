@@ -1,6 +1,6 @@
 # Credits community wallet — specification
 
-Status: milestones 1 and 2 implemented, 2026-11-03.
+Status: milestones 1, 2 and 3 implemented, 2026-11-03.
 
 ## 1. Purpose
 
@@ -47,8 +47,10 @@ internal/history/        history sources (local node, a remote full node)
 internal/tui/            screens (Bubble Tea models)
 internal/amount/         exact CS amounts and the node's 16-bit fee encoding
 internal/config/         configuration file (TOML), node profiles, data folder
-internal/wallet/         what the commands and the TUI share: accounts, the steps of a transfer
-thrift/                  generated code (go generate, not committed)
+internal/wallet/         what the commands and the TUI share: accounts, the steps of a transfer,
+                         contracts and their local list
+internal/templates/      the example contracts (the node's samples/contracts, embedded)
+thrift/                  generated code (go generate, not committed): api, apidiag, general
 docs/                    this specification, user guide
 ```
 
@@ -97,10 +99,22 @@ docs/                    this specification, user guide
     a `--node` address that no profile declares counts as mainnet;
   - the confirmation on mainnet is typing `send` and the password (TUI and commands); on a test
     network the password alone (TUI) or `y` (commands);
-  - the **community node** gets an API call that returns the network identifier (the `uuid` the node
-    derives from block 1, known to pruned nodes too) and its version; when it is there, the wallet
-    recognises mainnet by itself, and refuses to send if the configuration says "testnet" for a mainnet
-    node or the other way round; with an official node, which lacks the call, the configuration decides.
+  - the **community node** (from CreditsCommunity/node#162, release community.17) tells its network in
+    its diagnostic API: `API_DIAG.GetNodeInfo` returns `NodeInfo.networkUuid` (field 9, optional i64:
+    the first 8 bytes of the hash of block 1 as a little-endian uint64, the same 64 bits in the
+    signed i64; known to pruned and snapshot-started nodes) and `NodeInfo.communityVersion` (field
+    10, the package version). The IDL comes from the fork `CreditsCommunity/thrift-interface-definitions`,
+    branch `community/network-id` (commit `0b6e6d0d`, the pinned `35620f5d` plus these two optional
+    fields; the main API is unchanged). The wallet asks the node's diag port (`[api] diag_port`, 9088
+    in the release packages, off when 0): the profile's `diag = "HOST:PORT"`, by default the node
+    address's host with port 9088, `diag = "off"` not to ask; 3 s at most. Mainnet is uuid
+    `11024959585341937636` (`0x99008654835817e4`, -7421784488367613980 as received; the node's own
+    constant `uuidMainNet`). Before every send: a profile that says mainnet (declared, or assumed)
+    needs the mainnet uuid, one that says testnet or private needs another, and a profile may pin
+    `network_uuid = "N"`, which must match; otherwise the wallet refuses. When the node reports no
+    uuid (an official node or an older community release, the diag port closed or off, a node
+    without block 1) the configuration decides. `status` and the TUI's status screen show what the
+    node says and any mismatch.
 
 #### Trust in the node
 
@@ -109,7 +123,10 @@ inner id, the sync state, the history. It never sends the node a secret, and a s
 cannot be altered, so a dishonest or broken node cannot spend the user's CS on its own. What it can
 do: show false balances or history; give a wrong inner id (the transfer is then rejected, or must
 wait); claim a transaction is in a block when it is not, or drop it; and make a transfer cost up to
-the **signed max fee** (shown in the confirmation, next to the expected fee). An unsynced node is
+the **signed max fee** (shown in the confirmation, next to the expected fee). For contracts it also
+compiles the source: a deploy carries the byte code the node returns, and the contract's address
+is derived from it, so a dishonest node could have the user deploy other code than the source (the
+same holds for the method list, getters' results and the state it reports). An unsynced node is
 refused, a missing status in an answer is an error, an inner id is guessed only for a wallet the
 node reports "not found", and a transfer is reported in a block only when the sender's last inner
 id equals its own, or a later one is recorded and the transfer is among the account's latest
@@ -181,15 +198,70 @@ transactions. Running the wallet next to the user's own node is what the design 
 
 ### 5.5 Smart contracts
 
-- Write or open a `.java` file; templates: the examples of the node's `samples/contracts` (Counter,
-  TestToken, TipJar, Faucet).
-- **Compile** through the node (`SmartContractCompile`); errors listed with their line and column.
-- **Deploy**: the contract address derived as the node does (blake2s over the deployer, inner id and
-  byte code), signed and sent; the address shown and saved in the account's contract list.
-- **Use**: list the methods with their argument and return types (`ContractMethodsGet`,
-  `ContractAllMethodsGet`); getters run without a transaction and without fee; other methods are signed
-  calls with arguments converted to the declared types; results and contract state shown.
-- List the account's contracts (`SmartContractsListGet`).
+- **Templates**: the node's `samples/contracts` (Counter, TestToken, Token, TipJar, Faucet), embedded
+  as they are at `CreditsCommunity/node` commit `079e788d` (AGPL-3.0, attribution in
+  `internal/templates`; the privnet job compares them with the node repository at that commit).
+  `contract templates` lists them, `contract new NAME FILE` writes one (never over a file without
+  `--force`); the TUI's `n` does the same.
+- **Compile** through the node (`SmartContractCompile`, done by its executor). A source is UTF-8, at
+  most 48 KiB. Errors are listed with their line (`FILE:LINE: message`, the TUI marks the lines):
+  the executor reports `LINE:message` per error in its `CompilationException`, without a column (a
+  column is shown when a message carries one). A source naming a library the node forbids gets an
+  empty answer, reported as such. The compiled byte code's methods come from `ContractAllMethodsGet`
+  (classes and methods counted). Messages, class and method names are the executor's or the
+  author's text: escaped.
+- **Deploy**: compiled again at the deploy, signed as the node's sample clients do (`samples/clients`
+  `deploy`): `TT_ContractDeploy`, amount 0, one user field, the invocation (no method, the source,
+  the byte code, the token standard the node found); its target is the contract's address
+  `blake2s-256(deployer key ‖ inner id, 6 bytes little endian ‖ every class's byte code in order)`
+  (`SmartContracts::get_valid_smart_address`, checked by every node), tested against vectors made
+  with Python's `hashlib` the way `credits_client.py` and `ci/testnet/contracts.py` derive it.
+  **Fee**: the node prices a deploy from its own column of the fee table (`csnode/src/fee.cpp`:
+  0.0874 CS below 5 KiB, 0.1748 below 20 KiB, 0.4375 below 50 KiB, 17.87 below 100 KiB) plus the
+  cheapest new state (0.00874), plus the constructor's execution; `ActualFeeGet` knows only the
+  column of the other transactions, so the wallet computes the deploy fee from the table and shows
+  it as an estimate. The **signed max fee is the same 1 CS** as for transfers and calls (the samples
+  sign 10 CS; on the CI's private network a call costs about 0.0175 CS and a deploy of TestToken
+  well below 0.2 CS): it covers every deploy the wallet sends, which must stay below 50 KiB (larger
+  ones cost 17.87 CS and are refused). The balance must cover the max fee, which the node holds while
+  the constructor runs. After the deploy is in a block the wallet waits until the node lists the
+  contract (`SmartContractGet`), shows its address, and adds it to the account's **local contract
+  list**: `contracts/<deployer address>.json` in the data folder (mode 600, written whole then
+  renamed), public data only: address, class name, source file path, network and node, time, block,
+  inner id, token standard.
+- **Methods** (`SmartContractGet` + `ContractAllMethodsGet`, as the samples; `ContractMethodsGet`
+  is not needed): name, argument types and names, return type. **Getters**: the contract API's
+  `@Getter` (`com.credits.scapi.annotations.Getter`, kept at run time; the executor lists it by
+  that name in `MethodDescription.annotations`) marks a method meant to be read without a
+  transaction. It only documents the author's intent, so the wallet lets the user choose: `contract
+  get` (and the TUI's `g`, `ctrl+g`) runs any method as a getter; `contract call` (`c`, `ctrl+t`)
+  signs any method; the TUI's Enter reads a `@Getter` method and signs a call of the others.
+- **Get**: `TransactionFlow` with `forgetNewState`, a zero signature, nothing paid or kept; the
+  caller the contract sees is `--from ACCOUNT` (or the selected account in the TUI), a zero address
+  otherwise. **Call**: a signed `TT_ContractCall` (as token transfers, 5.3), arguments converted to
+  the declared types (String, BigDecimal, int, long, boolean, double and their wrappers, byte[] as
+  hex; overloads by number of arguments; arguments starting with `-` after `--`); the fee shown is
+  twice `ActualFeeGet` of the call's size plus the execution, the max fee 1 CS. A method that throws
+  is answered with an error by the node (the fee is paid). The result (the method's return value)
+  and then the contract's state (`SmartContractDataGet`: its fields) are shown, escaped; collections
+  are shown to a bounded size and depth.
+- **Payments** (`contract pay ACCOUNT CONTRACT AMOUNT [--data TEXT]`, the TUI's `payable` entry):
+  the executor never runs `payable()` as a call ("payable method cannot be called"); the node runs it
+  when **CS are transferred to the contract** (`samples/contracts` README, TipJar): a plain
+  transfer to the contract's address, its user data (a text, 5.3) arriving as `userData`. Throwing
+  refuses the payment and the node gives the CS back (the fee is paid). The wallet checks that a
+  contract with a `payable` method is deployed there; the fee is twice the transfer's (the transfer
+  and the new state) plus the execution; the balance must cover the amount and the max fee.
+- **Contract list** (`contract list ACCOUNT`, the TUI's `[c]` screen): `SmartContractsListGet` by
+  deployer (pages of 100, at most 1000) merged with the local list, one row per address, newest
+  first; a contract only in the local list is shown with the network it was deployed on ("local
+  only: not on this node"); a node error still shows the local rows.
+- **TUI** (`[c]`): the list; `o` open a `.java`, `n` new from a template, `a` a contract by address;
+  the source screen compiles on opening, marks error lines, `e` edits in `$VISUAL`/`$EDITOR` (a
+  command and its arguments, no shell; Notepad on Windows, otherwise nano or vi) and compiles again
+  on return, `d` deploys through the same review and confirmation as a transfer (on mainnet: type
+  `send` and the password); the contract screen lists the methods (getter and pay marks), a form
+  per method typed by argument, the result and the state.
 - Contract-to-contract calls are out of scope (disabled on mainnet).
 
 ### 5.6 History
@@ -300,11 +372,14 @@ credits-wallet delegations <account|address>
 credits-wallet tokens <account|address>
 credits-wallet token info <token> | balance <token> <account|address> | send <account> <token> <to> <amount>
 credits-wallet history <account> [--tokens] [--token ADDR] [--csv FILE]
+credits-wallet contract templates | new <template> <file.java> [--force]
 credits-wallet contract compile <file.java>
-credits-wallet contract deploy <account> <file.java>
-credits-wallet contract methods <address>
-credits-wallet contract get <address> <method> [args…]
-credits-wallet contract call <account> <address> <method> [args…]
+credits-wallet contract deploy <account> <file.java> [--yes]
+credits-wallet contract methods <address> | info <address>
+credits-wallet contract get <address> <method> [args…] [--from ACCOUNT]
+credits-wallet contract call <account> <address> <method> [args…] [--yes]
+credits-wallet contract pay <account> <address> <amount> [--data TEXT] [--yes]
+credits-wallet contract list <account|address>
 global: --node HOST:PORT  --history-node HOST:PORT  --json  --config FILE
 ```
 
@@ -317,16 +392,25 @@ use (documented with its risks).
   delegations and token calls against `testdata/sign-vectors.txt`, made by `testdata/sign-vectors.py`
   the way `fund.py` and `samples/python/token_client.py` build them), key store
   round-trips and wrong passwords, seed phrases (vectors generated with the node's own code), amount
-  parsing, contract address derivation.
+  parsing, contract address derivation and the deploy (vectors from `testdata/sign-vectors.py`, as
+  `credits_client.py` builds them), argument typing, the local contract list and its merge with the
+  node's, compile error parsing, the network-identity rules.
 - Offline: the commands against `testdata/fake_node.py`, which checks every signature over the bytes
   `fund.py` would sign (transfers with and without user fields, delegations, token calls) and plays a
-  token and a node without the token cache.
+  token and a node without the token cache; for the contracts it compiles (with errors), accepts a
+  deploy only at the address the node derives and with a valid signature, lists contracts, answers
+  getters and typed calls, runs `payable()` on a transfer, returns a state, and serves
+  `GetNodeInfo` on a diag port with or without a network uuid (mainnet's or another).
 - Integration (`.github/workflows/privnet.yml`, `ci/privnet/e2e.sh`): a private network of 5 community
   nodes with their contract executors; the wallet's commands create and import accounts, transfer
   with user data, delegate with and without a time limit, withdraw, read the history from node 1 and
-  from node 2 as a remote history node, and send tokens of the node's `TestToken` (deployed with the
-  node's Python sample client), checking balances, delegations, token balances, the token history and
-  the CSV. The executor and its JDK come from the community release package pinned in the workflow
+  from node 2 as a remote history node, read node 1's network identity from its diag port (the
+  mismatch check when the node reports a uuid, "the configuration decides" when not), and with the
+  wallet itself: check its templates against the node's `samples/contracts`, report a compile error
+  with its line, deploy `TestToken` and send its tokens, deploy `Counter`, list its methods, get and
+  call (including a call the contract refuses), deploy `TipJar` and pay it (`payable()`), and list
+  the accounts' contracts; checking balances, delegations, token balances, the token history, the
+  CSV, getters' results and the contract lists. The executor and its JDK come from the community release package pinned in the workflow
   (tag, the commit it must point to, and the package's SHA-256, bumped deliberately; an input tries
   another release with its expected commit); the release's
   node binary is a mainnet build (its genesis funds go to the mainnet genesis key), so the job builds
@@ -339,8 +423,8 @@ use (documented with its risks).
 1. ~~The keys JSON of the official wallets~~: settled (section 4.1), checked with a file generated on
    wallet.credits.com on 2026-11-03.
 2. ~~How the wallet tells mainnet from another network~~: settled (section 5.1): mainnet by default,
-   test networks declared in the configuration, and a network-identifier call to add to the community
-   node's API (a separate node PR, no consensus change).
+   test networks declared in the configuration, and the network uuid in the community node's
+   diagnostic API (CreditsCommunity/node#162, no consensus change), checked before every send.
 3. ~~Fee estimate for contract calls~~: twice `ActualFeeGet` of the call's size (the call and its new
    state; 0.0175 CS on the private network) plus the execution, which the node charges afterwards;
    shown as an estimate.
@@ -352,5 +436,6 @@ use (documented with its risks).
    (with its CSV export); the TUI shell and the commands. User data on transfers moves to 2. Done.
 2. Delegations; user data on transfers; tokens (balances, info, transfers); history from a remote
    full node; token transfers in the history and the CSV export; CI on a private network. Done.
-3. Smart contracts: compile, deploy, methods, getters and calls; templates.
+3. Smart contracts: compile, deploy, methods, getters and calls, payments; templates; the contract
+   list; the network identity of community nodes. Done.
 4. Packaging in the node releases; user guide.

@@ -15,6 +15,7 @@ import (
 	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/history"
 	"github.com/CreditsCommunity/wallet/internal/keys"
+	"github.com/CreditsCommunity/wallet/internal/node"
 	"github.com/CreditsCommunity/wallet/internal/wallet"
 )
 
@@ -31,9 +32,24 @@ func (a *app) cmdStatus(ctx context.Context, args []string) error {
 		return err
 	}
 	oldest, oldestErr := w.Node.OldestBlock(ctx, st.LastBlock)
+	id, idErr := w.Node.NetworkIdentity(ctx)
+	mismatch := error(nil)
+	if idErr == nil {
+		mismatch = wallet.NetworkMismatch(w.Profile, id)
+	}
 	if a.json {
 		out := map[string]any{"node": w.Profile.Address, "profile": w.Profile.Name, "network": w.Profile.Network,
 			"last_block": st.LastBlock, "round": st.Round, "synced": st.Synced, "head_time": st.HeadTime.UTC()}
+		if id.Known() {
+			out["network_uuid"] = fmt.Sprint(id.UUID)
+			out["node_says_mainnet"] = id.IsMainnet()
+		}
+		if id.Version != "" {
+			out["community_version"] = id.Version
+		}
+		if mismatch != nil {
+			out["network_mismatch"] = mismatch.Error()
+		}
 		if !st.Synced {
 			out["why"] = st.Why
 		}
@@ -42,7 +58,15 @@ func (a *app) cmdStatus(ctx context.Context, args []string) error {
 		}
 		return a.printJSON(out)
 	}
-	fmt.Fprintf(a.out, "network      : %s%s\n", w.Profile.Network.Label(), networkNote(w))
+	fmt.Fprintf(a.out, "network      : %s%s\n", w.Profile.Network.Label(), networkNote(w, id))
+	if idErr == nil {
+		fmt.Fprintf(a.out, "node says    : %s\n", id.Describe())
+	} else {
+		fmt.Fprintf(a.out, "node says    : nothing (%s)\n", strings.TrimPrefix(echo.Terminal(idErr.Error()), node.ErrNoNetworkID.Error()+": "))
+	}
+	if mismatch != nil {
+		fmt.Fprintf(a.out, "MISMATCH     : %s\n", mismatch)
+	}
 	fmt.Fprintf(a.out, "node         : %s\n", w.Profile.Address)
 	fmt.Fprintf(a.out, "last block   : %d\n", st.LastBlock)
 	fmt.Fprintf(a.out, "round        : %d\n", st.Round)
@@ -70,9 +94,12 @@ func reportProblems(problems []error) {
 	}
 }
 
-func networkNote(w *wallet.Wallet) string {
-	if w.Profile.Network.IsMainnet() {
-		return " (assumed: no node profile declares it a test network; the node cannot tell its network yet)"
+func networkNote(w *wallet.Wallet, id node.NetworkID) string {
+	switch {
+	case id.Known() && id.IsMainnet() == w.Profile.Network.IsMainnet():
+		return " (confirmed by the node)"
+	case w.Profile.Network.IsMainnet():
+		return " (assumed: no node profile declares it a test network, and the node does not tell its network)"
 	}
 	return " (declared in the configuration)"
 }
@@ -477,6 +504,24 @@ func (a *app) confirmAndSend(ctx context.Context, plan *wallet.SendPlan, yes boo
 		if t := plan.Token; t != nil {
 			out["token"], out["token_code"], out["token_amount"], out["returned"] = keys.Address(t.Contract), t.Code, t.Amount, res.Returned
 		}
+		if c := plan.Contract; c != nil {
+			out["contract"], out["contract_name"] = keys.Address(c.Address), c.Name
+			if res.Result != nil {
+				out["returned"] = res.Returned
+			}
+			switch plan.Kind {
+			case wallet.KindDeploy:
+				out["listed"], out["file"] = res.Listed, c.File
+				if res.SaveErr != nil {
+					out["local_list_error"] = res.SaveErr.Error()
+				}
+			case wallet.KindCall:
+				out["method"], out["args"] = c.Method.Name, c.Args
+				if vars, err := a.w.Node.ContractState(ctx, c.Address); err == nil {
+					out["state"] = stateRows(vars)
+				}
+			}
+		}
 		return a.printJSON(out)
 	}
 	where := "in a block"
@@ -493,8 +538,32 @@ func (a *app) confirmAndSend(ctx context.Context, plan *wallet.SendPlan, yes boo
 		fmt.Fprintf(a.out, "withdrew %s from the delegation to %s", what, keys.Address(plan.To))
 	case wallet.KindToken:
 		fmt.Fprintf(a.out, "sent %s %s to %s (transfer returned %s)", plan.Token.Amount, tokenLabel(plan.Token), keys.Address(plan.To), printable(res.Returned))
+	case wallet.KindDeploy:
+		fmt.Fprintf(a.out, "deployed %s at %s", printable(plan.Contract.Name), keys.Address(plan.To))
+	case wallet.KindCall:
+		fmt.Fprintf(a.out, "called %s of %s", printable(plan.Contract.Method.Name), keys.Address(plan.To))
+	case wallet.KindPay:
+		fmt.Fprintf(a.out, "paid %s to contract %s", what, keys.Address(plan.To))
 	}
 	fmt.Fprintf(a.out, ": %s, inner id %d, fee %s CS\n", where, res.InnerID, res.Fee.String())
+	switch plan.Kind {
+	case wallet.KindDeploy:
+		fmt.Fprintf(a.out, "contract: %s\n", keys.Address(plan.To))
+		if !res.Listed {
+			fmt.Fprintln(os.Stderr, "warning: the node does not list the contract yet; check it later with 'contract info'")
+		}
+		if res.SaveErr != nil {
+			fmt.Fprintln(os.Stderr, "warning: not saved in the local contract list:", echo.Terminal(res.SaveErr.Error()))
+		}
+	case wallet.KindCall, wallet.KindPay:
+		if res.Result != nil {
+			fmt.Fprintf(a.out, "returned: %s\n", printable(res.Returned))
+		}
+		if plan.Kind == wallet.KindCall {
+			vars, err := a.w.Node.ContractState(ctx, plan.To)
+			printState(a, vars, err)
+		}
+	}
 	return nil
 }
 
@@ -515,7 +584,8 @@ func tokenLabel(t *wallet.TokenPlan) string {
 func printPlan(p *wallet.SendPlan) {
 	e := os.Stderr
 	titles := map[wallet.Kind]string{wallet.KindTransfer: "Send CS", wallet.KindDelegate: "Delegate CS",
-		wallet.KindUndelegate: "Withdraw a delegation", wallet.KindToken: "Send tokens"}
+		wallet.KindUndelegate: "Withdraw a delegation", wallet.KindToken: "Send tokens", wallet.KindDeploy: "Deploy a contract",
+		wallet.KindCall: "Call a contract", wallet.KindPay: "Pay a contract"}
 	fmt.Fprintf(e, "%-49s%s\n", titles[p.Kind], p.Network.Label())
 	fmt.Fprintf(e, "  From     %s  %s   balance %s CS\n", p.Account, keys.Address(p.From), p.Balance.Grouped())
 	switch p.Kind {
@@ -540,10 +610,36 @@ func printPlan(p *wallet.SendPlan) {
 		}
 		fmt.Fprintf(e, "  To       %s\n", keys.Address(p.To))
 		fmt.Fprintf(e, "  Amount   %s %s (token balance %s)\n", t.Amount, printable(t.Code), printable(t.Balance))
+	case wallet.KindDeploy:
+		c := p.Contract
+		fmt.Fprintf(e, "  Source   %s: %s, %s\n", c.File, printable(c.Name), plural(len(c.Deploy.Classes), "class"))
+		if c.Methods >= 0 {
+			fmt.Fprintf(e, "  Methods  %d\n", c.Methods)
+		}
+		if c.Deploy.TokenStandard != 0 {
+			fmt.Fprintf(e, "  Token    standard %d: the node will list it as a token\n", c.Deploy.TokenStandard)
+		}
+		fmt.Fprintf(e, "  Address  %s (derived from the account, inner id %d and the byte code)\n", keys.Address(p.To), p.InnerID)
+	case wallet.KindCall:
+		c := p.Contract
+		fmt.Fprintf(e, "  Contract %s  %s\n", keys.Address(p.To), printable(c.Name))
+		fmt.Fprintf(e, "  Method   %s%s\n", node.Signature(c.Method), map[bool]string{true: "  (@Getter: 'contract get' reads it for free)"}[c.Getter])
+		for i, arg := range c.Method.Arguments {
+			fmt.Fprintf(e, "    %-12s %s\n", printable(arg.Name), printable(c.Args[i]))
+		}
+	case wallet.KindPay:
+		fmt.Fprintf(e, "  Contract %s  %s (its payable() runs)\n", keys.Address(p.To), printable(p.Contract.Name))
+		fmt.Fprintf(e, "  Amount   %s CS\n", p.Amount.Grouped())
+		if p.Data != "" {
+			fmt.Fprintf(e, "  Data     %q (public; payable() gets it as userData)\n", p.Data)
+		}
 	}
-	if p.Kind == wallet.KindToken {
+	switch p.Kind {
+	case wallet.KindDeploy:
+		fmt.Fprintf(e, "  Fee      about %s CS plus the constructor's execution (the node's fee table)\n", p.Fee.Fixed(6))
+	case wallet.KindToken, wallet.KindCall, wallet.KindPay:
 		fmt.Fprintf(e, "  Fee      about %s CS plus the execution (the node's current fees)\n", p.Fee.Fixed(6))
-	} else {
+	default:
 		fmt.Fprintf(e, "  Fee      %s CS expected (the node's current fee)\n", p.Fee.Fixed(6))
 	}
 	fmt.Fprintf(e, "  Max fee  %s CS signed: the most the network may charge\n", p.MaxFee.Amount().String())

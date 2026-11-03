@@ -170,3 +170,83 @@ func TestVariants(t *testing.T) {
 		}
 	}
 }
+
+// Contract addresses and a deploy, against testdata/sign-vectors.py (built as the node's
+// samples/clients/python/credits_client.py deploy and ci/testnet/contracts.py do).
+func TestDeployAndContractAddressByteIdenticalToCreditsClient(t *testing.T) {
+	v := readVectors(t)
+	key := testKey(t)
+	src := key.Public().(ed25519.PublicKey)
+	all := make([]byte, 256)
+	for i := range all {
+		all[i] = byte(i)
+	}
+	classes := []*general.ByteCodeObject{{Name: "Counter", ByteCode: []byte("\xca\xfe\xba\xbe Counter byte code")},
+		{Name: "Counter$Entry", ByteCode: all}}
+	for _, c := range []struct {
+		name    string
+		inner   int64
+		classes []*general.ByteCodeObject
+	}{{"address-1", 1, classes[:1]}, {"address-2", 0x0102030405, classes}, {"address-max", MaxInnerID, classes}} {
+		if got := ContractAddress(src, c.inner, c.classes); !bytes.Equal(got, v[c.name]) {
+			t.Errorf("%s: %x, want %x", c.name, got, v[c.name])
+		}
+	}
+	d := ContractDeploy{Source: src, Code: "public class Counter extends SmartContract { /* grüße */ }", Classes: classes,
+		InnerID: 13, MaxFee: MaxFee}
+	sent, signed, err := d.Sign(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := SerializeInvocation(sent.SmartContract)
+	check(t, v, "deploy", signed, code, sent.Signature)
+	if !bytes.Equal(sent.Target, ContractAddress(src, 13, classes)) || sent.Type != 1 || sent.Amount.Integral != 0 {
+		t.Errorf("deploy fields: %+v", sent)
+	}
+	if _, _, err := (ContractDeploy{Source: src, Code: "x", InnerID: 1}).Sign(key); err == nil {
+		t.Error("a deploy without byte code was signed")
+	}
+	other := ed25519.NewKeyFromSeed(make([]byte, 32))
+	if _, _, err := d.Sign(other); err == nil {
+		t.Error("signed with another key")
+	}
+}
+
+func TestDeployFee(t *testing.T) {
+	for _, c := range []struct {
+		size int
+		want string
+	}{{900, "0.096142578125"}, {5*1024 - 64, "0.183544921875"}, {30 * 1024, "0.446240234375"}, {60 * 1024, "17.879833984375"}} {
+		if got := DeployFee(c.size).String(); got != c.want {
+			t.Errorf("DeployFee(%d) = %s, want %s", c.size, got, c.want)
+		}
+	}
+}
+
+func TestShowCollections(t *testing.T) {
+	s := func(x string) *general.Variant { return &general.Variant{VString: &x} }
+	d := func(x string) *general.Variant { return &general.Variant{VBigDecimal: &x} }
+	m := &general.Variant{VMap: map[*general.Variant]*general.Variant{s("b"): d("2.5"), s("a"): d("1")}}
+	if got := Show(m); got != "{a: 1, b: 2.5}" {
+		t.Errorf("map: %s", got)
+	}
+	l := &general.Variant{VList: []*general.Variant{s("x"), m}}
+	if got := Show(l); got != "[x, {a: 1, b: 2.5}]" {
+		t.Errorf("list: %s", got)
+	}
+	set := &general.Variant{VSet: []*general.Variant{s("z"), s("y")}}
+	if got := Show(set); got != "{y, z}" {
+		t.Errorf("set: %s", got)
+	}
+	deep := s("leaf")
+	for range 10 {
+		deep = &general.Variant{VList: []*general.Variant{deep}}
+	}
+	if got := Show(deep); !strings.Contains(got, "…") || strings.Contains(got, "leaf") {
+		t.Errorf("depth: %s", got)
+	}
+	many := &general.Variant{VList: make([]*general.Variant, 120)}
+	if got := Show(many); !strings.Contains(got, "… 70 more") {
+		t.Errorf("long list: %.80s", got)
+	}
+}

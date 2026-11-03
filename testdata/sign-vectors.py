@@ -9,13 +9,18 @@ AGPL-3.0), independently of the wallet's Go code:
     user field signs as u32 size + bytes"); the API carries the text as it is (APIHandler reads a
     userFields whose first byte is not 0 as the text);
   - a token transfer (token_client.py call): one user field, the Thrift binary serialization of the
-    SmartContractInvocation, as u32 size + bytes.
+    SmartContractInvocation, as u32 size + bytes;
+  - contract addresses and a deploy (samples/clients/python/credits_client.py deploy and
+    ci/testnet/contracts.py): the address is blake2s-256 of the deployer's key, the 6-byte inner id
+    and the byte code of every class; the deploy is a TT_ContractDeploy to that address whose one
+    user field is the invocation with the source, the byte code and the token standard.
 
   python3 testdata/sign-vectors.py > testdata/sign-vectors.txt
 
 internal/tx/vectors_test.go checks that the wallet signs the same bytes. ed25519 signatures are
 deterministic, so the signatures are compared as well.
 """
+import hashlib
 import os
 import struct
 
@@ -78,6 +83,23 @@ def main():
     code = serialize(sci, TBinaryProtocolFactory())
     signed = head(sk, 12, TOKEN, 0, 0) + struct.pack("<BI", 1, len(code)) + code
     emit("token-transfer", signed, code, sk)
+    # credits_client.py deploy: the contract address, then the deploy signed like a call
+    pk = bytes(sk.verify_key)
+    classes = [general.ByteCodeObject(name="Counter", byteCode=b"\xca\xfe\xba\xbe Counter byte code"),
+               general.ByteCodeObject(name="Counter$Entry", byteCode=bytes(range(256)))]
+    for name, inner, objs in (("address-1", 1, classes[:1]), ("address-2", 0x0102030405, classes),
+                              ("address-max", 2**46 - 1, classes)):
+        code = b"".join(c.byteCode for c in objs)
+        print(f"{name}: {hashlib.blake2s(pk + inner.to_bytes(6, 'little') + code).digest().hex()}")
+    source = "public class Counter extends SmartContract { /* grüße */ }"
+    inner = 13
+    address = hashlib.blake2s(pk + inner.to_bytes(6, "little") + b"".join(c.byteCode for c in classes)).digest()
+    sci = api.SmartContractInvocation(method="", params=[], usedContracts=[], forgetNewState=False, version=1,
+                                      smartContractDeploy=api.SmartContractDeploy(
+                                          sourceCode=source, byteCodeObjects=classes, hashState="", tokenStandard=0, lang=0))
+    code = serialize(sci, TBinaryProtocolFactory())
+    signed = head(sk, inner, address, 0, 0) + struct.pack("<BI", 1, len(code)) + code
+    emit("deploy", signed, code, sk)
 
 
 if __name__ == "__main__":
