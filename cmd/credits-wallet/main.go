@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -159,10 +160,20 @@ func (a *app) open() error {
 	return nil
 }
 
+// printJSON writes v as indented JSON, with the runes a terminal could obey escaped (echo.JSON).
 func (a *app) printJSON(v any) error {
-	enc := json.NewEncoder(a.out)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+	return writeJSON(a.out, v, "  ")
+}
+
+func writeJSON(w io.Writer, v any, indent string) error {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", indent)
+	if err := enc.Encode(v); err != nil {
+		return err
+	}
+	_, err := w.Write(echo.JSON(buf.Bytes()))
+	return err
 }
 
 func main() {
@@ -197,7 +208,7 @@ func run(args []string) int {
 			return 2
 		}
 		if a.json {
-			_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"error": err.Error()})
+			_ = writeJSON(os.Stdout, map[string]string{"error": err.Error()}, "")
 		}
 		fmt.Fprintln(os.Stderr, "credits-wallet:", err)
 		return 1
