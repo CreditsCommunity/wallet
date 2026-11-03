@@ -328,6 +328,8 @@ type Sent struct {
 	Index      int32
 	Fee        amount.Amount
 	InProgress bool // the node stopped waiting before the block: follow it with WaitInBlock
+	// Result is what a contract method returned (contract calls)
+	Result *general.Variant
 }
 
 // Send hands a signed transaction to the node (TransactionFlow). The node answers once the
@@ -351,6 +353,7 @@ func (c *Client) Send(ctx context.Context, t *api.Transaction) (Sent, error) {
 			s.Block, s.Index = r.ID.PoolSeq, r.ID.Index
 		}
 		s.Fee = amount.FromThrift(r.Fee)
+		s.Result = r.SmartContractResult_
 		return nil
 	})
 	return s, err

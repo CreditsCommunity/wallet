@@ -116,3 +116,29 @@ func TestPermissionWarnings(t *testing.T) {
 		t.Error("isWithin")
 	}
 }
+
+func TestHistoryNode(t *testing.T) {
+	c, err := Parse("[nodes.local]\naddress = \"127.0.0.1:9090\"\nhistory_node = \"10.1.2.3:9090\"\n", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := c.Resolve("", "")
+	if p.HistoryNode != "10.1.2.3:9090" {
+		t.Fatalf("history node %q", p.HistoryNode)
+	}
+	if q, _ := c.Resolve("", "10.9.9.9:9090"); q.HistoryNode != "" {
+		t.Errorf("another --node kept the profile's history node: %q", q.HistoryNode)
+	}
+	if q, err := ResolveHistory(p, "local"); err != nil || q.HistoryNode != "" {
+		t.Errorf("local: %q %v", q.HistoryNode, err)
+	}
+	if q, err := ResolveHistory(p, "1.1.1.1:1"); err != nil || q.HistoryNode != "1.1.1.1:1" {
+		t.Errorf("override: %q %v", q.HistoryNode, err)
+	}
+	if _, err := ResolveHistory(p, "nonsense"); err == nil {
+		t.Error("a bad --history-node was accepted")
+	}
+	if _, err := Parse("[nodes.local]\nhistory_node = \"nope\"\n", "x"); err == nil {
+		t.Error("a bad history_node was accepted")
+	}
+}
