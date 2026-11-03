@@ -1,6 +1,6 @@
 # Credits community wallet — specification
 
-Status: milestones 1, 2 and 3 implemented, 2026-11-03.
+Status: milestones 1 to 4 implemented, 2026-11-03.
 
 ## 1. Purpose
 
@@ -51,7 +51,8 @@ internal/wallet/         what the commands and the TUI share: accounts, the step
                          contracts and their local list
 internal/templates/      the example contracts (the node's samples/contracts, embedded)
 thrift/                  generated code (go generate, not committed): api, apidiag, general
-docs/                    this specification, user guide
+docs/                    this specification, the user guide (guide.md, guide.it.md)
+ci/release/build.sh      the reproducible release archives
 ```
 
 ## 4. Keys
@@ -155,6 +156,35 @@ transactions. Running the wallet next to the user's own node is what the design 
   on the node, otherwise the screen says so: the node answers "This node doesn't provide such info").
   The node lists only tokens with a balance above 0. Without the token cache one token's balance is
   still read from its contract (`balanceOf` as a getter: `token balance TOKEN ACCOUNT`).
+- **Every token held** (`tokens ACCOUNT`, the TUI's `[t]` screen and the main screen's token line),
+  each with its full contract address, its code and name (self-declared), decimals (`getDecimal()`,
+  read once per run), balance and the look-alike warnings (5.3) against the other tokens listed:
+  1. the local node's token cache (`TokenBalancesGet`), plus the tokens of the local token list it
+     does not name, listed when the account holds some (or always, when the user added them): a
+     cache turned on after the node pruned, or on a node started from a snapshot without one,
+     finds every token and reads correct balances but learns holders only from the calls in the
+     blocks it stores (CreditsCommunity/node docs/tokens.md);
+  2. without it, the token cache of the profile's `history_node`, for the token addresses only (the
+     balances are read from the local node);
+  3. otherwise the account's history: the latest 1000 transactions (`TransactionsGet`) on the history
+     source and, when that is a remote node, on the local node; the targets of the account's calls,
+     deploys, contract payments and token transfers, and the tokens of its token transfers; plus
+     the account's **local token list**. Each candidate is checked as a token (5.3: `transfer` and
+     `getDecimal`), its balance read with `balanceOf`; tokens at 0 are counted, not listed. The
+     list is labelled "found from history (may be incomplete on a pruned node)" and kept a minute.
+     The node indexes a transaction by its source and target only, so a token **received** through
+     another wallet's call is not in the account's history: such tokens appear only in a token
+     cache or once added. `TokenTransfersListGet` (every transfer of the network) is served from the
+     same cache as `TokenBalancesGet`, so it adds nothing where the cache is off.
+  The **local token list** is `tokens/<address>.json` in the data folder (mode 600, written whole then
+  renamed, only a regular file is read; public data only): address, network, how (`added` by
+  `token add` or the TUI's `a`, always listed with its balance, 0 included; `sent` by the wallet)
+  and since when: only tokens the user acted on, never what a token cache lists. `token remove` (the
+  TUI's `x`) takes a token off. A token found only in a transfer the account received (in the
+  history, a token transfer whose receiver is the account) is marked "received from ADDRESS: not
+  added by you": anyone can send a token, look-alikes included. In the TUI the selected token's
+  address stands alone on a line (Shift+drag selects it) and `y` sends it to the clipboard with OSC
+  52 (through tmux or screen when the wallet runs in one).
 - Amounts are exact decimals (CS has 18 fractional digits); never floating point.
 
 ### 5.3 Transfers
@@ -402,6 +432,7 @@ credits-wallet delegate <account> <node> <amount> [--until DATE] | undelegate <a
 credits-wallet delegations <account|address>
 credits-wallet tokens <account|address>
 credits-wallet token info <token> | balance <token> <account|address> | send <account> <token> <to> <amount>
+credits-wallet token add|remove <account> <token>
 credits-wallet history <account> [--tokens] [--token ADDR] [--csv FILE]
 credits-wallet contract templates | new <template> <file.java> [--force]
 credits-wallet contract compile <file.java>
@@ -446,7 +477,19 @@ use (documented with its risks).
   another release with its expected commit); the release's
   node binary is a mainnet build (its genesis funds go to the mainnet genesis key), so the job builds
   the same release commit with `-DCREDITS_TESTNET=ON`, cached per release commit.
-- Builds and releases for linux/amd64, linux/arm64, windows/amd64, darwin/arm64 with checksums.
+- Releases (`.github/workflows/release.yml`, `ci/release/build.sh`): a tag `wallet-vX.Y.Z` on main
+  publishes, `wallet-vX.Y.Z-rcN` publishes a pre-release; pull requests build only. linux/amd64,
+  windows/amd64 and darwin/arm64 are cross-compiled on one Linux runner with CGO off (Go and the
+  libraries are pure Go: macOS needs no native runner to build); before publishing, the Windows
+  and macOS binaries run on their own systems (`version`, `help`, `status` without a node), and a
+  second runner builds the tag again and must get the same `SHA256SUMS`. Only the push of a tag
+  publishes (a manual run on a tag builds only); the notes name the tag's commit. The
+  build is reproducible: `-trimpath -buildvcs=true`, ldflags `-s -w -buildid= -X
+  main.version=X.Y.Z`, archives dated at the commit's time (SOURCE_DATE_EPOCH), owner 0:0, fixed
+  modes, name order, gzip `-n`, zip `-X`; Go 1.27.3 and Thrift 0.19.0 pinned. Each archive holds
+  `credits-wallet-X.Y.Z/` with the binary, README.md, LICENSE, guide.md and guide.it.md, listed in
+  `SHA256SUMS`. Actions pinned by commit; only the publishing job may write.
+- ci.yml also cross-compiles linux/arm64, which is not released yet.
 - Security review of keys, signing and the key store before the first release.
 
 ## 9. Open points
@@ -459,7 +502,10 @@ use (documented with its risks).
 3. ~~Fee estimate for contract calls~~: twice `ActualFeeGet` of the call's size (the call and its new
    state; 0.0175 CS on the private network) plus the execution, which the node charges afterwards;
    shown as an estimate.
-4. Whether the community node packages ship the wallet from the first release or a later one.
+4. ~~Whether the community node packages ship the wallet~~: settled, from community.17 on
+   (milestone 4): the node pins a wallet release in `packaging/wallet-tag`, downloads its archives,
+   checks them against the release's `SHA256SUMS` and ships the binary and the guide in every
+   package and the Docker image; its set-up offers to create or import an account.
 
 ## 10. Milestones
 
@@ -469,4 +515,16 @@ use (documented with its risks).
    full node; token transfers in the history and the CSV export; CI on a private network. Done.
 3. Smart contracts: compile, deploy, methods, getters and calls, payments; templates; the contract
    list; the network identity of community nodes. Done.
-4. Packaging in the node releases; user guide.
+4. Packaging in the node releases; user guide (docs/guide.md, docs/guide.it.md); reproducible
+   release archives; every token held with its full address, also without a token cache. Done.
+
+Later (not in milestone 4):
+
+- a linux/arm64 release (built by ci.yml, not released; the node has no arm64 package yet);
+- signed binaries (Windows Authenticode, macOS notarization): today the user clears the macOS
+  quarantine by hand and Windows may warn;
+- tokens received from others on a node without a token cache: they need an index the node does
+  not keep (the node indexes source and target only); the wallet lists them once added;
+- the node's diagnostic API listens on every interface; a bind address for it (localhost only)
+  belongs to the node;
+- a package manager entry (Homebrew, winget, apt).

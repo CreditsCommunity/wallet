@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/CreditsCommunity/wallet/internal/keys"
+	"github.com/CreditsCommunity/wallet/internal/wallet"
 )
 
 type accStep int
@@ -224,7 +225,7 @@ func (s *accountScreen) view(m *model) string {
 				b.WriteString(stDim.Render("imported from a "+s.kind) + "\n")
 			}
 			if s.fromFile != "" {
-				b.WriteString(stWarn.Render(s.fromFile+" holds the key in clear: delete it now that it is in the key store.") + "\n")
+				b.WriteString(stWarn.Render(wallet.PlainKeyAdvice(s.fromFile)) + "\n")
 			}
 		}
 		b.WriteString("\n" + stDim.Render("any key: back") + "\n")

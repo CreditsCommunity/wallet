@@ -60,10 +60,13 @@ usage: credits-wallet [global flags] [command] [arguments]
   undelegate <account> <node> <amount> [--yes]
                                         withdraw CS from a delegation without a time limit
   delegations <account|address>         delegations made and received, with their expiry
-  tokens <account|address>              token balances (the node needs [api] tokens_cache=true)
+  tokens <account|address>              every token held, with its contract address (the node's
+                                        token cache; without it, found from the history)
   token info <token>                    a token: code, name, supply, decimals
   token balance <token> <account|address>
                                         one token balance, read from the contract
+  token add <account> <token>           keep a token in the account's list (shown even at 0)
+  token remove <account> <token>        take it off the list
   token send <account> <token> <to> <amount> [--yes]
                                         sign and send tokens: a call of the token's transfer()
   history <account|address> [--limit N] [--offset N] [--tokens] [--token ADDR]

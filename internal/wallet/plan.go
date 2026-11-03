@@ -371,6 +371,9 @@ func (p *SendPlan) transfer() tx.Transfer {
 
 // ---- tokens ------------------------------------------------------------------------------------
 
+// ErrNotToken: the contract at the address is not a token the wallet can use.
+var ErrNotToken = errors.New("not a token: the contract has no transfer(String, BigDecimal) and getDecimal()")
+
 // TokenMethods finds a token's transfer method and reads its decimals (getDecimal), symbol and
 // name, with getters run as caller.
 func (w *Wallet) TokenMethods(ctx context.Context, caller, token ed25519.PublicKey) (*TokenPlan, []*general.MethodDescription, error) {
@@ -390,7 +393,7 @@ func (w *Wallet) TokenMethods(ctx context.Context, caller, token ed25519.PublicK
 		}
 	}
 	if tp.Method == "" || !has["getDecimal"] {
-		return nil, nil, errors.New("not a token: the contract has no transfer(String, BigDecimal) and getDecimal()")
+		return nil, nil, ErrNotToken
 	}
 	dec, err := w.Node.Get(ctx, tx.Getter(caller, token, "getDecimal", nil))
 	if err != nil {
@@ -582,6 +585,10 @@ func (w *Wallet) Send(ctx context.Context, plan *SendPlan, password []byte, foll
 	}
 	if plan.Kind == KindDeploy {
 		w.afterDeploy(wait, sender, plan, &res)
+	}
+	if plan.Kind == KindToken && plan.Token != nil {
+		// the token stays listed when the node keeps no token cache (best effort)
+		_ = w.addLocalTokens(plan.From, []ed25519.PublicKey{plan.Token.Contract}, "sent")
 	}
 	return res, nil
 }

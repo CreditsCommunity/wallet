@@ -1,0 +1,247 @@
+# Release archives of credits-wallet: linux-amd64, windows-amd64 and darwin-arm64, all
+# cross-compiled on one Linux runner with CGO off (static binaries: macOS needs no native runner
+# to build), by ci/release/build.sh, reproducibly (the same tag gives the same files), with
+# SHA256SUMS.
+#
+# - A tag wallet-v<version> publishes the release wallet-v<version>; a tag with -rc
+#   (wallet-v0.1.0-rc1) is published as a pre-release. A final tag must be on main.
+# - Only the push of a tag publishes; a manual run, even on a tag, only builds.
+# - Before publishing, each binary runs on its own system (Linux, Windows, macOS): `version` must
+#   print the tag's version; and a second runner builds the tag again from nothing: its SHA256SUMS
+#   must be the same (reproducibility).
+# - Pull requests and manual runs build the archives as an artifact and publish nothing.
+#
+# The community node packages download a pinned release from here (CreditsCommunity/node,
+# packaging/wallet-tag) and check it against its SHA256SUMS.
+name: release
+
+on:
+  push:
+    tags: ['wallet-v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  THRIFT_COMPILER: 0.19.0-2.1build5
+  GO_VERSION: '1.27.3'  # go.mod's toolchain
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      # actions pinned by commit (tags can move)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: true
+          fetch-depth: 0  # main, to check that a final tag is on it
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false  # a release is built from nothing but the sources and go.sum
+
+      - name: Version
+        id: version
+        run: |
+          commit=$(git rev-parse 'HEAD^{commit}')
+          [ "$commit" = "$GITHUB_SHA" ] || { echo "::error::checked out $commit, expected $GITHUB_SHA"; exit 1; }
+          # only the push of a tag publishes (a manual run on a tag builds only)
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag=$GITHUB_REF_NAME
+            echo "$tag" | grep -qE '^wallet-v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$' \
+              || { echo "::error::tag $tag: expected wallet-vX.Y.Z or wallet-vX.Y.Z-rcN"; exit 1; }
+            version=${tag#wallet-v}
+            prerelease=false
+            case "$version" in *-rc*) prerelease=true ;; esac
+            if [ "$prerelease" = false ] && ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::$tag is not on main: a final release is tagged on main"; exit 1
+            fi
+            publish=true
+          else
+            version="dev-${GITHUB_SHA::12}"
+            prerelease=false
+            publish=false
+          fi
+          printf 'version=%s\npublish=%s\nprerelease=%s\ncommit=%s\n' "$version" "$publish" "$prerelease" "$commit" >> "$GITHUB_OUTPUT"
+          echo "version $version, commit $commit, publish $publish, pre-release $prerelease"
+
+      - name: Thrift compiler 0.19
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q "thrift-compiler=$THRIFT_COMPILER"
+          thrift --version
+
+      - name: Generate the API code
+        run: go generate ./thrift
+
+      - name: Build the archives
+        env:
+          GOTOOLCHAIN: local
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ci/release/build.sh "$VERSION" dist
+          ls -la dist
+          # the Linux binary reports the version
+          tar -xzf "dist/credits-wallet-$VERSION-linux-amd64.tar.gz" -C "$RUNNER_TEMP"
+          got=$("$RUNNER_TEMP/credits-wallet-$VERSION/credits-wallet" version)
+          echo "$got"
+          [ "$got" = "credits-wallet $VERSION" ] || { echo "::error::version prints '$got'"; exit 1; }
+          go version -m "$RUNNER_TEMP/credits-wallet-$VERSION/credits-wallet" | grep -E 'vcs\.|-trimpath|CGO_ENABLED'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: credits-wallet-${{ steps.version.outputs.version }}
+          path: dist/
+          retention-days: 14
+
+  # each binary on its own system, before a release is published
+  smoke:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: windows-2022
+            archive: windows-amd64.zip
+            exe: credits-wallet.exe
+          - runner: macos-15
+            archive: darwin-arm64.tar.gz
+            exe: credits-wallet
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: credits-wallet-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Run it
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          ARCHIVE: ${{ matrix.archive }}
+          EXE: ${{ matrix.exe }}
+        run: |
+          cd dist
+          f="credits-wallet-$VERSION-$ARCHIVE"
+          want=$(grep " $f\$" SHA256SUMS | cut -d' ' -f1)
+          got=$( (sha256sum "$f" 2>/dev/null || shasum -a 256 "$f") | cut -d' ' -f1)
+          [ -n "$want" ] && [ "$want" = "$got" ] || { echo "::error::$f does not match SHA256SUMS"; exit 1; }
+          case "$f" in *.zip) unzip -q "$f" ;; *) tar -xzf "$f" ;; esac
+          bin="credits-wallet-$VERSION/$EXE"
+          out=$("./$bin" version | tr -d '\r')
+          echo "$out"
+          [ "$out" = "credits-wallet $VERSION" ] || { echo "::error::version prints '$out'"; exit 1; }
+          "./$bin" help | head -3
+          # no node here: status must fail cleanly, not crash
+          if "./$bin" status --node 127.0.0.1:1; then echo "::error::status without a node succeeded"; exit 1; fi
+
+  # the tag built again from nothing on another runner: the same archives, byte for byte
+  reproduce:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Thrift compiler 0.19
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q "thrift-compiler=$THRIFT_COMPILER"
+
+      - name: Build again
+        env:
+          GOTOOLCHAIN: local
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          [ "$(git rev-parse 'HEAD^{commit}')" = "$COMMIT" ] || { echo "::error::not the commit the build job built"; exit 1; }
+          go generate ./thrift
+          ci/release/build.sh "$VERSION" "$RUNNER_TEMP/again"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: credits-wallet-${{ needs.build.outputs.version }}
+          path: first
+
+      - name: Compare
+        run: |
+          diff first/SHA256SUMS "$RUNNER_TEMP/again/SHA256SUMS" \
+            || { echo "::error::the second build differs: not reproducible"; exit 1; }
+          cat first/SHA256SUMS
+          echo "reproduced"
+
+  publish:
+    needs: [build, smoke, reproduce]
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: credits-wallet-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          tag="wallet-v$VERSION"
+          (cd dist && sha256sum -c SHA256SUMS)
+          cat > notes.md <<EOF
+          credits-wallet $VERSION, built from ${GITHUB_REPOSITORY}@${COMMIT} (the commit of $tag), and built
+          again on a second runner with the same SHA256SUMS.
+
+          | System | Archive |
+          |---|---|
+          | Linux x86-64 (static) | \`credits-wallet-$VERSION-linux-amd64.tar.gz\` |
+          | Windows x64 | \`credits-wallet-$VERSION-windows-amd64.zip\` |
+          | macOS Apple Silicon | \`credits-wallet-$VERSION-darwin-arm64.tar.gz\` |
+
+          Each holds the binary, the README, the licence and the user guide (guide.md, guide.it.md).
+          Check the download against \`SHA256SUMS\` (\`sha256sum -c --ignore-missing SHA256SUMS\`). The binaries
+          are not signed: on macOS clear the quarantine with \`xattr -d com.apple.quarantine credits-wallet\`.
+
+          Reproducible: \`git checkout $tag && go generate ./thrift && ci/release/build.sh $VERSION dist\` with Go
+          ${GO_VERSION} and Thrift 0.19.0 gives the same files (see the README).
+
+          The community node packages ship this wallet from release community.17 on.
+          EOF
+          flags=()
+          [ "$PRERELEASE" != true ] || flags+=(--prerelease --latest=false)
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release $tag exists already: a release is never replaced"; exit 1
+          fi
+          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "credits-wallet $VERSION" --notes-file notes.md "${flags[@]}"
