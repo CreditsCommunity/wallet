@@ -111,7 +111,7 @@ func TestM2AgainstFakeNode(t *testing.T) {
 		t.Fatalf("csv: %s", stderr)
 	}
 	csv, _ := os.ReadFile(csvFile)
-	if !strings.Contains(string(csv), ",token transfer,out,"+testAddr+","+toAddr+",0,") || !strings.Contains(string(csv), ","+fakeToken+",FTK,-250.5,,") ||
+	if !strings.Contains(string(csv), ",token transfer,out,"+testAddr+","+fakeToken+",0,") || !strings.Contains(string(csv), ","+fakeToken+",FTK,-250.5,,") ||
 		!strings.Contains(string(csv), ",invoice 42 — paid,") || !strings.Contains(string(csv), "2030-01-01T00:00:00Z") {
 		t.Fatalf("CSV:\n%s", csv)
 	}
@@ -151,5 +151,34 @@ func TestTokensWithoutTokenCache(t *testing.T) {
 	csv := filepath.Join(home, "h.csv")
 	if _, stderr, code := runWallet2(t, "history", testAddr, "--node", fake.addr, "--csv", csv); code != 0 || !strings.Contains(stderr, "without token transfers") {
 		t.Fatalf("csv without the cache: %d %s", code, stderr)
+	}
+}
+
+func TestJSONOutputEscapesTerminalControls(t *testing.T) {
+	var b strings.Builder
+	if err := writeJSON(&b, map[string]string{"code": "X\u009b2J\u202eY"}, "  "); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(b.String(), "\u009b\u202e") || !strings.Contains(b.String(), "X\\u009b2J\\u202eY") {
+		t.Errorf("JSON: %s", b.String())
+	}
+}
+
+// A token that calls itself CS is sent only after a warning, and the review shows its address.
+func TestTokenCallingItselfCSIsWarned(t *testing.T) {
+	fake := startFakeNode(t, "--token-code", "CS")
+	home := t.TempDir()
+	t.Setenv("CREDITS_WALLET_HOME", home)
+	pwFile := filepath.Join(home, "pw")
+	os.WriteFile(pwFile, []byte("pw\n"), 0o600)
+	keyFile := filepath.Join(home, "key.txt")
+	os.WriteFile(keyFile, []byte(testKey+"\n"), 0o600)
+	if _, _, code := runWallet2(t, "account", "import", "test", keyFile, "--password-file", pwFile); code != 0 {
+		t.Fatal("import")
+	}
+	_, stderr, code := runWallet2(t, "token", "send", "test", fakeToken, toAddr, "1", "--node", fake.addr, "--password-file", pwFile, "--yes")
+	if code != 0 || !strings.Contains(stderr, "WARNING  this token calls itself CS: it is NOT CS") ||
+		!strings.Contains(stderr, "Token    "+fakeToken) || !strings.Contains(stderr, "as the contract calls itself") {
+		t.Fatalf("token send of a token calling itself CS: %d\n%s", code, stderr)
 	}
 }

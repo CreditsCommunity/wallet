@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"regexp"
 	"sort"
 	"strconv"
 	"time"
@@ -207,8 +208,8 @@ func FromTokenTransfer(account ed25519.PublicKey, t *api.TokenTransfer) Entry {
 }
 
 // Merge adds the token transfers to the CS transactions: a token transfer the account initiated is
-// also one of its transactions (the contract call), which gets the token's details; the others
-// (received) are added. Newest first.
+// also one of its transactions (the contract call), whose token columns it fills, the CS fields
+// left as the node recorded the transaction; the others (received) are added. Newest first.
 func Merge(cs, tokens []Entry) []Entry {
 	at := map[[2]int64]int{}
 	out := append([]Entry(nil), cs...)
@@ -219,9 +220,10 @@ func Merge(cs, tokens []Entry) []Entry {
 	}
 	for _, t := range tokens {
 		if i, ok := at[[2]int64{t.Block, int64(t.Index)}]; ok && t.Block > 0 {
+			// the CS entry is the transaction itself: its kind, direction and counterparty stay;
+			// the token transfer only fills the token columns
 			e := &out[i]
-			e.Kind, e.Token, e.TokenCode, e.TokenAmount = t.Kind, t.Token, t.TokenCode, t.TokenAmount
-			e.Direction, e.Counterparty = t.Direction, t.Counterparty
+			e.Token, e.TokenCode, e.TokenAmount = t.Token, t.TokenCode, t.TokenAmount
 			continue
 		}
 		out = append(out, t)
@@ -272,7 +274,7 @@ func WriteCSV(w io.Writer, account string, entries []Entry) error {
 		}
 		if err := c.Write([]string{e.Time.Format(time.RFC3339), strconv.FormatInt(e.Block, 10), strconv.Itoa(int(e.Index)),
 			e.Kind, e.Direction, account, e.Counterparty, e.Amount.String(), e.Fee.String(), strconv.FormatInt(e.InnerID, 10),
-			e.Token, e.TokenCode, e.TokenAmount, csvSafe(e.Data), until}); err != nil {
+			e.Token, csvSafe(e.TokenCode), csvAmount(e.TokenAmount), csvSafe(e.Data), until}); err != nil {
 			return err
 		}
 	}
@@ -280,8 +282,9 @@ func WriteCSV(w io.Writer, account string, entries []Entry) error {
 	return c.Error()
 }
 
-// csvSafe keeps user data, which anyone who sends to the account chooses, from being read as a
-// formula by a spreadsheet.
+// csvSafe keeps a column chosen by others (user data, a token's code, a token amount written by
+// the sender of a transfer(String, String)) from being read as a formula by a spreadsheet. The
+// other columns are written by the wallet: numbers, dates, base58 addresses, its own words.
 func csvSafe(s string) string {
 	if s != "" && (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@' || s[0] == '\t' || s[0] == '\r') {
 		return "'" + s
@@ -289,32 +292,58 @@ func csvSafe(s string) string {
 	return s
 }
 
-// NodeSource is the history a node holds: the local node, or a remote full node (read-only).
+// Reader is the part of a node client a history source may use: reads only. A source holds its
+// node behind this interface, so that a remote history node cannot be used to send by construction
+// (node.Client.Send is not in it).
+type Reader interface {
+	Transactions(ctx context.Context, address ed25519.PublicKey, offset, limit int64) ([]*api.SealedTransaction, int, error)
+	Status(ctx context.Context) (node.Status, error)
+	OldestBlock(ctx context.Context, last int64) (int64, error)
+	TokenBalances(ctx context.Context, address ed25519.PublicKey) ([]node.TokenBalance, error)
+	TokenTransfers(ctx context.Context, token, address ed25519.PublicKey, offset, limit int64) ([]*api.TokenTransfer, int, error)
+}
+
+var decimalNumber = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
+
+// csvAmount keeps a token amount a number when it is one (a negative amount is the wallet's sign),
+// and guards it as text otherwise (a transfer(String, String) amount is the sender's text).
+func csvAmount(s string) string {
+	if decimalNumber.MatchString(s) {
+		return s
+	}
+	return csvSafe(s)
+}
+
+// NodeSource is the history a node holds: the local node, or a remote full node (read-only). Its
+// fields are unexported: only the read-only Reader is reachable through it.
 type NodeSource struct {
-	Node     *node.Client
-	IsRemote bool
+	node     Reader
+	address  string
+	isRemote bool
 }
 
 // Local is the local node's history.
-func Local(n *node.Client) NodeSource { return NodeSource{Node: n} }
+func Local(n *node.Client) NodeSource { return NodeSource{node: n, address: n.Address} }
 
 // RemoteNode is a remote full node's history: it is only read.
-func RemoteNode(n *node.Client) NodeSource { return NodeSource{Node: n, IsRemote: true} }
+func RemoteNode(n *node.Client) NodeSource {
+	return NodeSource{node: n, address: n.Address, isRemote: true}
+}
 
 // Describe implements Source.
 func (s NodeSource) Describe() string {
-	if s.IsRemote {
-		return "remote full node " + s.Node.Address + " (read-only)"
+	if s.isRemote {
+		return "remote full node " + s.address + " (read-only)"
 	}
-	return "local node " + s.Node.Address
+	return "local node " + s.address
 }
 
 // Remote implements Source.
-func (s NodeSource) Remote() bool { return s.IsRemote }
+func (s NodeSource) Remote() bool { return s.isRemote }
 
 // Page implements Source.
 func (s NodeSource) Page(ctx context.Context, account ed25519.PublicKey, offset, limit int) (Page, error) {
-	list, total, err := s.Node.Transactions(ctx, account, int64(offset), int64(limit))
+	list, total, err := s.node.Transactions(ctx, account, int64(offset), int64(limit))
 	if err != nil {
 		return Page{}, err
 	}
@@ -327,16 +356,16 @@ func (s NodeSource) Page(ctx context.Context, account ed25519.PublicKey, offset,
 
 // OldestBlock implements Source.
 func (s NodeSource) OldestBlock(ctx context.Context) (int64, error) {
-	st, err := s.Node.Status(ctx)
+	st, err := s.node.Status(ctx)
 	if err != nil {
 		return 0, err
 	}
-	return s.Node.OldestBlock(ctx, st.LastBlock)
+	return s.node.OldestBlock(ctx, st.LastBlock)
 }
 
 // TokenTransfers implements Source.
 func (s NodeSource) TokenTransfers(ctx context.Context, account ed25519.PublicKey, extra []ed25519.PublicKey) ([]Entry, error) {
-	held, err := s.Node.TokenBalances(ctx, account)
+	held, err := s.node.TokenBalances(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +381,7 @@ func (s NodeSource) TokenTransfers(ctx context.Context, account ed25519.PublicKe
 		}
 		seen[string(token)] = true
 		for offset := int64(0); ; offset += 100 {
-			list, count, err := s.Node.TokenTransfers(ctx, token, account, offset, 100)
+			list, count, err := s.node.TokenTransfers(ctx, token, account, offset, 100)
 			if errors.Is(err, node.ErrNotAToken) {
 				break // an extra address that is not a token
 			}
