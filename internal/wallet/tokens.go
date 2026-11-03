@@ -170,8 +170,10 @@ func (w *Wallet) Tokens(ctx context.Context, account ed25519.PublicKey) (*TokenL
 			l.Holdings = append(l.Holdings, h)
 			seen = append(seen, b.Token)
 		}
-		// the tokens the user added are shown with their balance too, 0 included
-		w.addAdded(ctx, l, local, account)
+		// the tokens of the local list the cache does not name: a cache turned on after the node
+		// pruned (or started from a snapshot) misses holders whose last call is older; added ones
+		// are shown with their balance, 0 included, the others when they hold some
+		w.addLocal(ctx, l, local, account, true)
 		if err := w.addLocalTokens(account, seen, "seen"); err != nil && l.LocalErr == nil {
 			l.LocalErr = err
 		}
@@ -244,31 +246,35 @@ func (w *Wallet) Tokens(ctx context.Context, account ed25519.PublicKey) (*TokenL
 		}
 		l.Holdings = append(l.Holdings, h)
 	}
-	w.addAdded(ctx, l, local, account)
+	w.addLocal(ctx, l, local, account, false)
 	finishTokenList(l)
 	w.tokens.putScan(account, l)
 	return l, nil
 }
 
-// addAdded adds the tokens the user added to the list (when not in it yet), with their balance.
-func (w *Wallet) addAdded(ctx context.Context, l *TokenList, local []LocalToken, account ed25519.PublicKey) {
+// addLocal adds the tokens of the local list that are not in the list yet: the ones the user added
+// with their balance (0 included), and with all the others the ones the account holds some of.
+func (w *Wallet) addLocal(ctx context.Context, l *TokenList, local []LocalToken, account ed25519.PublicKey, all bool) {
 	in := map[string]int{}
 	for i, h := range l.Holdings {
 		in[string(h.Token)] = i
 	}
 	for _, t := range local {
 		pub, err := keys.ParseAddress(t.Address)
-		if err != nil || t.How != "added" {
+		added := t.How == "added"
+		if err != nil || (!added && !all) {
 			continue
 		}
 		if i, ok := in[string(pub)]; ok {
-			l.Holdings[i].Added = true
+			l.Holdings[i].Added = l.Holdings[i].Added || added
 			continue
 		}
-		if h, ok := w.holding(ctx, account, pub, true); ok {
-			in[string(pub)] = len(l.Holdings)
-			l.Holdings = append(l.Holdings, h)
+		h, ok := w.holding(ctx, account, pub, added)
+		if !ok || (!added && (h.Err != nil || isZero(h.Balance))) {
+			continue
 		}
+		in[string(pub)] = len(l.Holdings)
+		l.Holdings = append(l.Holdings, h)
 	}
 }
 

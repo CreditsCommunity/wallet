@@ -290,8 +290,9 @@ by its address. The main screen shows the balances and the number of tokens, wit
 ```
 
 **Where the list comes from.** The node keeps a token cache only with `[api] tokens_cache=true`
-in its `config.ini` (off by default; the set-up offers to turn it on). Then the list is complete
-for what the node's cache knows. Without it, the wallet:
+in its `config.ini` (off by default; the set-up offers to turn it on). Then the list comes from
+the cache, plus the tokens of the account's local list (tokens you added or sent, or a cache
+showed) that the cache does not name. Without the cache, the wallet:
 
 - uses the token cache of the profile's `history_node`, if it has one (the balances are still read
   from your node);
@@ -303,8 +304,15 @@ for what the node's cache knows. Without it, the wallet:
 
 The cache costs: at its first start with the cache on, the node rebuilds it (it looks for tokens
 among all deployed contracts and their transactions, which takes a while), and it then reads token
-balances in the background after each token call. On a pruned node, see
-[Troubleshooting](#9-troubleshooting) for what it can miss.
+balances in the background after each token call.
+
+**The cache is complete only if it was on while the node read every block.** A full node with
+`tokens_cache=true` from the start knows every holder, and keeps them when it prunes later. A
+pruned node, or one started from the published snapshot, that turns the cache on later lists every
+token, and the balances it shows are correct, but it may miss the wallets whose last use of a token
+is older than its oldest stored block: for those, the token is not listed until they use it again.
+If a token you hold is missing, add it with `a` or `token add` (its balance is then read from the
+contract).
 
 A token transfer costs about 0.0175 CS plus the execution; the CS balance must also cover the
 signed max fee (1 CS), which the node holds while the call runs.
@@ -429,7 +437,7 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
 | "MISMATCH" / the wallet refuses to send | The profile's network and the node's differ: you are on the wrong node or the wrong profile. Fix the profile; never force it. |
 | "wrong password" | Retry. A forgotten password: import the account again from its 24 words. |
 | Tokens "found from history (may be incomplete on a pruned node)" | The node keeps no token cache. Turn on `tokens_cache=true` in `[api]` of its `config.ini` and restart it, or add the token with `token add`. |
-| A token is missing although the cache is on | On a node started from a snapshot or pruned, the cache knows only the tokens and holders whose transactions are in the blocks it has: add the token with `token add` (its balance is read from the contract). The node's first start with the cache on also takes a while (log: `tokens loaded!`). |
+| A token is missing although the cache is on | The cache was turned on after the node pruned, or the node started from a snapshot: it knows every token, but not the wallets whose last use of a token is older than its oldest block. Add the token with `token add` (its balance is read from the contract). The node's first start with the cache on also takes a while (log: `tokens loaded!`). |
 | "the executor lost the errors" when compiling | The node's contract executor did not return the error lines; fix the source with an IDE or update the node's executor. |
 | "sent, but … check history later" | Do not send again. Check `history` in a minute: the transaction is in a block, or it expired and you can send again. |
 | Garbled screen | Use a terminal with UTF-8 and at least 80×24 (Windows Terminal on Windows). |

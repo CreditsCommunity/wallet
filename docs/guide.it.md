@@ -294,7 +294,8 @@ i saldi e il numero di token, con `[t]`.
 
 **Da dove viene l'elenco.** Il nodo tiene una cache dei token solo con `[api] tokens_cache=true`
 nel suo `config.ini` (disattivata per default; la configurazione guidata propone di attivarla).
-In quel caso l'elenco è completo per ciò che la cache del nodo conosce. Senza di essa, il wallet:
+In quel caso l'elenco viene dalla cache, più i token dell'elenco locale dell'account (quelli che hai
+aggiunto o inviato, o che una cache ha mostrato) che la cache non nomina. Senza la cache, il wallet:
 
 - usa la cache dei token dell'`history_node` del profilo, se ne ha uno (i saldi vengono comunque
   letti dal tuo nodo);
@@ -307,8 +308,15 @@ In quel caso l'elenco è completo per ciò che la cache del nodo conosce. Senza 
 
 La cache ha un costo: al primo avvio con la cache attiva, il nodo la ricostruisce (cerca i token
 tra tutti i contratti pubblicati e le loro transazioni, e ci vuole un po'), e poi legge i saldi dei
-token in background dopo ogni chiamata a un token. Su un nodo pruned, vedi
-[Risoluzione dei problemi](#9-risoluzione-dei-problemi) per ciò che può mancare.
+token in background dopo ogni chiamata a un token.
+
+**La cache è completa solo se era attiva mentre il nodo leggeva tutti i blocchi.** Un nodo full con
+`tokens_cache=true` fin dall'inizio conosce tutti i possessori, e li conserva anche se più tardi fa
+pruning. Un nodo pruned, o avviato dallo snapshot pubblicato, che attiva la cache più tardi elenca
+tutti i token, e i saldi che mostra sono corretti, ma può non conoscere i wallet che hanno usato un
+token l'ultima volta prima del suo blocco più vecchio: per loro il token non compare finché non lo
+usano di nuovo. Se manca un token che possiedi, aggiungilo con `a` o `token add` (il saldo viene
+allora letto dal contratto).
 
 Un trasferimento di token costa circa 0.0175 CS più l'esecuzione; il saldo in CS deve coprire anche
 la commissione massima firmata (1 CS), che il nodo trattiene mentre la chiamata è in esecuzione.
@@ -438,7 +446,7 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
 | "MISMATCH" / il wallet rifiuta di inviare | La rete del profilo e quella del nodo differiscono: sei sul nodo sbagliato o sul profilo sbagliato. Correggi il profilo; non forzare mai. |
 | "wrong password" | Riprova. Password dimenticata: importa di nuovo l'account dalle sue 24 parole. |
 | Token "found from history (may be incomplete on a pruned node)" | Il nodo non ha una cache dei token. Attiva `tokens_cache=true` in `[api]` del suo `config.ini` e riavvialo, oppure aggiungi il token con `token add`. |
-| Manca un token anche se la cache è attiva | Su un nodo avviato da uno snapshot o pruned, la cache conosce solo i token e i possessori le cui transazioni sono nei blocchi che ha: aggiungi il token con `token add` (il suo saldo viene letto dal contratto). Anche il primo avvio del nodo con la cache attiva richiede un po' (log: `tokens loaded!`). |
+| Manca un token anche se la cache è attiva | La cache è stata attivata dopo il pruning, o il nodo è partito da uno snapshot: conosce tutti i token, ma non i wallet che li hanno usati l'ultima volta prima del suo blocco più vecchio. Aggiungi il token con `token add` (il suo saldo viene letto dal contratto). Anche il primo avvio del nodo con la cache attiva richiede un po' (log: `tokens loaded!`). |
 | "the executor lost the errors" durante la compilazione | L'esecutore di contratti del nodo non ha restituito le righe di errore; correggi il sorgente con un IDE oppure aggiorna l'esecutore del nodo. |
 | "sent, but … check history later" | Non inviare di nuovo. Controlla `history` tra un minuto: la transazione è in un blocco, oppure è scaduta e puoi inviare di nuovo. |
 | Schermo illeggibile | Usa un terminale con UTF-8 e almeno 80×24 (Windows Terminal su Windows). |

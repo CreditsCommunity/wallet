@@ -159,7 +159,11 @@ transactions. Running the wallet next to the user's own node is what the design 
 - **Every token held** (`tokens ACCOUNT`, the TUI's `[t]` screen and the main screen's token line),
   each with its full contract address, its code and name (self-declared), decimals (`getDecimal()`,
   read once per run), balance and the look-alike warnings (5.3) against the other tokens listed:
-  1. the local node's token cache (`TokenBalancesGet`);
+  1. the local node's token cache (`TokenBalancesGet`), plus the tokens of the local token list it
+     does not name, listed when the account holds some (or always, when the user added them): a
+     cache turned on after the node pruned, or on a node started from a snapshot without one,
+     finds every token and reads correct balances but learns holders only from the calls in the
+     blocks it stores (CreditsCommunity/node docs/tokens.md);
   2. without it, the token cache of the profile's `history_node`, for the token addresses only (the
      balances are read from the local node);
   3. otherwise the account's history: the latest 1000 transactions (`TransactionsGet`) on the history

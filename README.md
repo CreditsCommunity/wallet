@@ -179,7 +179,10 @@ front).
 `tokens ACCOUNT` (and `[t]` in the interface) lists every token the account holds, each with its full
 contract address, decimals and balance, and the look-alike warnings; the main screen shows the
 balances and the count. The list comes from the node's token cache (`tokens_cache=true` in the
-`[api]` section of its `config.ini`, off by default). Without it the wallet uses the token cache of
+`[api]` section of its `config.ini`, off by default), plus the tokens of the local token list (below)
+that the cache does not name: a cache turned on after the node pruned, or on a node started from a
+snapshot, knows every token but may miss holders whose last use of a token is older than the
+node's oldest block. Without it the wallet uses the token cache of
 the profile's `history_node` (balances still from the local node), or else finds the tokens in the
 account's history (the latest 1000 transactions on the history node and the local node: the
 contracts it called, deployed, paid or sent tokens of) and in its local token list
