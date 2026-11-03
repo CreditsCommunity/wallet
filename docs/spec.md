@@ -154,7 +154,10 @@ transactions. Running the wallet next to the user's own node is what the design 
   The signed max fee is the same 1 CS; the node holds it back from the CS balance while a contract
   call runs, so the balance must cover it. The fee shown is twice `ActualFeeGet` of the call's size
   (the call and the new state it makes, 0.0175 CS on the private network) plus the execution, which
-  the node charges later. A `transfer` that returns `false` is reported as a failure (no tokens moved,
+  the node charges later. A token is identified only by its contract address: its code and name are what the contract
+  says of itself. The review shows the full address, labels code and name as self-declared, and
+  warns when the code or name is "CS" or "Credits", or when another token the account holds has the
+  same code. A `transfer` that returns `false` is reported as a failure (no tokens moved,
   the fee paid).
 
 ### 5.4 Delegations
@@ -211,11 +214,14 @@ A pruned node keeps only recent blocks, so the history of an account may not be 
 - The CSV export has the CS transactions and the token transfers in one table, newest first: the
   token transfer the account initiated is merged with its contract call (same block and index). Its
   columns: `time_utc, block, index, kind, direction, account, counterparty, amount_cs, fee_cs,
-  inner_id, token, token_code, token_amount, data, delegation_until_utc`. User data, which anyone
-  sending to the account chooses, gets a `'` in front when it starts like a spreadsheet formula
-  (`= + - @`). Without the token cache the file has the CS transactions and the command warns.
-- Text chosen by others (user data, token names and codes) is shown with control characters
-  escaped, on screen and in the commands' output.
+  inner_id, token, token_code, token_amount, data, delegation_until_utc`. Every column whose text
+  others choose (user data, a token's code, a token amount that is not a plain number) gets a `'`
+  in front when it starts like a spreadsheet formula (`= + - @`, tab, CR). A merged row keeps the
+  call's own kind, direction and counterparty; the token transfer fills only the token columns.
+  Without the token cache the file has the CS transactions and the command warns.
+- Text chosen by others (user data, token names and codes) is shown with control characters and
+  backslashes escaped, on screen and in the commands' output; `--json` also escapes the C1 controls
+  (U+0080-U+009F) and the Unicode format characters (such as U+202E) as `\uXXXX`.
 
 ## 6. Terminal interface
 
@@ -315,7 +321,9 @@ use (documented with its risks).
   with user data, delegate with and without a time limit, withdraw, read the history from node 1 and
   from node 2 as a remote history node, and send tokens of the node's `TestToken` (deployed with the
   node's Python sample client), checking balances, delegations, token balances, the token history and
-  the CSV. The executor and its JDK come from the latest community release package; the release's
+  the CSV. The executor and its JDK come from the community release package pinned in the workflow
+  (tag, the commit it must point to, and the package's SHA-256, bumped deliberately; an input tries
+  another release with its expected commit); the release's
   node binary is a mainnet build (its genesis funds go to the mainnet genesis key), so the job builds
   the same release commit with `-DCREDITS_TESTNET=ON`, cached per release commit.
 - Builds and releases for linux/amd64, linux/arm64, windows/amd64, darwin/arm64 with checksums.

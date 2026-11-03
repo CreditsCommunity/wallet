@@ -21,6 +21,8 @@
 #      IDL         the Thrift IDL folder (this repository's submodule)
 #      WALLET      the credits-wallet binary
 #      WORK        work folder (default ./privnet-run), NODES (5), CONTRACTS (1)
+#      WORK is emptied before the run: it must be new, empty, or a folder this script made before
+#      (it holds .credits-wallet-e2e); never / or $HOME. GUARD_ONLY=1 stops right after (tests).
 #      KEEP=1      keep the network running after the test (until the script is stopped), to try the
 #                  wallet by hand: CREDITS_WALLET_HOME=$WORK/wallet, password file $WORK/password
 # python3 must have PyNaCl, base58 and thriftpy2 (testdata/requirements.txt).
@@ -29,13 +31,27 @@ set -euo pipefail
 : "${NODE_BIN:?}" "${WALLET:?}" "${IDL:?}"
 NODES=${NODES:-5}
 CONTRACTS=${CONTRACTS:-1}
-WORK=$(mkdir -p "${WORK:-privnet-run}" && cd "${WORK:-privnet-run}" && pwd)
 if [ "$CONTRACTS" = 1 ]; then : "${PKG:?}" "${NODE_FILES:?}"; fi
 START=$(date +%s)
 PIDS=()
 
 log() { echo "[$(( $(date +%s) - START ))s] $*"; }
 fail() { echo "FAIL: $*"; exit 1; }
+
+# the work folder is emptied: only one this script made (its marker), a new or an empty one
+MARKER=.credits-wallet-e2e
+WORK=${WORK:-privnet-run}
+mkdir -p "$WORK"
+WORK=$(cd "$WORK" && pwd -P)
+case "$WORK" in
+    /|"$(cd ~ && pwd -P)"|"$(cd / && pwd -P)") fail "WORK=$WORK: refused (/ or \$HOME)" ;;
+esac
+if [ ! -f "$WORK/$MARKER" ] && [ -n "$(ls -A "$WORK")" ]; then
+    fail "WORK=$WORK is not empty and was not made by this script (no $MARKER): refused, nothing removed"
+fi
+touch "$WORK/$MARKER"
+find "$WORK" -mindepth 1 -maxdepth 1 ! -name "$MARKER" -exec rm -rf {} +
+[ "${GUARD_ONLY:-0}" != 1 ] || { echo "work folder ready: $WORK"; exit 0; }
 
 stop_all() {
     local rc=$?
@@ -60,7 +76,6 @@ trap stop_all EXIT
 trap 'exit 143' INT TERM
 
 # ---- the network ---------------------------------------------------------------------------------
-rm -rf "${WORK:?}"/*
 mapfile -t KEYS < <(python3 -c '
 import os, sys, base58, nacl.signing
 for i in range(1, int(sys.argv[2]) + 1):

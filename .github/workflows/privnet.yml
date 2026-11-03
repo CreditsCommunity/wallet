@@ -4,7 +4,8 @@
 # TestToken (the node's samples/contracts) deployed with the node's Python sample client, then
 # tokens sent with the wallet.
 #
-# The node: the latest release of CreditsCommunity/node (or the `release` input). Its package gives
+# The node: the release of CreditsCommunity/node pinned below (tag, commit and package checksum),
+# bumped deliberately; the `release` and `release_sha` inputs try another one on demand. Its package gives
 # the contract executor and its JDK; its node binary is a mainnet build, whose genesis funds go to the
 # mainnet genesis key, so a private network needs the same release commit built with
 # -DCREDITS_TESTNET=ON (genesis and starter keys from the environment). That build is cached per
@@ -21,7 +22,10 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: 'Community node release tag (empty = the latest)'
+        description: 'Community node release tag to try instead of the pinned one (empty = pinned)'
+        default: ''
+      release_sha:
+        description: 'With release: the commit that tag must point to (40 hex digits)'
         default: ''
 
 permissions:
@@ -32,6 +36,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # the community node release under test: its tag, the commit it must point to, and the SHA-256
+  # of its linux-x64 package (from its SHA256SUMS). Bump the three together, deliberately.
+  NODE_RELEASE: community-v4.2.532-community.16
+  NODE_RELEASE_SHA: 7de684740d7585fbc167cfdd44819a496ee26912
+  NODE_PACKAGE_SHA256: 984e44132572d3f2ac5dbbb55268ee089ec3e6d1f430eec16b4a7bee7797b76d
+  # part of the cache key of the built node: bump it when the build recipe below changes
+  NODE_BUILDER: v1
+  THRIFT_COMPILER: 0.19.0-2.1build5
   # samples/clients/python/credits_client.py and samples/contracts/TestToken.java of the node
   # repository, pinned (they are newer than the releases so far)
   SAMPLES_REF: 079e788d521dbb255c77c8b4abeeea0e4c60fcef
@@ -52,7 +64,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: stable
+          go-version: '1.27.3'  # go.mod's toolchain
           cache: true
 
       - name: Release of the community node
@@ -60,24 +72,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ inputs.release }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
         run: |
-          tag=${RELEASE:-$(gh release view --repo CreditsCommunity/node --json tagName -q .tagName)}
+          tag=$NODE_RELEASE want=$NODE_RELEASE_SHA pinned=1
+          if [ -n "$RELEASE" ]; then
+            echo "$RELEASE" | grep -qE '^[A-Za-z0-9._-]+$' || { echo "bad release tag"; exit 1; }
+            echo "$RELEASE_SHA" | grep -qE '^[0-9a-f]{40}$' || { echo "release_sha: the 40-hex commit the tag must point to"; exit 1; }
+            tag=$RELEASE want=$RELEASE_SHA pinned=0
+          fi
           sha=$(gh api "repos/CreditsCommunity/node/commits/$tag" -q .sha)
+          [ "$sha" = "$want" ] || { echo "$tag points to $sha, expected $want: refused"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "community node $tag at $sha" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
+          echo "community node $tag at $sha (pinned: $pinned)" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Release package (executor and JDK) and the node's samples
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
+          PINNED: ${{ steps.release.outputs.pinned }}
         run: |
           mkdir -p "$RUNNER_TEMP/pkg" "$RUNNER_TEMP/node-files"
           cd "$RUNNER_TEMP/pkg"
           gh release download "$TAG" --repo CreditsCommunity/node -p 'credits-node-*-linux-x64.tar.gz' -p SHA256SUMS
           sha256sum -c --ignore-missing SHA256SUMS
-          tar -xzf credits-node-*-linux-x64.tar.gz csnode/contract-executor.jar csnode/sc-api-support.jar csnode/ojdkbuild csnode/VERSION
-          rm credits-node-*-linux-x64.tar.gz
+          pkg=$(ls credits-node-*-linux-x64.tar.gz)
+          if [ "$PINNED" = 1 ]; then
+            echo "$NODE_PACKAGE_SHA256  $pkg" | sha256sum -c
+          fi
+          tar -xzf "$pkg" csnode/contract-executor.jar csnode/sc-api-support.jar csnode/ojdkbuild csnode/VERSION
+          rm "$pkg"
+          [ "community-v$(cat csnode/VERSION)" = "$TAG" ] || { echo "package version $(cat csnode/VERSION) is not $TAG"; exit 1; }
           echo "package version $(cat csnode/VERSION)"
           for f in samples/clients/python/credits_client.py samples/contracts/TestToken.java; do
             curl -sSfL -o "$RUNNER_TEMP/node-files/$(basename "$f")" "https://raw.githubusercontent.com/CreditsCommunity/node/$SAMPLES_REF/$f"
@@ -86,7 +112,7 @@ jobs:
       - name: Thrift compiler 0.19 and the Python packages
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q thrift-compiler
+          sudo apt-get install -y -q "thrift-compiler=$THRIFT_COMPILER"
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r testdata/requirements.txt
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
@@ -103,7 +129,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/node-bin
-          key: testnet-node-${{ steps.release.outputs.sha }}-ubuntu-24.04
+          key: testnet-node-${{ steps.release.outputs.sha }}-${{ env.NODE_BUILDER }}-ubuntu-24.04
 
       - name: Checkout the node
         if: steps.node-cache.outputs.cache-hit != 'true'
@@ -117,7 +143,10 @@ jobs:
       - name: Node submodules and build tools
         if: steps.node-cache.outputs.cache-hit != 'true'
         working-directory: node-src
+        env:
+          WANT: ${{ steps.release.outputs.sha }}
         run: |
+          [ "$(git rev-parse HEAD)" = "$WANT" ] || { echo "checked out $(git rev-parse HEAD), expected $WANT"; exit 1; }
           git submodule update --init -- cscrypto p2p \
             third-party/berkeleydb third-party/thrift third-party/thrift-interface-definitions \
             third-party/googletest third-party/lmdb third-party/lmdbxx third-party/nameof third-party/rocksdb
@@ -178,7 +207,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/node-bin
-          key: testnet-node-${{ steps.release.outputs.sha }}-ubuntu-24.04
+          key: testnet-node-${{ steps.release.outputs.sha }}-${{ env.NODE_BUILDER }}-ubuntu-24.04
 
       # ---- the test -------------------------------------------------------------------------------
 

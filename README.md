@@ -139,7 +139,9 @@ ACCOUNT` still reads one balance from the token contract. `token info TOKEN` sho
 decimals (and supply and holders with the cache). `token send ACCOUNT TOKEN TO AMOUNT` signs a call of
 the token's `transfer(to, amount)`: the amount may have at most the token's decimals and must be
 within the token balance; the CS balance must cover the signed max fee (1 CS), which the node holds
-while the call runs, and the fee is about 0.0175 CS plus the execution.
+while the call runs, and the fee is about 0.0175 CS plus the execution. A token is identified only by
+its contract address: anyone can deploy a token that calls itself "CS" or copies another token's
+code. The confirmation shows the full address and warns about such look-alikes; check the address.
 
 ### History on a pruned node, and a remote full node
 
@@ -185,7 +187,8 @@ receives the account's public address only; every history output names the sourc
 - `.github/workflows/ci.yml`: vet, govulncheck, the tests, the four release builds.
 - `.github/workflows/privnet.yml` (pull requests to main, on demand): `ci/privnet/e2e.sh` starts a
   private network of 5 community nodes with their contract executors and runs the wallet's commands
-  end to end, TestToken included. The executor comes from the latest community release package; the
+  end to end, TestToken included. The executor comes from the community release package pinned in the workflow (tag, commit and
+  package SHA-256, bumped deliberately); the
   node is the release commit built with `-DCREDITS_TESTNET=ON` (the package's node is a mainnet build,
   which cannot fund a private network), cached per release, so only the first run after a release
   builds it. Locally: `NODE_BIN=… PKG=…/csnode NODE_FILES=… IDL=third-party/thrift-interface-definitions

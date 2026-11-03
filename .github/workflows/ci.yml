@@ -30,13 +30,13 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: stable
+          go-version: '1.27.3'  # go.mod's toolchain
           cache: true
 
       - name: Thrift compiler 0.19 and the fake node's Python packages
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q thrift-compiler
+          sudo apt-get install -y -q thrift-compiler=0.19.0-2.1build5
           thrift --version
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r testdata/requirements.txt
