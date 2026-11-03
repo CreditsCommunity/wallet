@@ -142,3 +142,46 @@ func TestHistoryNode(t *testing.T) {
 		t.Error("a bad history_node was accepted")
 	}
 }
+
+func TestDiagAndNetworkUUID(t *testing.T) {
+	c, err := Parse(`
+node = "a"
+[nodes.a]
+address = "10.0.0.5:9090"
+[nodes.b]
+address = "127.0.0.1:9090"
+diag = "127.0.0.1:9401"
+network = "private"
+network_uuid = "1234"
+require_network_uuid = true
+[nodes.c]
+address = "[::1]:9090"
+diag = "off"
+`, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Nodes["a"].DiagAddress(); got != "10.0.0.5:9088" {
+		t.Errorf("default diag: %s", got)
+	}
+	if got := c.Nodes["b"].DiagAddress(); got != "127.0.0.1:9401" || c.Nodes["b"].PinnedUUID() != 1234 {
+		t.Errorf("b: %s %d", got, c.Nodes["b"].PinnedUUID())
+	}
+	if got := c.Nodes["c"].DiagAddress(); got != "" {
+		t.Errorf("off: %q", got)
+	}
+	for _, bad := range []string{`diag = "nope"`, `network_uuid = "-1"`, `network_uuid = "0"`, `network_uuid = "abc"`} {
+		if _, err := Parse("[nodes.a]\n"+bad+"\n", "x"); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	// --node with an address a profile declares takes that profile's diag and pin; another one not
+	p, err := c.Resolve("a", "127.0.0.1:9090")
+	if err != nil || p.Diag != "127.0.0.1:9401" || p.NetworkUUID != "1234" || p.Network != Private || !p.RequireNetworkUUID {
+		t.Errorf("resolve to b: %+v %v", p, err)
+	}
+	p, err = c.Resolve("b", "10.9.9.9:9090")
+	if err != nil || p.Diag != "" || p.NetworkUUID != "" || p.RequireNetworkUUID || p.Network != Mainnet || p.DiagAddress() != "10.9.9.9:9088" {
+		t.Errorf("unknown address: %+v %v", p, err)
+	}
+}

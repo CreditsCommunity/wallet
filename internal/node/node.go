@@ -31,6 +31,9 @@ type Client struct {
 	Address string
 	// SocketTimeout bounds one call; TransactionFlow waits for the block, so it is long.
 	SocketTimeout time.Duration
+	// DiagAddress is the node's diagnostic API (HOST:PORT), asked only for the network identity;
+	// "" when it is not used.
+	DiagAddress string
 
 	mu        sync.Mutex
 	transport thrift.TTransport
@@ -62,13 +65,14 @@ func (c *Client) do(f func(a *api.APIClient) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.api == nil {
-		socket := thrift.NewTSocketConf(c.Address, &thrift.TConfiguration{ConnectTimeout: 10 * time.Second, SocketTimeout: c.SocketTimeout})
+		conf := thriftConf(10*time.Second, c.SocketTimeout)
+		socket := thrift.NewTSocketConf(c.Address, conf)
 		transport := thrift.NewTBufferedTransport(socket, 8192)
 		if err := transport.Open(); err != nil {
 			return fmt.Errorf("cannot reach the node at %s: %w", c.Address, err)
 		}
 		c.transport = transport
-		c.api = api.NewAPIClientFactory(transport, thrift.NewTBinaryProtocolFactoryConf(nil))
+		c.api = api.NewAPIClientFactory(transport, thrift.NewTBinaryProtocolFactoryConf(conf))
 	}
 	err := f(c.api)
 	var te thrift.TTransportException
@@ -78,6 +82,17 @@ func (c *Client) do(f func(a *api.APIClient) error) error {
 		return fmt.Errorf("node %s: %w", c.Address, err)
 	}
 	return err
+}
+
+// MaxThriftSize bounds every string, binary and container the node may announce in an answer (and
+// a frame): the largest legitimate one is a contract's source or byte code, below 100 KiB (the
+// node refuses larger transactions), so 8 MiB leaves room while a broken or hostile node cannot
+// make the wallet allocate Thrift's default 100 MB per field.
+const MaxThriftSize = 8 << 20
+
+// thriftConf is the configuration of the wallet's Thrift connections (the API and the diag port).
+func thriftConf(connect, socket time.Duration) *thrift.TConfiguration {
+	return &thrift.TConfiguration{ConnectTimeout: connect, SocketTimeout: socket, MaxMessageSize: MaxThriftSize, MaxFrameSize: MaxThriftSize}
 }
 
 // APIError is a call the node answered with a non-zero status.
@@ -206,26 +221,6 @@ func (c *Client) OldestBlock(ctx context.Context, last int64) (int64, error) {
 		}
 	}
 	return hi, nil
-}
-
-// NetworkID is what a community node will answer about its network: the uuid it derives from
-// block 1 and its version (spec 5.1).
-type NetworkID struct {
-	UUID    string
-	Version string
-}
-
-// ErrNoNetworkID: the node's API has no call that names its network (official nodes, and the
-// community node until it adds one).
-var ErrNoNetworkID = errors.New("the node does not tell its network")
-
-// MainnetUUID is the uuid of mainnet, to fill in once the node's API returns it.
-const MainnetUUID = ""
-
-// NetworkIdentity is the hook for the network-identifier call of the community node (spec 5.1).
-// The API has no such call yet: it always returns ErrNoNetworkID, and the configuration decides.
-func (c *Client) NetworkIdentity(ctx context.Context) (NetworkID, error) {
-	return NetworkID{}, ErrNoNetworkID
 }
 
 // ---- wallets -----------------------------------------------------------------------------------

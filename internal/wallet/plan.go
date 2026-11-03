@@ -30,6 +30,9 @@ const (
 	KindDelegate   Kind = "delegation"
 	KindUndelegate Kind = "delegation withdrawal"
 	KindToken      Kind = "token transfer"
+	KindDeploy     Kind = "contract deploy"
+	KindCall       Kind = "contract call"
+	KindPay        Kind = "payment to a contract"
 )
 
 // MinDelegation is the smallest amount a delegation or a withdrawal may move
@@ -157,15 +160,19 @@ type SendPlan struct {
 	// Delegated is, for a withdrawal, the delegation without a time limit to that node.
 	Delegated amount.Amount
 	Token     *TokenPlan
+	// Contract is the contract side of a deploy, a call or a payment.
+	Contract *ContractPlan
 
-	Fee      amount.Amount // the fee the node charges now (estimate for a token transfer)
-	MaxFee   amount.Commission
-	Balance  amount.Amount
-	InnerID  int64
-	Network  config.Network
-	Node     string
-	Status   node.Status
-	Prepared time.Time
+	Fee     amount.Amount // the fee the node charges now (estimate for a token transfer)
+	MaxFee  amount.Commission
+	Balance amount.Amount
+	InnerID int64
+	Network config.Network
+	// NetworkCheck is what the node said of its network (confirmed or not).
+	NetworkCheck NetworkCheck
+	Node         string
+	Status       node.Status
+	Prepared     time.Time
 }
 
 // ErrNotSynced is returned when the node is not at the head of the chain.
@@ -188,7 +195,8 @@ func (w *Wallet) start(ctx context.Context, account string, kind Kind) (*SendPla
 	if !st.Synced {
 		return nil, fmt.Errorf("%w: %s; a transaction sent now would be refused or delayed. Wait until 'status' says synced", ErrNotSynced, st.Why)
 	}
-	if err := w.CheckNetwork(ctx); err != nil {
+	check, err := w.CheckNetwork(ctx)
+	if err != nil {
 		return nil, err
 	}
 	bal, err := w.Node.Balance(ctx, from)
@@ -196,7 +204,7 @@ func (w *Wallet) start(ctx context.Context, account string, kind Kind) (*SendPla
 		return nil, err
 	}
 	return &SendPlan{Kind: kind, Account: f.Name, From: from, MaxFee: tx.MaxFee, Balance: bal.CS, Network: w.Profile.Network,
-		Node: w.Profile.Address, Status: st}, nil
+		NetworkCheck: check, Node: w.Profile.Address, Status: st}, nil
 }
 
 // finish reads the inner id: the last step, so that the plan is as fresh as possible.
@@ -484,8 +492,17 @@ type SendResult struct {
 	Round   int32
 	// InBlock: the transaction is in a block (the node said so, or the inner id was seen)
 	InBlock bool
-	// Returned is what a token's transfer method returned ("" when unknown)
+	// Returned is what a token's transfer method or a contract method returned ("" when unknown):
+	// text the contract chose, shown through echo.Printable
 	Returned string
+	// Result is what a contract method returned (nil when unknown)
+	Result *general.Variant
+	// Contract is the address of a deployed contract
+	Contract ed25519.PublicKey
+	// Listed: the node lists the deployed contract (its constructor ran)
+	Listed bool
+	// SaveErr: the deployed contract could not be added to the account's local contract list
+	SaveErr error
 }
 
 // sign decrypts the key with the password and signs the plan. The key is zeroed at once.
@@ -499,6 +516,26 @@ func (w *Wallet) sign(p *SendPlan, password []byte) (*api.Transaction, error) {
 		return nil, err
 	}
 	defer keys.Zero(key)
+	switch p.Kind {
+	case KindDeploy:
+		if p.Contract == nil || p.Contract.Deploy == nil {
+			return nil, errors.New("no deploy in the plan")
+		}
+		d := *p.Contract.Deploy
+		d.Source, d.InnerID, d.MaxFee = p.From, p.InnerID, p.MaxFee
+		if !d.Address().Equal(p.To) {
+			return nil, errors.New("the deploy's address does not match the plan")
+		}
+		t, _, err := d.Sign(key)
+		return t, err
+	case KindCall:
+		if p.Contract == nil || p.Contract.Method == nil {
+			return nil, errors.New("no call in the plan")
+		}
+		t, _, err := tx.ContractCall{Source: p.From, Contract: p.To, Method: p.Contract.Method.Name, Params: p.Contract.Params,
+			InnerID: p.InnerID, MaxFee: p.MaxFee}.Sign(key)
+		return t, err
+	}
 	if p.Kind == KindToken {
 		if p.Token == nil {
 			return nil, errors.New("no token in the plan")
@@ -528,22 +565,36 @@ func (w *Wallet) Send(ctx context.Context, plan *SendPlan, password []byte, foll
 	}
 	res.Round, res.Fee, res.Block = sent.Round, sent.Fee, sent.Block
 	if sent.Result != nil {
-		res.Returned = tx.Show(sent.Result)
+		res.Result, res.Returned = sent.Result, tx.Show(sent.Result)
 	}
+	wait, cancel := context.WithTimeout(ctx, follow)
+	defer cancel()
 	if !sent.InProgress {
 		res.InBlock = true
 		if plan.Kind == KindToken && sent.Result != nil && sent.Result.VBoolean != nil && !*sent.Result.VBoolean {
 			return res, errors.New("the token contract's transfer returned false: no tokens were moved (the fee is paid)")
 		}
-		return res, nil
+	} else {
+		if err := sender.WaitInBlock(wait, plan.From, plan.InnerID, 2*time.Second); err != nil {
+			return res, fmt.Errorf("sent, but %w; check 'history' later, and do not send it again before", err)
+		}
+		res.InBlock = true
 	}
-	wait, cancel := context.WithTimeout(ctx, follow)
-	defer cancel()
-	if err := sender.WaitInBlock(wait, plan.From, plan.InnerID, 2*time.Second); err != nil {
-		return res, fmt.Errorf("sent, but %w; check 'history' later, and do not send it again before", err)
+	if plan.Kind == KindDeploy {
+		w.afterDeploy(wait, sender, plan, &res)
 	}
-	res.InBlock = true
 	return res, nil
+}
+
+// afterDeploy waits until the node lists the new contract and adds it to the account's local
+// contract list (also when the node does not list it yet: the deploy is in a block).
+func (w *Wallet) afterDeploy(ctx context.Context, sender *node.Client, plan *SendPlan, res *SendResult) {
+	res.Contract = plan.To
+	res.Listed = sender.WaitContract(ctx, plan.To, 2*time.Second) == nil
+	c := plan.Contract
+	res.SaveErr = w.AddLocalContract(plan.From, LocalContract{Address: keys.Address(plan.To), Name: c.Name, File: c.File,
+		Network: string(plan.Network), Node: plan.Node, Deployed: time.Now().UTC(), Block: res.Block, InnerID: plan.InnerID,
+		TokenStandard: c.Deploy.TokenStandard})
 }
 
 // ParseUntil reads the expiry of a delegation: a UTC date ("2027-01-31", midnight UTC), a UTC date

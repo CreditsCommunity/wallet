@@ -16,7 +16,17 @@ TokenInfoGet and TokenWalletTransfersGet report them, unless --no-token-cache, w
 a node without [api] tokens_cache. Every TransactionsGet is printed ("HISTORY ..."), so that a test
 sees which node served the history.
 
+wallet (milestone 3): SmartContractCompile names the class after the source's "class X" and answers a
+source containing COMPILE_ERROR with the executor's compile error (a stack trace whose first lines
+are "LINE:message"); a deploy moves the inner id on and is listed by SmartContractsListGet (by
+deployer) and SmartContractGet (deployer, time); SmartContractDataGet returns FakeContract's state;
+a CS transfer to a deployed FakeContract runs its payable(BigDecimal, byte[]) and returns its
+result; isOpen() and paidBy() are annotated @Getter. With --diag-port it also serves the
+diagnostic API's GetNodeInfo, with NodeInfo.networkUuid = --network-uuid (a decimal uint64, or
+"mainnet"; none: an official node, without the field) and communityVersion.
+
   fake_node.py [--port 19090] [--idl DIR] [--no-token-cache] [--token-code FTK]
+               [--diag-port 19088 [--network-uuid N|mainnet]]
 
 It answers WalletTransactionsCountGet (last inner id 6, so the next transfer has inner id 7) and
 TransactionFlow, which accepts a transfer only when its fields are those of a CS transfer and its
@@ -34,11 +44,14 @@ describe it, and calls and getters are accepted only with the Variant types its 
   void setNote(String text)       returns void
   BigDecimal paidBy(String addr)  returns 12.50
   boolean isOpen()                returns true
+  String payable(BigDecimal amount, byte[] userData)   wallet: records the payment, "thank you"
 """
 import argparse
 import hashlib
 import os
+import re
 import struct
+import threading
 import time
 from decimal import Decimal
 
@@ -48,6 +61,7 @@ import nacl.signing
 import thriftpy2
 from thriftpy2.protocol import TBinaryProtocolFactory
 from thriftpy2.rpc import make_server
+from thriftpy2.thrift import TApplicationException
 from thriftpy2.transport import TBufferedTransportFactory
 from thriftpy2.utils import serialize
 
@@ -57,8 +71,12 @@ LAST_INNER_ID = 6
 BYTE_CODE = b"\xca\xfe\xba\xbe fake byte code of FakeContract"
 # name, argument types, return type
 METHODS = [("add", ["int"], "int"), ("setNote", ["java.lang.String"], "void"),
-           ("paidBy", ["java.lang.String"], "java.math.BigDecimal"), ("isOpen", [], "boolean")]
-VARIANT_OF = {"int": "v_int", "java.lang.String": "v_string", "java.math.BigDecimal": "v_big_decimal"}
+           ("paidBy", ["java.lang.String"], "java.math.BigDecimal"), ("isOpen", [], "boolean"),
+           ("payable", ["java.math.BigDecimal", "byte[]"], "java.lang.String")]  # wallet: payable
+GETTERS = {"isOpen", "paidBy"}  # wallet: annotated @Getter
+VARIANT_OF = {"int": "v_int", "java.lang.String": "v_string", "java.math.BigDecimal": "v_big_decimal",
+              "byte[]": "v_byte_array"}
+MAINNET_UUID = 11024959585341937636  # wallet: the node's uuidMainNet
 # wallet: the fake token
 TOKEN = base58.b58decode("9vX2wH7ytrbbo1KtNa13dUz3nvtJqaCH4oGrr2NEsBqd")
 TOKEN_CODE = b"\xca\xfe\xba\xbe fake byte code of FakeToken"
@@ -90,6 +108,8 @@ def main():
     parser.add_argument("--idl", default=DEFAULT_IDL)
     parser.add_argument("--no-token-cache", action="store_true")
     parser.add_argument("--token-code", default="FTK", help="the code FakeToken gives itself")
+    parser.add_argument("--diag-port", type=int, default=0, help="wallet: serve the diagnostic API on this port")
+    parser.add_argument("--network-uuid", default="", help="wallet: the networkUuid GetNodeInfo reports (or 'mainnet')")
     args = parser.parse_args()
     idl = os.path.abspath(args.idl)
     api = thriftpy2.load(os.path.join(idl, "api.thrift"), module_name="api_thrift", include_dirs=[idl])
@@ -102,7 +122,12 @@ def main():
         print(f"REFUSED: {why}", flush=True)
         return api.TransactionFlowResult(status=general.APIResponse(code=1, message=why))
 
-    deployed = set()
+    deployed = {}  # wallet: address -> (deployer, time in ms, class name)
+    payments = {}  # wallet: payer (base58) -> Decimal paid to FakeContract
+    # wallet: the node's list of "deploys" by deployer; like the node it also records a payment to a
+    # contract there (APIHandler: is_smart_deploy is method.empty()) and fails a page holding one
+    by_deployer = {}
+    contract_note = [""]
     counter = [0]
     last_inner = [LAST_INNER_ID]  # wallet: the last inner id moves on with the accepted transactions
     head = [1000]
@@ -188,11 +213,16 @@ def main():
             d = sci.smartContractDeploy
             if d is None or sci.method or [b.byteCode for b in d.byteCodeObjects] != [BYTE_CODE] or not d.sourceCode:
                 return refuse("a deploy without the compiled byte code and the source")
+            if t.id != last_inner[0] + 1:  # wallet
+                return refuse(f"inner id {t.id}, expected {last_inner[0] + 1}")
             expected = hashlib.blake2s(t.source + t.id.to_bytes(6, "little") + BYTE_CODE).digest()
             if t.target != expected:
                 return refuse(f"deploy to {base58.b58encode(t.target).decode()}, the contract address is "
                               f"{base58.b58encode(expected).decode()}")
-            deployed.add(t.target)
+            deployed[t.target] = (t.source, int(time.time() * 1000), d.byteCodeObjects[0].name)  # wallet
+            by_deployer.setdefault(t.source, []).append(t.target)
+            last_inner[0] = t.id  # wallet: in a block
+            head[0] += 1
             print(f"ACCEPTED: deploy of {base58.b58encode(t.target).decode()} by {base58.b58encode(t.source).decode()}",
                   flush=True)
             return api.TransactionFlowResult(status=ok(), roundNum=1, id=api.TransactionId(poolSeq=1, index=0),
@@ -219,9 +249,14 @@ def main():
             counter[0] += params[0].v_int
             result = general.Variant(v_int=counter[0])
         elif sci.method == "setNote":
+            if not getter:
+                contract_note[0] = params[0].v_string
             result = general.Variant(v_void=0)
         elif sci.method == "paidBy":
-            result = general.Variant(v_big_decimal="12.50")
+            paid = payments.get(params[0].v_string)  # wallet: the payments payable() recorded
+            result = general.Variant(v_big_decimal="12.50" if paid is None else str(paid))
+        elif sci.method == "payable":
+            return refuse("payable method cannot be called")  # wallet: as the executor
         else:
             result = general.Variant(v_boolean=True)
         shown = ", ".join(f"{k}={v!r}" for p in params for k, v in vars(p).items() if v is not None)
@@ -265,8 +300,37 @@ def main():
         def SmartContractCompile(self, source):
             if "class" not in source:
                 return api.SmartContractCompileResult(status=general.APIResponse(code=1, message="not a Java class"))
+            name = (re.search(r"class\s+(\w+)", source) or [None, "FakeContract"])[1]  # wallet
+            if "EXECUTOR_BUG" in source:  # wallet: what nodes answer today (the executor loses the errors)
+                return api.SmartContractCompileResult(status=general.APIResponse(
+                    code=1, message="Internal error processing compileSourceCode"))
+            if "COMPILE_ERROR" in source:  # wallet: as the executor reports a compile error
+                line = source[:source.index("COMPILE_ERROR")].count("\n") + 1
+                return api.SmartContractCompileResult(status=general.APIResponse(code=1, message=(
+                    "com.credits.general.util.compiler.CompilationException: compilation errors in class " + name + " :\n"
+                    f"{line}:cannot find symbol\n  symbol:   variable COMPILE_ERROR\n"
+                    f"{line + 1}:';' expected\n"
+                    "\tat com.credits.general.util.compiler.InMemoryCompiler.compileSourceCode(InMemoryCompiler.java:112)")))
             return api.SmartContractCompileResult(status=ok(), tokenStandard=0, byteCodeObjects=[
-                general.ByteCodeObject(name="FakeContract", byteCode=BYTE_CODE)])
+                general.ByteCodeObject(name=name, byteCode=BYTE_CODE)])
+
+        # wallet: the contracts of a deployer, and FakeContract's state
+        def SmartContractsListGet(self, deployer, offset, limit):
+            mine = by_deployer.get(deployer, [])
+            page = mine[offset:offset + (limit or len(mine))]
+            if None in page:
+                # what the node answers: an application exception
+                raise TApplicationException(TApplicationException.INTERNAL_ERROR, "No more data to read.")
+            return api.SmartContractsListGetResult(status=ok() if page else general.APIResponse(code=3, message="not found"),
+                                                   count=len(mine), smartContractsList=[deployed_contract(a) for a in page])
+
+        def SmartContractDataGet(self, address):
+            if address not in deployed:
+                return api.SmartContractDataResult(status=general.APIResponse(code=1, message="not found"))
+            paid = {general.Variant(v_string=k): general.Variant(v_big_decimal=str(v)) for k, v in payments.items()}
+            return api.SmartContractDataResult(status=ok(), methods=[], variables={
+                "counter": general.Variant(v_int=counter[0]), "note": general.Variant(v_string=contract_note[0]),
+                "paid": general.Variant(v_map=paid)})
 
         def SmartContractGet(self, address):
             if address == TOKEN:  # wallet
@@ -276,10 +340,7 @@ def main():
                                                                                                smartContractDeploy=d))
             if address not in deployed:
                 return api.SmartContractGetResult(status=general.APIResponse(code=1, message="not found"))
-            d = api.SmartContractDeploy(sourceCode="class FakeContract {}", hashState="", tokenStandard=0, lang=0,
-                                        byteCodeObjects=[general.ByteCodeObject(name="FakeContract", byteCode=BYTE_CODE)])
-            return api.SmartContractGetResult(status=ok(), smartContract=api.SmartContract(address=address,
-                                                                                           smartContractDeploy=d))
+            return api.SmartContractGetResult(status=ok(), smartContract=deployed_contract(address))
 
         def ContractAllMethodsGet(self, byte_code_objects):
             if [b.byteCode for b in byte_code_objects or []] == [TOKEN_CODE]:  # wallet
@@ -291,7 +352,8 @@ def main():
             if [b.byteCode for b in byte_code_objects or []] != [BYTE_CODE]:
                 return api.ContractAllMethodsGetResult(code=1, message="unknown byte code")
             return api.ContractAllMethodsGetResult(code=0, message="", methods=[
-                general.MethodDescription(name=n, returnType=r, annotations=[],
+                general.MethodDescription(name=n, returnType=r, annotations=[
+                    general.Annotation(name="com.credits.scapi.annotations.Getter", arguments={})] if n in GETTERS else [],
                                           arguments=[general.MethodArgument(type=a, name=f"arg{i}", annotations=[])
                                                      for i, a in enumerate(types)])
                 for n, types, r in METHODS])
@@ -351,6 +413,14 @@ def main():
                     t.type = api.TransactionType.TT_Delegation
                 else:
                     return refuse(f"delegated value {delegated}")
+            result = None
+            if t.target in deployed and delegated is None:  # wallet: a payment runs payable()
+                value = Decimal(t.amount.integral) + Decimal(t.amount.fraction) / 10**18
+                payer = base58.b58encode(t.source).decode()
+                payments[payer] = payments.get(payer, Decimal(0)) + value
+                by_deployer.setdefault(t.source, []).append(None)  # the node's bug: a payment listed as a deploy
+                result = general.Variant(v_string="thank you, " + payer)
+                note += ", payable()"
             print(f"ACCEPTED: {base58.b58encode(t.source).decode()} -> {base58.b58encode(t.target).decode()} "
                   f"{t.amount.integral}.{t.amount.fraction:018d} CS, inner id {t.id}, max fee {t.fee.commission}{note}",
                   flush=True)
@@ -359,7 +429,16 @@ def main():
             t.fee = api.AmountCommission(commission=17279)
             accepted.append(api.SealedTransaction(id=api.TransactionId(poolSeq=head[0], index=0), trxn=t))
             return api.TransactionFlowResult(status=ok(), roundNum=1, id=api.TransactionId(poolSeq=head[0], index=0),
+                                             smart_contract_result=result,
                                              fee=general.Amount(integral=0, fraction=8_740_000_000_000_000))
+
+    def deployed_contract(address):
+        # wallet: a deployed FakeContract as SmartContractGet and SmartContractsListGet describe it
+        deployer, created, name = deployed[address]
+        d = api.SmartContractDeploy(sourceCode="class FakeContract {}", hashState="", tokenStandard=0, lang=0,
+                                    byteCodeObjects=[general.ByteCodeObject(name=name, byteCode=BYTE_CODE)])
+        return api.SmartContract(address=address, deployer=deployer, smartContractDeploy=d, objectState=b"",
+                                 createTime=created, transactionsCount=0)
 
     def amount_of(value):
         return general.Amount(integral=int(value), fraction=int((value - int(value)) * 10**18))
@@ -406,6 +485,28 @@ def main():
         for f in (WalletDataGet, TokenBalancesGet, TokenInfoGet, TokenWalletTransfersGet):
             setattr(handler, f.__name__, f)
         return handler
+
+    if args.diag_port:  # wallet: the diagnostic API, GetNodeInfo only
+        diag = thriftpy2.load(os.path.join(idl, "apidiag.thrift"), module_name="apidiag_thrift", include_dirs=[idl])
+        uuid = None
+        if args.network_uuid:
+            uuid = MAINNET_UUID if args.network_uuid == "mainnet" else int(args.network_uuid)
+            uuid = uuid - 2**64 if uuid >= 2**63 else uuid  # the same 64 bits in the i64
+
+        class Diag:
+            def GetNodeInfo(self, request):
+                info = diag.NodeInfo(id="fake", version="532", platform=diag.Platform.OS_Linux)
+                if uuid is not None:
+                    info.networkUuid = uuid
+                    info.communityVersion = "4.2.532-community.fake"
+                print(f"DIAG GetNodeInfo networkUuid={uuid}", flush=True)
+                return diag.NodeInfoRespone(result=ok(), info=info)
+
+        diag_server = make_server(diag.API_DIAG, Diag(), host="127.0.0.1", port=args.diag_port,
+                                  proto_factory=TBinaryProtocolFactory(), trans_factory=TBufferedTransportFactory(),
+                                  client_timeout=None)
+        threading.Thread(target=diag_server.serve, daemon=True).start()
+        print(f"fake diag API on 127.0.0.1:{args.diag_port}", flush=True)
 
     server = make_server(api.API, wallet_handlers(Handler()), host="127.0.0.1", port=args.port, proto_factory=TBinaryProtocolFactory(),
                          trans_factory=TBufferedTransportFactory(), client_timeout=None)

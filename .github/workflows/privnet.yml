@@ -1,8 +1,9 @@
 # The wallet end to end on a private network of the community node (ci/privnet/e2e.sh): 5 nodes with
 # their contract executors on one Linux runner; status, accounts, send with user data, delegate and
-# undelegate, delegations, history from node 1 and from node 2 as a remote history node, and
-# TestToken (the node's samples/contracts) deployed with the node's Python sample client, then
-# tokens sent with the wallet.
+# undelegate, delegations, history from node 1 and from node 2 as a remote history node, the network
+# identity from node 1's diagnostic API, and the smart contracts with the wallet itself: its
+# templates compared with the node's samples/contracts, a compile error, TestToken deployed and
+# tokens sent, Counter deployed and called, TipJar deployed and paid, the contract lists.
 #
 # The node: the release of CreditsCommunity/node pinned below (tag, commit and package checksum),
 # bumped deliberately; the `release` and `release_sha` inputs try another one on demand. Its package gives
@@ -44,8 +45,8 @@ env:
   # part of the cache key of the built node: bump it when the build recipe below changes
   NODE_BUILDER: v1
   THRIFT_COMPILER: 0.19.0-2.1build5
-  # samples/clients/python/credits_client.py and samples/contracts/TestToken.java of the node
-  # repository, pinned (they are newer than the releases so far)
+  # samples/contracts of the node repository at the commit the wallet's templates were taken from
+  # (internal/templates.Source): the e2e test checks the templates against them
   SAMPLES_REF: 079e788d521dbb255c77c8b4abeeea0e4c60fcef
   BOOST_VERSION: 1.83.0
   BOOST_SHA256: 6478edfe2f3305127cffe8caf73ea0176c53769f4bf1585be237eb30798c3b8e
@@ -87,7 +88,7 @@ jobs:
           echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
           echo "community node $tag at $sha (pinned: $pinned)" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Release package (executor and JDK) and the node's samples
+      - name: Release package (executor and JDK) and the node's sample contracts
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
@@ -105,7 +106,7 @@ jobs:
           rm "$pkg"
           [ "community-v$(cat csnode/VERSION)" = "$TAG" ] || { echo "package version $(cat csnode/VERSION) is not $TAG"; exit 1; }
           echo "package version $(cat csnode/VERSION)"
-          for f in samples/clients/python/credits_client.py samples/contracts/TestToken.java; do
+          for f in samples/contracts/Counter.java samples/contracts/TestToken.java samples/contracts/TipJar.java; do
             curl -sSfL -o "$RUNNER_TEMP/node-files/$(basename "$f")" "https://raw.githubusercontent.com/CreditsCommunity/node/$SAMPLES_REF/$f"
           done
 

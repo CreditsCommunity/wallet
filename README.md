@@ -4,11 +4,12 @@ An open-source terminal wallet for the CREDITS network that runs next to a node,
 macOS: keys kept on the machine, transfers, delegations, and smart contracts compiled, deployed and
 called through the local node. No browser, no web server, no open ports.
 
-Status: **milestone 2**: accounts, key store, status, balances, transfers with optional user data,
+Status: **milestone 3**: accounts, key store, status, balances, transfers with optional user data,
 delegations, tokens (balances, info, transfers), the history from the local node or a remote full
-node with the token transfers and a CSV export, the terminal interface and the scriptable commands.
-Smart contracts (compile, deploy, methods, calls) come in milestone 3 — see
-[docs/spec.md](docs/spec.md) §10.
+node with the token transfers and a CSV export, smart contracts (templates, compile, deploy,
+methods, getters, calls, payments, the contract list), the network identity of community nodes,
+the terminal interface and the scriptable commands. Packaging in the node releases comes in
+milestone 4 — see [docs/spec.md](docs/spec.md) §10.
 
 Part of the [CreditsCommunity](https://github.com/CreditsCommunity) projects, next to the
 [community node](https://github.com/CreditsCommunity/node).
@@ -28,8 +29,10 @@ go test ./...
 ```
 
 The node API's definitions are the git submodule `third-party/thrift-interface-definitions`
-(`CREDITSCOM/thrift-interface-definitions` at the commit the community node pins); after a plain
-clone run `git submodule update --init`. Cross-compiling needs no C compiler:
+(`CreditsCommunity/thrift-interface-definitions`, branch `community/network-id`, the commit the
+community node pins: the original definitions plus the two optional network-identity fields of the
+diagnostic API); after a plain clone run `git submodule update --init` (an older clone: `git
+submodule sync` first, the URL changed). Cross-compiling needs no C compiler:
 `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/credits-wallet`.
 
 The offline transfer test runs the node's fake node (`testdata/fake_node.py`) and needs `python3`
@@ -54,6 +57,14 @@ with the packages of `testdata/requirements.txt` (pinned with hashes:
 ./credits-wallet tokens main                                           # token balances
 ./credits-wallet token send main TOKEN_ADDRESS u6PJ8D…q2w 250.5        # a call of the token's transfer()
 ./credits-wallet history main --tokens                                 # token transfers
+./credits-wallet contract new Counter Counter.java                     # a template
+./credits-wallet contract compile Counter.java                         # errors with their line
+./credits-wallet contract deploy main Counter.java                     # SPENDS CS ON MAINNET
+./credits-wallet contract methods CONTRACT                             # types, getters
+./credits-wallet contract get CONTRACT getValue                        # free, changes nothing
+./credits-wallet contract call main CONTRACT add 4                     # a signed call
+./credits-wallet contract pay main CONTRACT 3 --data "thanks"          # CS to its payable()
+./credits-wallet contract list main
 ./credits-wallet help
 ```
 
@@ -62,7 +73,9 @@ Global flags, anywhere on the line: `--node HOST:PORT`, `--profile NAME`, `--con
 
 In the terminal interface: `[s]` send (with an optional Data field), `[d]` delegations (`n` delegate,
 `w` withdraw the selected one), `[t]` tokens (`s` send the selected token, `a` a token by its
-address), `[h]` history (`t` token transfers, `e` CSV export).
+address), `[h]` history (`t` token transfers, `e` CSV export), `[c]` contracts (`o` open a `.java`,
+`n` new from a template, `a` a contract by address; on a source `e` edits it in your editor, `d`
+deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call), `[S]` node status.
 
 ### First steps
 
@@ -106,6 +119,22 @@ network = "mainnet"      # or "testnet", "private"
 
 `--node` with an address that no profile declares is treated as mainnet.
 
+**Use separate accounts for test networks.** A signed transaction does not say which network it is
+for: one signed on a test network can be replayed on mainnet by whoever runs or watches that test
+node, if the account exists there (every key does) with the same next inner id. Never use an
+account that holds CS on mainnet on another network.
+
+A community node from release community.17 on tells its network through its diagnostic API
+(`[api] diag_port` in its `config.ini`, 9088 in the release packages). The wallet asks it
+(`diag = "HOST:PORT"` in the profile, by default the node's host with port 9088, `diag = "off"` not
+to ask) and **refuses to send** when the node is on mainnet and the profile says testnet or private,
+or the other way round (a profile without `network` counts as mainnet: declare a test network). A
+profile can also pin the network: `network_uuid = "…"` (the uuid `status` shows), and
+`require_network_uuid = true` sends only when the node confirms its network. An official node or
+an older release does not tell its network: the configuration decides (but a pinned or required
+uuid then refuses). Every confirmation says whether the node confirmed the network; `status` shows
+what the node says.
+
 ### Scripts
 
 `send --yes` skips the question, for scripts only; without a terminal the wallet refuses to send
@@ -142,6 +171,35 @@ within the token balance; the CS balance must cover the signed max fee (1 CS), w
 while the call runs, and the fee is about 0.0175 CS plus the execution. A token is identified only by
 its contract address: anyone can deploy a token that calls itself "CS" or copies another token's
 code. The confirmation shows the full address and warns about such look-alikes; check the address.
+
+### Smart contracts
+
+Contracts are Java classes compiled by the node's contract executor (see the node's
+[samples/contracts](https://github.com/CreditsCommunity/node/tree/master/samples/contracts)).
+`contract templates` lists the examples the wallet carries (the node's samples: Counter, TestToken,
+Token, TipJar, Faucet); `contract new NAME FILE` writes one. `contract compile FILE` asks the node to
+compile it and lists the errors as `FILE:LINE: message`, or the classes and methods.
+
+`contract deploy ACCOUNT FILE` compiles again, shows the review (the contract's address, derived
+from the account, the inner id and the byte code; the fee, about 0.1 CS for a small contract; the
+signed max fee, 1 CS) and, on mainnet, asks you to type `send` and the password. Once the deploy is
+in a block the wallet waits until the node lists the contract and saves it in the account's local
+contract list (`contracts/` in the data folder: public data only). Sources up to 48 KiB, deploys
+below 50 KiB (larger ones cost 17.87 CS).
+
+`contract methods CONTRACT` lists the methods with their types (the node does not tell which ones
+only read: its API drops the contracts' `@Getter` annotations; methods are marked "getter" only by
+a node that passes them on). `contract get CONTRACT METHOD ARGS…` runs a method without a transaction: free,
+nothing is kept (`--from ACCOUNT` sets the caller the contract sees). `contract call ACCOUNT
+CONTRACT METHOD ARGS…` signs a call, about 0.0175 CS plus the execution; the arguments are converted
+to the types the method declares (put `--` before an argument that starts with `-`), and the result
+and the contract's state are shown. In the terminal interface the review lists every argument in
+full; when it is taller than the screen, scroll it to the end (PgDn) before signing. A method that throws is refused by the node; the fee is paid.
+`contract pay ACCOUNT CONTRACT AMOUNT [--data TEXT]` sends CS to a contract: the node runs its
+`payable()`, which may refuse them (they come back, the fee is paid). `contract info CONTRACT` shows
+the deployer and the state (the public fields: the node shows no others); `contract list ACCOUNT` the contracts the account deployed (the node's
+list and the local one). Everything a contract says about itself (names, results, state) is shown
+escaped.
 
 ### History on a pruned node, and a remote full node
 
@@ -180,14 +238,17 @@ receives the account's public address only; every history output names the sourc
 
 ## Tests and CI
 
-- `go test ./...`: signing (byte-identical to the node's samples, and for user data, delegations and
-  token calls to `testdata/sign-vectors.txt`, made by `testdata/sign-vectors.py` the way the node's
-  `ci/testnet/fund.py` and `samples/python/token_client.py` build them), key store, amounts, the
-  commands against `testdata/fake_node.py`, the screens at 80x24.
+- `go test ./...`: signing (byte-identical to the node's samples, and for user data, delegations,
+  token calls, deploys and contract addresses to `testdata/sign-vectors.txt`, made by
+  `testdata/sign-vectors.py` the way the node's `ci/testnet/fund.py`, `samples/python/token_client.py`
+  and `samples/clients/python/credits_client.py` build them), key store, amounts, the network-identity
+  rules, the commands against `testdata/fake_node.py` (contracts and its diag API included), the
+  screens at 80x24.
 - `.github/workflows/ci.yml`: vet, govulncheck, the tests, the four release builds.
 - `.github/workflows/privnet.yml` (pull requests to main, on demand): `ci/privnet/e2e.sh` starts a
   private network of 5 community nodes with their contract executors and runs the wallet's commands
-  end to end, TestToken included. The executor comes from the community release package pinned in the workflow (tag, commit and
+  end to end: transfers, delegations, history, the network identity, and the contracts deployed,
+  called and paid with the wallet (TestToken, Counter, TipJar). The executor comes from the community release package pinned in the workflow (tag, commit and
   package SHA-256, bumped deliberately); the
   node is the release commit built with `-DCREDITS_TESTNET=ON` (the package's node is a mainnet build,
   which cannot fund a private network), cached per release, so only the first run after a release
@@ -198,7 +259,9 @@ receives the account's public address only; every history output names the sourc
 
 AGPL-3.0, as the node. `testdata/fake_node.py`, `testdata/sign-expected.txt` and
 `testdata/test-key.txt` come from the community node's `samples/clients/testdata`;
-`testdata/sign-vectors.py` follows the node's `ci/testnet/fund.py` and `samples/python/token_client.py`;
+`testdata/sign-vectors.py` follows the node's `ci/testnet/fund.py`, `samples/python/token_client.py` and
+`samples/clients/python/credits_client.py`; the contract templates in `internal/templates/java` are the
+node's `samples/contracts` (commit `079e788d`), unchanged;
 `ci/privnet/e2e.sh` is a subset of the node's `ci/testnet/run.sh`; the contract-call and argument
 code of `internal/tx` comes from the node's `samples/clients/go`. The keys in
 `testdata/` and `internal/keys/testdata/` are public test values: never send funds to them.

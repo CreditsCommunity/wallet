@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -42,6 +43,45 @@ type Profile struct {
 	// HistoryNode is a remote full node (HOST:PORT) the history is read from, read-only: it gets
 	// only public addresses and is never used to send. Empty: the history comes from Address.
 	HistoryNode string `toml:"history_node"`
+	// Diag is the node's diagnostic API (HOST:PORT), asked for the network identity of a community
+	// node; "off" not to ask. Empty: the address's host with port 9088 (the release packages'
+	// [api] diag_port).
+	Diag string `toml:"diag"`
+	// NetworkUUID pins the network: the uuid the node must report (decimal), checked before
+	// sending when the node reports one. Optional.
+	NetworkUUID string `toml:"network_uuid"`
+	// RequireNetworkUUID refuses to send when the node does not report its network uuid (an
+	// official node, an older community release, the diag port closed): the network must be
+	// confirmed by the node, not only declared.
+	RequireNetworkUUID bool `toml:"require_network_uuid"`
+}
+
+// DiagOff is the value of diag that turns the network-identity call off.
+const DiagOff = "off"
+
+// DefaultDiagPort is the [api] diag_port of the node release packages.
+const DefaultDiagPort = "9088"
+
+// DiagAddress is where the network identity is asked: the profile's diag, or the node address's
+// host with the default diag port; "" when off.
+func (p Profile) DiagAddress() string {
+	switch p.Diag {
+	case DiagOff:
+		return ""
+	case "":
+		host, _, err := net.SplitHostPort(p.Address)
+		if err != nil {
+			return ""
+		}
+		return net.JoinHostPort(host, DefaultDiagPort)
+	}
+	return p.Diag
+}
+
+// PinnedUUID is the network uuid the profile pins (0: none).
+func (p Profile) PinnedUUID() uint64 {
+	n, _ := strconv.ParseUint(p.NetworkUUID, 10, 64)
+	return n
 }
 
 // Config is the configuration file.
@@ -70,10 +110,17 @@ network = "mainnet"
 
 # history from a remote full node (read-only, never used to send), for a pruned local node:
 # history_node = "203.0.113.7:9090"
+# the node's diagnostic API, asked for its network identity (a community node from release
+# community.17 tells its network uuid; the wallet then refuses to send when it contradicts
+# "network"); default: this address's host, port 9088; "off" not to ask
+# diag = "127.0.0.1:9088"
 
 # [nodes.lab]
 # address = "10.0.0.5:9090"
 # network = "testnet"
+# network_uuid = "1234567890123456789"   # optional: the uuid this network must have (the node
+#                                        # must then report it, or nothing is sent)
+# require_network_uuid = true            # optional: send only when the node confirms its network
 `
 
 // Default is the configuration without a file: the local node, mainnet.
@@ -153,6 +200,16 @@ func Parse(text, path string) (*Config, error) {
 				return nil, fmt.Errorf("%s: nodes.%s.history_node %q: expected HOST:PORT", path, name, p.HistoryNode)
 			}
 		}
+		if p.Diag != "" && p.Diag != DiagOff {
+			if _, _, err := net.SplitHostPort(p.Diag); err != nil {
+				return nil, fmt.Errorf("%s: nodes.%s.diag %q: expected HOST:PORT or \"off\"", path, name, p.Diag)
+			}
+		}
+		if p.NetworkUUID != "" {
+			if n, err := strconv.ParseUint(p.NetworkUUID, 10, 64); err != nil || n == 0 {
+				return nil, fmt.Errorf("%s: nodes.%s.network_uuid %q: expected the uuid as a decimal number", path, name, p.NetworkUUID)
+			}
+		}
 		switch p.Network {
 		case "":
 			p.Network = Mainnet
@@ -227,11 +284,14 @@ func (c *Config) Resolve(profile, addressOverride string) (Profile, error) {
 	out.Network = Mainnet
 	out.Name = ""
 	out.HistoryNode = ""
+	out.Diag = ""
+	out.NetworkUUID = ""
+	out.RequireNetworkUUID = false
 	for _, n := range c.ProfileNames() {
 		if c.Nodes[n].Address == addressOverride {
-			out.Network = c.Nodes[n].Network
-			out.HistoryNode = c.Nodes[n].HistoryNode
-			out.Name = n
+			o := *c.Nodes[n]
+			o.Name = n
+			out = o
 			break
 		}
 	}

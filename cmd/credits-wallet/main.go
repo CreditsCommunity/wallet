@@ -10,6 +10,7 @@
 //	credits-wallet tokens <account|address>
 //	credits-wallet token info|send ...
 //	credits-wallet history <account|address> [--tokens] [--csv FILE]
+//	credits-wallet contract templates|new|compile|deploy|methods|info|get|call|pay|list ...
 //
 // See README.md and docs/spec.md.
 package main
@@ -68,6 +69,24 @@ usage: credits-wallet [global flags] [command] [arguments]
   history <account|address> [--limit N] [--offset N] [--tokens] [--token ADDR]
           [--csv FILE [--force]]        CS transactions, or token transfers with --tokens; the
                                         CSV has both (--token adds a token not held any more)
+  contract templates                    the example contracts (the node's samples/contracts)
+  contract new <template> <file> [--force]
+                                        write a template to a .java file
+  contract compile <file.java>          compile through the node: errors with their line, or the
+                                        classes and methods
+  contract deploy <account> <file.java> [--yes]
+                                        compile, sign and deploy; the address is saved in the
+                                        account's local contract list; SPENDS CS ON MAINNET
+  contract methods <contract>           methods with argument and return types (getter: @Getter)
+  contract info <contract>              deployer, classes, state
+  contract get <contract> <method> [args...] [--from ACCOUNT]
+                                        run a method as a getter: free, nothing is signed or kept
+  contract call <account> <contract> <method> [args...] [--yes]
+                                        a signed call; arguments typed as the method declares
+                                        (put -- before arguments that start with -)
+  contract pay <account> <contract> <amount> [--data TEXT] [--yes]
+                                        send CS to a contract: its payable() runs
+  contract list <account|address>       contracts deployed by the account (node and local list)
   config                                print an example configuration file
   version
 
@@ -109,8 +128,21 @@ func (a *app) globalFlags(fs *flag.FlagSet) {
 	fs.StringVar(&a.passwordFile, "password-file", "", "password file")
 }
 
-// parse parses flags placed anywhere among the positional arguments.
+// parse parses flags placed anywhere among the positional arguments; everything after "--" is
+// positional (contract arguments that start with "-").
 func parse(fs *flag.FlagSet, args []string) ([]string, error) {
+	var after []string
+	for i, x := range args {
+		if x == "--" {
+			args, after = args[:i], args[i+1:]
+			break
+		}
+	}
+	pos, err := parseFlags(fs, args)
+	return append(pos, after...), err
+}
+
+func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
@@ -207,7 +239,8 @@ func run(args []string) int {
 			fmt.Fprintf(os.Stderr, "credits-wallet: %s\n\n%s", echo.Terminal(err.Error()), usageText)
 			return 2
 		}
-		if a.json {
+		var shown shownError
+		if a.json && !errors.As(err, &shown) {
 			_ = writeJSON(os.Stdout, map[string]string{"error": err.Error()}, "")
 		}
 		fmt.Fprintln(os.Stderr, "credits-wallet:", echo.Terminal(err.Error()))
@@ -219,7 +252,7 @@ func run(args []string) int {
 // valueFlags are the flags that take a value (the next argument, unless written --flag=value).
 var valueFlags = map[string]bool{"config": true, "profile": true, "node": true, "password-file": true,
 	"format": true, "out": true, "csv": true, "limit": true, "offset": true, "wait": true, "words-file": true,
-	"history-node": true, "data": true, "until": true, "token": true}
+	"history-node": true, "data": true, "until": true, "token": true, "from": true}
 
 // findCommand returns the first argument that is neither a flag nor a flag's value.
 func findCommand(args []string) string {
@@ -250,6 +283,11 @@ func hasHelpFlag(args []string) bool {
 	}
 	return false
 }
+
+// shownError is an error whose details the command already printed as JSON.
+type shownError struct{ error }
+
+func (s shownError) Unwrap() error { return s.error }
 
 type usageError struct{ msg string }
 
@@ -286,6 +324,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.cmdTokens(ctx, args)
 	case "token":
 		return a.cmdToken(ctx, args)
+	case "contract":
+		return a.cmdContract(ctx, args)
 	}
 	return usagef("unknown command %s", echo.Quote(cmd))
 }
