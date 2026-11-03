@@ -210,7 +210,7 @@ func (a *app) contractCompile(ctx context.Context, file string) error {
 // printCompileErrors writes the errors as FILE:LINE: message (the compiler's own form), escaped.
 func printCompileErrors(file string, f *node.CompileFailure) {
 	if len(f.Errors) == 0 {
-		fmt.Fprintln(os.Stderr, f.Message)
+		fmt.Fprintln(os.Stderr, echo.Terminal(f.Message)) // escaped by the node package too; again at the output
 		return
 	}
 	for _, e := range f.Errors {
@@ -427,7 +427,7 @@ func (a *app) contractList(ctx context.Context, who string) error {
 		case !r.Local:
 			where = "node"
 		case !r.OnNode:
-			where = "local list only (" + r.Network + "): not on this node"
+			where = "local list only (" + printable(r.Network) + "): not on this node"
 		}
 		fmt.Fprintf(a.out, "%s  %s  %-14s %s", when, r.Address, printable(r.Name), where)
 		if r.File != "" {

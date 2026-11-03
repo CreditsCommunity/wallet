@@ -89,7 +89,7 @@ func TestContractScreensFit80x24(t *testing.T) {
 	cs := &contractScreen{account: f, address: pub}
 	cs.update(m, contractLoadedMsg{name: "TestToken\x1b[2J", methods: contractMethods(), state: map[string]*general.Variant{
 		"owner": {VString: &f.Public}, "note\x1b[2J": {VString: &f.Public}, "a": {}, "b": {}, "c": {}, "d": {}, "e": {}}})
-	cs.result = "balanceOf = " + printable("12\x1b[2J")
+	cs.result = "balanceOf\x1b]0;x\a = 12\x1b[2J" // raw: escaped where it is rendered
 
 	for name, s := range map[string]screen{"contracts": list, "source with errors": src, "source compiled": ok, "contract": cs} {
 		m.screen = s
@@ -223,4 +223,31 @@ func TestEditorCommand(t *testing.T) {
 	if c := editorCommand("x; rm -rf ~"); len(c.Args) != 2 || c.Args[1] != "x; rm -rf ~" {
 		t.Errorf("no shell: %v", c.Args)
 	}
+}
+
+// Results carry the contract's method names and values: escaped where the screen renders them,
+// whichever path set them (a getter, a call's outcome).
+func TestContractResultsEscaped(t *testing.T) {
+	w := wallet.New(config.Default(), config.Profile{Name: "local", Address: "127.0.0.1:1", Network: config.Mainnet}, t.TempDir())
+	m := newModel(w)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	f := &keys.File{Name: "main", Public: "u6PJ8DtQuPFnfmwHbGFULQ4u4EgjDiyYKjVEsynXq2w"}
+	pub, _ := keys.ParseAddress(f.Public)
+	cs := &contractScreen{account: f, address: pub}
+	m.screen = cs
+	evil := "v\x1b[2J"
+	cs.update(m, gotMsg{method: "get\x1b]0;x\a", value: &general.Variant{VString: &evil}})
+	fits(t, "getter result", m.View())
+	methods := contractMethods()
+	cs.update(m, contractLoadedMsg{methods: methods})
+	cs.sel = len(cs.methods) - 1
+	cs.newMethodForm()
+	cs.methods[cs.sel].Name = "x\x1b[2J"
+	cs.call(m) // the review screen; its onDone sets the result as the call's outcome would
+	ps := m.screen.(*sendScreen)
+	ps.onDone(wallet.SendResult{Returned: "r\x1b]0;y\a", Result: &general.Variant{}}, nil)
+	m.screen = cs
+	fits(t, "call result", m.View())
+	ps.onDone(wallet.SendResult{}, nil)
+	fits(t, "call in a block", m.View())
 }

@@ -200,7 +200,7 @@ func (s *contractsScreen) view(m *model) string {
 		case r.Local == nil:
 			where = "node"
 		case !r.OnNode:
-			where = "local only (" + r.Local.Network + ")"
+			where = "local only (" + printable(r.Local.Network) + ")"
 		}
 		line := fmt.Sprintf("%s  %s  %s  %s", when, keys.Short(keys.Address(r.Address)), ansi.Truncate(printable(r.Name), 14, "…"), stDim.Render(where))
 		line = ansi.Truncate(line, m.width-4, "…")
@@ -258,7 +258,7 @@ func openSource(m *model, f *keys.File, parent screen, file string) tea.Cmd {
 	return s.reload(m)
 }
 
-func (s *sourceScreen) title() string { return "Contract  " + filepath.Base(s.file) }
+func (s *sourceScreen) title() string { return "Contract  " + printable(filepath.Base(s.file)) }
 
 // reload reads the file and compiles it.
 func (s *sourceScreen) reload(m *model) tea.Cmd {
@@ -442,6 +442,8 @@ type contractScreen struct {
 	form   *form
 	busy   bool
 
+	// result is the last result as raw text (method names and values are the contract's): it is
+	// escaped once, where view renders it
 	result    string
 	resultErr error
 	state     map[string]*general.Variant
@@ -569,7 +571,7 @@ func (s *contractScreen) call(m *model) tea.Cmd {
 			s.result, s.resultErr = "", err
 			return
 		}
-		s.result, s.resultErr = name+" returned "+printable(res.Returned), nil
+		s.result, s.resultErr = name+" returned "+res.Returned, nil
 		if res.Result == nil {
 			s.result = name + ": in a block"
 		}
@@ -614,7 +616,7 @@ func (s *contractScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		if msg.err != nil {
 			s.resultErr = msg.err
 		} else {
-			s.result = msg.method + " = " + printable(tx.Show(msg.value))
+			s.result = msg.method + " = " + tx.Show(msg.value)
 		}
 		return nil
 	case tea.KeyMsg:
@@ -748,7 +750,7 @@ func (s *contractScreen) view(m *model) string {
 	if s.resultErr != nil {
 		right.WriteString(stBad.Render(ansi.Truncate(oneLine(s.resultErr.Error()), rightW*2, "…")) + "\n")
 	} else if s.result != "" {
-		right.WriteString(stOK.Render(ansi.Truncate(s.result, rightW*2, "…")) + "\n")
+		right.WriteString(stOK.Render(ansi.Truncate(printable(s.result), rightW*2, "…")) + "\n")
 	}
 	right.WriteString(stTitle.Render("State") + "\n")
 	switch {
