@@ -319,17 +319,18 @@ if [ "$CONTRACTS" = 1 ]; then
     for _ in $(seq 1 30); do json tokens bob | jq -e '.tokens[] | select(.code == "CTT")' >/dev/null && break; sleep 2; done
     bt=$(json tokens bob) || fail "tokens bob"
     [ "$(jq -r '.source' <<< "$bt")" = cache ] || { echo "$bt"; fail "tokens bob: not from the token cache"; }
-    [ "$(jq -r --arg t "$TOKEN" '.tokens[] | select(.token == $t) | .balance' <<< "$bt")" = 0.50 ] || { echo "$bt"; fail "tokens bob: no 0.50 CTT at $TOKEN"; }
+    # the node's cache writes amounts without trailing zeros ("0.5"), the contract with its scale
+    jq -e --arg t "$TOKEN" '.tokens[] | select(.token == $t) | .balance | tonumber == 0.5' <<< "$bt" >/dev/null || { echo "$bt"; fail "tokens bob: no 0.5 CTT at $TOKEN"; }
     # node 3 keeps no token cache: Alice's tokens come from her history (she sent CTT), the balance
     # from the contract; Bob's history holds no CTT transaction, until he adds the token
     rm -f "$CREDITS_WALLET_HOME/tokens/$ALICE.json"   # her local list would name it too
     at=$(json tokens alice --profile n3) || fail "tokens alice on node 3"
     [ "$(jq -r '.source' <<< "$at")" = history ] && [ "$(jq -r '.complete' <<< "$at")" = false ] || { echo "$at"; fail "tokens alice on node 3: not from the history"; }
-    [ "$(jq -r --arg t "$TOKEN" '.tokens[] | select(.token == $t) | .balance' <<< "$at")" = 250.00 ] || { echo "$at"; fail "tokens alice on node 3: no 250.00 CTT"; }
+    jq -e --arg t "$TOKEN" '.tokens[] | select(.token == $t) | .balance | tonumber == 250' <<< "$at" >/dev/null || { echo "$at"; fail "tokens alice on node 3: no 250 CTT"; }
     rm -f "$CREDITS_WALLET_HOME/tokens/$BOB.json"
     expect "holds no tokens that were found" tokens bob --profile n3
     expect "added $TOKEN CTT" token add bob "$TOKEN" --profile n3
-    expect "0.50" tokens bob --profile n3
+    expect "0.50" tokens bob --profile n3       # read from the contract: its scale
     expect "-0.5 CTT" history alice --tokens
     expect "+250.5 CTT" history alice --tokens --history-node 127.0.0.1:9102
     w history alice --csv "$WORK/alice-tokens.csv"
