@@ -213,6 +213,14 @@ func untilText(t time.Time) string {
 	return "until " + t.UTC().Format("2006-01-02 15:04 UTC")
 }
 
+// untilLocal is untilText with the local time, for the confirmation of a delegation.
+func untilLocal(t time.Time) string {
+	if t.IsZero() {
+		return untilText(t)
+	}
+	return untilText(t) + " (" + t.Local().Format("15:04 MST") + " local)"
+}
+
 // planLines is what the review shows of a plan, field by field.
 func planLines(p *wallet.SendPlan) [][2]string {
 	var rows [][2]string
@@ -226,13 +234,18 @@ func planLines(p *wallet.SendPlan) [][2]string {
 			[2]string{"Amount", p.Amount.Grouped() + " CS"}, [2]string{"Data", data})
 	case wallet.KindDelegate:
 		rows = append(rows, [2]string{"Node", keys.Address(p.To)},
-			[2]string{"Amount", p.Amount.Grouped() + " CS delegated " + untilText(p.Until)})
+			[2]string{"Amount", p.Amount.Grouped() + " CS delegated " + untilLocal(p.Until)})
 	case wallet.KindUndelegate:
 		rows = append(rows, [2]string{"Node", keys.Address(p.To)},
 			[2]string{"Amount", p.Amount.Grouped() + " CS back, of " + p.Delegated.Grouped() + " CS delegated"})
 	case wallet.KindToken:
 		t := p.Token
-		rows = append(rows, [2]string{"Token", printable(t.Code) + " " + keys.Short(keys.Address(t.Contract)) + fmt.Sprintf(" (%d decimals)", t.Decimals)},
+		rows = append(rows, [2]string{"Token", keys.Address(t.Contract)},
+			[2]string{"", stDim.Render(fmt.Sprintf("calls itself %s %s, %d decimals", printable(t.Code), printable(t.Name), t.Decimals))})
+		for _, warning := range t.Warnings {
+			rows = append(rows, [2]string{"WARNING", stBad.Render(warning)})
+		}
+		rows = append(rows,
 			[2]string{"To", keys.Address(p.To) + " " + stOK.Render("✓")},
 			[2]string{"Amount", t.Amount + " " + printable(t.Code) + stDim.Render("  balance "+printable(t.Balance))})
 	}

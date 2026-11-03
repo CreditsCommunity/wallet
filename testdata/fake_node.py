@@ -16,7 +16,7 @@ TokenInfoGet and TokenWalletTransfersGet report them, unless --no-token-cache, w
 a node without [api] tokens_cache. Every TransactionsGet is printed ("HISTORY ..."), so that a test
 sees which node served the history.
 
-  fake_node.py [--port 19090] [--idl DIR] [--no-token-cache]
+  fake_node.py [--port 19090] [--idl DIR] [--no-token-cache] [--token-code FTK]
 
 It answers WalletTransactionsCountGet (last inner id 6, so the next transfer has inner id 7) and
 TransactionFlow, which accepts a transfer only when its fields are those of a CS transfer and its
@@ -89,6 +89,7 @@ def main():
     parser.add_argument("--port", type=int, default=19090)
     parser.add_argument("--idl", default=DEFAULT_IDL)
     parser.add_argument("--no-token-cache", action="store_true")
+    parser.add_argument("--token-code", default="FTK", help="the code FakeToken gives itself")
     args = parser.parse_args()
     idl = os.path.abspath(args.idl)
     api = thriftpy2.load(os.path.join(idl, "api.thrift"), module_name="api_thrift", include_dirs=[idl])
@@ -131,7 +132,7 @@ def main():
         if sci.method == "getDecimal":
             result = general.Variant(v_int=2)
         elif sci.method == "getSymbol":
-            result = general.Variant(v_string="FTK")
+            result = general.Variant(v_string=args.token_code)
         elif sci.method == "getName":
             result = general.Variant(v_string="Fake Token")
         elif sci.method == "balanceOf":
@@ -145,7 +146,7 @@ def main():
                 token_balances[to] = token_balances.get(to, Decimal("0.00")) + value
                 head[0] += 1
                 token_transfers.append(api.TokenTransfer(
-                    token=TOKEN, code="FTK", sender=t.source, receiver=base58.b58decode(to), amount=str(value),
+                    token=TOKEN, code=args.token_code, sender=t.source, receiver=base58.b58decode(to), amount=str(value),
                     initiator=t.source, transaction=api.TransactionId(poolSeq=head[0], index=0),
                     time=int(time.time() * 1000), state=1, fee=api.AmountCommission(commission=17279), extraFee=[]))
                 t.type = api.TransactionType.TT_TokenTransfer
@@ -382,7 +383,7 @@ def main():
                 return no_cache(api.TokenBalancesResult)
             b = token_balances.get(base58.b58encode(address).decode(), Decimal(0))
             return api.TokenBalancesResult(status=ok(), balances=[] if b == 0 else [
-                api.TokenBalance(token=TOKEN, code="FTK", name="Fake Token", balance=str(b))])
+                api.TokenBalance(token=TOKEN, code=args.token_code, name="Fake Token", balance=str(b))])
 
         def TokenInfoGet(token):
             if args.no_token_cache:
@@ -390,7 +391,7 @@ def main():
             if token != TOKEN:
                 return api.TokenInfoResult(status=general.APIResponse(code=1, message=""))
             return api.TokenInfoResult(status=ok(), token=api.TokenInfo(
-                address=TOKEN, code="FTK", name="Fake Token", totalSupply="1000.00", owner=base58.b58decode(TEST_HOLDER),
+                address=TOKEN, code=args.token_code, name="Fake Token", totalSupply="1000.00", owner=base58.b58decode(TEST_HOLDER),
                 transfersCount=len(token_transfers), transactionsCount=len(token_transfers), holdersCount=len(token_balances),
                 tokenStandard=4))
 

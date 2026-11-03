@@ -501,7 +501,7 @@ func untilText(t time.Time) string {
 	if t.IsZero() {
 		return " without a time limit"
 	}
-	return " until " + t.UTC().Format("2006-01-02 15:04:05 UTC")
+	return " until " + t.UTC().Format("2006-01-02 15:04:05 UTC") + " (" + t.Local().Format("2006-01-02 15:04 MST") + " local)"
 }
 
 func tokenLabel(t *wallet.TokenPlan) string {
@@ -532,7 +532,11 @@ func printPlan(p *wallet.SendPlan) {
 		fmt.Fprintf(e, "  Amount   %s CS back, of the %s CS delegated without a time limit\n", p.Amount.Grouped(), p.Delegated.Grouped())
 	case wallet.KindToken:
 		t := p.Token
-		fmt.Fprintf(e, "  Token    %s %s (%d decimals)  %s\n", printable(t.Code), printable(t.Name), t.Decimals, keys.Address(t.Contract))
+		fmt.Fprintf(e, "  Token    %s  (the contract address: the only identity of a token)\n", keys.Address(t.Contract))
+		fmt.Fprintf(e, "  Calls itself  %s %s, %d decimals (as the contract calls itself)\n", printable(t.Code), printable(t.Name), t.Decimals)
+		for _, warning := range t.Warnings {
+			fmt.Fprintf(e, "  WARNING  %s\n", warning)
+		}
 		fmt.Fprintf(e, "  To       %s\n", keys.Address(p.To))
 		fmt.Fprintf(e, "  Amount   %s %s (token balance %s)\n", t.Amount, printable(t.Code), printable(t.Balance))
 	}

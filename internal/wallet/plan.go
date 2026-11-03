@@ -43,6 +43,31 @@ type TokenPlan struct {
 	Balance  string // the sender's token balance before (balanceOf)
 	Method   string
 	Params   []*general.Variant
+	// Warnings: the code or name could pass for another asset (CS, or a token held at another
+	// address). Code and name are what the contract says of itself: anyone can deploy a token
+	// with any code, only the contract address identifies it.
+	Warnings []string
+}
+
+// TokenWarnings tells when a token's self-declared code or name could be mistaken for another
+// asset: CS itself, or another token the account holds under the same code.
+func TokenWarnings(contract ed25519.PublicKey, code, name string, held []node.TokenBalance) []string {
+	var out []string
+	norm := func(s string) string { return strings.ToUpper(strings.TrimSpace(s)) }
+	for _, x := range []string{norm(code), norm(name)} {
+		if x == "CS" || x == "CREDITS" {
+			out = append(out, fmt.Sprintf("this token calls itself %s: it is NOT CS, only a token of contract %s",
+				echo.Printable(x), keys.Address(contract)))
+			break
+		}
+	}
+	for _, h := range held {
+		if !h.Token.Equal(contract) && norm(h.Code) != "" && norm(h.Code) == norm(code) {
+			out = append(out, fmt.Sprintf("another token you hold, %s, also calls itself %s: check the contract address",
+				keys.Address(h.Token), echo.Printable(code)))
+		}
+	}
+	return out
 }
 
 // SendPlan is a transaction checked and ready to sign: what the confirmation shows.
@@ -347,6 +372,8 @@ func (w *Wallet) PrepareTokenSend(ctx context.Context, account, tokenText, to, a
 	if tp.Amount, err = amount.ParseToken(amountText, tp.Decimals); err != nil {
 		return nil, err
 	}
+	held, _ := w.Node.TokenBalances(ctx, p.From) // without the token cache: no list to compare with
+	tp.Warnings = TokenWarnings(token, tp.Code, tp.Name, held)
 	if tp.Balance, err = w.TokenBalanceOf(ctx, token, p.From); err != nil {
 		return nil, err
 	}

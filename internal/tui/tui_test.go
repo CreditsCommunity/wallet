@@ -95,7 +95,9 @@ func TestReviewScreensFit80x24(t *testing.T) {
 		func() wallet.SendPlan { p := base; p.Kind, p.Delegated = wallet.KindUndelegate, amt; return p }(),
 		func() wallet.SendPlan {
 			p := base
-			p.Kind, p.Token = wallet.KindToken, &wallet.TokenPlan{Contract: pub, Code: "CTT\x1b]0;x\a", Decimals: 2, Amount: "250.5", Balance: "998900.50"}
+			other, _ := keys.ParseAddress("9vX2wH7ytrbbo1KtNa13dUz3nvtJqaCH4oGrr2NEsBqd")
+			p.Kind, p.Token = wallet.KindToken, &wallet.TokenPlan{Contract: pub, Code: "CS\x1b]0;x\a", Name: "Credits", Decimals: 2, Amount: "250.5", Balance: "998900.50",
+				Warnings: wallet.TokenWarnings(pub, "CS", "Credits", []node.TokenBalance{{Token: other, Code: "CS"}})}
 			return p
 		}(),
 	} {
@@ -112,6 +114,9 @@ func TestReviewScreensFit80x24(t *testing.T) {
 			if w := lipgloss.Width(l); w > 80 {
 				t.Errorf("%s line %d: %d columns: %q", p.Kind, i, w, l)
 			}
+		}
+		if p.Kind == wallet.KindToken && (!strings.Contains(view, "WARNING") || !strings.Contains(view, f.Public) || !strings.Contains(view, "calls itself")) {
+			t.Errorf("token review without the full address, the self-declared name or the warnings:\n%s", view)
 		}
 		if strings.Contains(view, "\x1b[2J") || strings.Contains(view, "\x1b]0;") || !strings.Contains(view, "MAINNET") {
 			t.Errorf("%s:\n%s", p.Kind, view)
