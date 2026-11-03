@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -29,8 +30,27 @@ const (
 
 type fakeNode struct {
 	addr string
-	log  *bytes.Buffer
+	mu   sync.Mutex
+	log  bytes.Buffer
 	cmd  *exec.Cmd
+}
+
+// Log is what the fake node printed so far.
+func (f *fakeNode) Log() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.log.String()
+}
+
+// waitLog waits until the fake node printed want (its output arrives through a pipe, after the
+// answer the wallet already got).
+func (f *fakeNode) waitLog(want string) bool {
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		if strings.Contains(f.Log(), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func startFakeNode(t *testing.T) *fakeNode {
@@ -53,12 +73,14 @@ func startFakeNode(t *testing.T) *fakeNode {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeNode{addr: fmt.Sprintf("127.0.0.1:%d", port), log: &bytes.Buffer{}, cmd: cmd}
+	f := &fakeNode{addr: fmt.Sprintf("127.0.0.1:%d", port), cmd: cmd}
 	ready := make(chan struct{})
 	go func() {
 		sc := bufio.NewScanner(out)
 		for sc.Scan() {
+			f.mu.Lock()
 			f.log.WriteString(sc.Text() + "\n")
+			f.mu.Unlock()
 			if strings.Contains(sc.Text(), "listening") {
 				close(ready)
 			}
@@ -68,7 +90,7 @@ func startFakeNode(t *testing.T) *fakeNode {
 	select {
 	case <-ready:
 	case <-time.After(20 * time.Second):
-		t.Fatalf("the fake node did not start:\n%s", f.log)
+		t.Fatalf("the fake node did not start:\n%s", f.Log())
 	}
 	return f
 }
@@ -126,20 +148,20 @@ func TestOfflineAgainstFakeNode(t *testing.T) {
 	}
 	out, code = runWallet(t, "send", "test", toAddr, "12.5", node, "--password-file", pwFile, "--yes", "--json")
 	if code != 0 {
-		t.Fatalf("send: %d %s\n%s", code, out, fake.log)
+		t.Fatalf("send: %d %s\n%s", code, out, fake.Log())
 	}
 	var sent map[string]any
 	if json.Unmarshal([]byte(out), &sent) != nil || sent["inner_id"] != float64(7) || sent["in_block"] != true || sent["fee_cs"] != "0.00874" {
 		t.Fatalf("send output: %s", out)
 	}
 	want := "ACCEPTED: " + testAddr + " -> " + toAddr + " 12.500000000000000000 CS, inner id 7"
-	if !strings.Contains(fake.log.String(), want) {
-		t.Fatalf("the fake node did not accept the transfer:\n%s", fake.log)
+	if !fake.waitLog(want) {
+		t.Fatalf("the fake node did not accept the transfer:\n%s", fake.Log())
 	}
 	// a second transfer takes the next inner id
 	if out, code = runWallet(t, "send", "test", toAddr, "0.000000000000000001", node, "--password-file", pwFile, "--yes"); code != 0 ||
-		!strings.Contains(fake.log.String(), "0.000000000000000001 CS, inner id 8") {
-		t.Fatalf("second send: %d %s\n%s", code, out, fake.log)
+		!fake.waitLog("0.000000000000000001 CS, inner id 8") {
+		t.Fatalf("second send: %d %s\n%s", code, out, fake.Log())
 	}
 	out, code = runWallet(t, "history", "test", node)
 	if code != 0 || !strings.Contains(out, "2 transactions in all") || !strings.Contains(out, "-12.5 CS") {
@@ -153,7 +175,7 @@ func TestOfflineAgainstFakeNode(t *testing.T) {
 	if lines := strings.Split(strings.TrimSpace(string(csv)), "\n"); len(lines) != 3 || !strings.Contains(lines[2], ",out,"+testAddr+","+toAddr+",-12.5,") {
 		t.Fatalf("CSV:\n%s", csv)
 	}
-	t.Logf("fake node log:\n%s", fake.log)
+	t.Logf("fake node log:\n%s", fake.Log())
 }
 
 func TestAccountsOffline(t *testing.T) {
