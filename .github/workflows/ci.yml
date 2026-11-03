@@ -1,0 +1,80 @@
+# One Linux job (Actions minutes are limited in this private repository): generate the Thrift
+# code, vet, test (including the offline transfers against testdata/fake_node.py), cross-compile
+# the four release platforms with CGO disabled and upload the binaries. It never talks to a real
+# node.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # actions pinned by commit (tags can move)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Thrift compiler 0.19 and the fake node's Python packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q thrift-compiler
+          thrift --version
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r testdata/requirements.txt
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: Generate the API code
+        run: go generate ./thrift
+
+      - name: Vet
+        run: |
+          go vet ./...
+          test -z "$(gofmt -l cmd internal)" || { gofmt -l cmd internal; exit 1; }
+
+      - name: Known vulnerabilities (govulncheck)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - name: Test
+        env:
+          CREDITS_WALLET_FAKE_NODE: '1'  # the offline transfer test must run, not be skipped
+        run: go test -count=1 ./...
+
+      - name: Cross-compile
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          version="$(git describe --tags --always --dirty)"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do
+            os="${target%/*}" arch="${target#*/}"
+            out="dist/credits-wallet-$os-$arch"
+            [ "$os" = windows ] && out="$out.exe"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=$version" -o "$out" ./cmd/credits-wallet
+          done
+          (cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+          ./dist/credits-wallet-linux-amd64 version
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: credits-wallet-${{ github.sha }}
+          path: dist/
+          retention-days: 14
