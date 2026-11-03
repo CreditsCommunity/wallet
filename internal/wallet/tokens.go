@@ -27,7 +27,12 @@ import (
 //     contracts it called, deployed, paid or sent tokens of, plus the account's local token list
 //     (tokens/<address>.json in the data folder: the tokens the user added, sent, or saw in a
 //     token cache). Tokens received from others are not in the account's history: such a list
-//     may miss them, and on a pruned node older transactions are gone.
+//     may miss them, and on a pruned node older transactions are gone. A token found only in a
+//     transfer the account received is marked as such: anyone can send a token, a look-alike
+//     included, and the user never chose it.
+//
+// The local list keeps only the tokens the user acted on: added, or sent with the wallet. What a
+// token cache lists is never written there.
 //
 // Each balance is then the token contract's balanceOf, run as a free getter on the local node.
 
@@ -39,6 +44,9 @@ type TokenHolding struct {
 	Decimals int    // -1: unknown
 	Balance  string // decimal text, as the contract returns it
 	Added    bool   // the user added it to the account's local token list
+	// Origin says why a token the user did not choose is listed ("received from ADDRESS: not
+	// added by you"), "" otherwise
+	Origin   string
 	Warnings []string
 	Err      error // the token or its balance could not be read
 }
@@ -161,22 +169,17 @@ func (w *Wallet) Tokens(ctx context.Context, account ed25519.PublicKey) (*TokenL
 		l.Source, l.Describe = TokensFromCache, "the token cache of the local node "+w.Node.Address
 		local, lerr := w.LocalTokens(account)
 		l.LocalErr = lerr
-		seen := make([]ed25519.PublicKey, 0, len(held))
 		for _, b := range held {
 			h := TokenHolding{Token: b.Token, Code: b.Code, Name: b.Name, Balance: b.Balance, Decimals: -1}
 			if m, err := w.meta(ctx, account, b.Token); err == nil {
 				h.Decimals = m.decimals
 			}
 			l.Holdings = append(l.Holdings, h)
-			seen = append(seen, b.Token)
 		}
 		// the tokens of the local list the cache does not name: a cache turned on after the node
 		// pruned (or started from a snapshot) misses holders whose last call is older; added ones
 		// are shown with their balance, 0 included, the others when they hold some
 		w.addLocal(ctx, l, local, account, true)
-		if err := w.addLocalTokens(account, seen, "seen"); err != nil && l.LocalErr == nil {
-			l.LocalErr = err
-		}
 		finishTokenList(l)
 		return l, nil
 	}
@@ -188,6 +191,7 @@ func (w *Wallet) Tokens(ctx context.Context, account ed25519.PublicKey) (*TokenL
 	}
 	l.CacheErr = err
 	var candidates []ed25519.PublicKey
+	origin := map[string]string{} // why a candidate the user did not act on is there
 	local, lerr := w.LocalTokens(account)
 	l.LocalErr = lerr
 	for _, t := range local {
@@ -216,11 +220,16 @@ func (w *Wallet) Tokens(ctx context.Context, account ed25519.PublicKey) (*TokenL
 		}
 		l.Describe += ", and the tokens it sent or added"
 		for _, src := range sources {
-			found, n, capped, err := scanTokens(ctx, src, account)
+			found, received, n, capped, err := scanTokens(ctx, src, account)
 			if err != nil {
 				return nil, fmt.Errorf("reading the history on %s: %w", src.Describe(), err)
 			}
 			candidates = append(candidates, found...)
+			for k, v := range received {
+				if _, ok := origin[k]; !ok {
+					origin[k] = v
+				}
+			}
 			l.Scanned += n
 			l.Capped = l.Capped || capped
 		}
@@ -240,6 +249,7 @@ func (w *Wallet) Tokens(ctx context.Context, account ed25519.PublicKey) (*TokenL
 		if !ok {
 			continue
 		}
+		h.Origin = origin[string(token)]
 		if h.Err == nil && isZero(h.Balance) {
 			l.Zero++
 			continue
@@ -320,14 +330,17 @@ func isZero(balance string) bool {
 
 // scanTokens reads up to tokenScanLimit of the account's latest transactions on src and returns
 // the contracts among them that may be tokens: the ones the account called, deployed or paid, and
-// the tokens of its token transfers.
-func scanTokens(ctx context.Context, src history.Source, account ed25519.PublicKey) (found []ed25519.PublicKey, scanned int, capped bool, err error) {
+// the tokens of its token transfers; received names, by token, the sender of a token the account
+// only received ("received from ADDRESS: not added by you").
+func scanTokens(ctx context.Context, src history.Source, account ed25519.PublicKey) (found []ed25519.PublicKey, received map[string]string, scanned int, capped bool, err error) {
 	const page = 100
 	seen := map[string]bool{}
+	received = map[string]string{}
+	acted := map[string]bool{}
 	for offset := 0; offset < tokenScanLimit; offset += page {
 		p, err := src.Page(ctx, account, offset, page)
 		if err != nil {
-			return found, scanned, false, err
+			return found, received, scanned, false, err
 		}
 		scanned += len(p.Entries)
 		for _, e := range p.Entries {
@@ -338,19 +351,31 @@ func scanTokens(ctx context.Context, src history.Source, account ed25519.PublicK
 					addr = e.Counterparty
 				}
 			}
-			if addr == "" || seen[addr] {
+			if addr == "" {
 				continue
 			}
-			if pub, err := keys.ParseAddress(addr); err == nil && !pub.Equal(account) {
+			pub, err := keys.ParseAddress(addr)
+			if err != nil || pub.Equal(account) {
+				continue
+			}
+			if e.Direction == "in" {
+				if !acted[string(pub)] {
+					received[string(pub)] = "received from " + e.Counterparty + ": not added by you"
+				}
+			} else {
+				acted[string(pub)] = true
+				delete(received, string(pub))
+			}
+			if !seen[addr] {
 				seen[addr] = true
 				found = append(found, pub)
 			}
 		}
 		if len(p.Entries) < page || offset+page >= p.Total {
-			return found, scanned, false, nil
+			return found, received, scanned, false, nil
 		}
 	}
-	return found, scanned, true, nil
+	return found, received, scanned, true, nil
 }
 
 // ---- the local token list -----------------------------------------------------------------------
@@ -359,7 +384,7 @@ func scanTokens(ctx context.Context, src history.Source, account ed25519.PublicK
 type LocalToken struct {
 	Address string    `json:"address"`
 	Network string    `json:"network"`
-	How     string    `json:"how"` // "added" by the user, "sent" by the wallet, "seen" in a token cache
+	How     string    `json:"how"` // "added" by the user, "sent" by the wallet
 	Since   time.Time `json:"since"`
 }
 
@@ -402,12 +427,13 @@ func (w *Wallet) localTokensAll(account ed25519.PublicKey) ([]LocalToken, error)
 	return out, nil
 }
 
-// LocalTokens is the account's local token list on the profile's network.
+// LocalTokens is the account's local token list on the profile's network (the tokens the user
+// added or sent; entries of another kind, written by a test release, are ignored).
 func (w *Wallet) LocalTokens(account ed25519.PublicKey) ([]LocalToken, error) {
 	all, err := w.localTokensAll(account)
 	out := all[:0:0]
 	for _, t := range all {
-		if t.Network == string(w.Profile.Network) {
+		if t.Network == string(w.Profile.Network) && (t.How == "added" || t.How == "sent") {
 			out = append(out, t)
 		}
 	}
@@ -436,12 +462,12 @@ func (w *Wallet) writeLocalTokens(account ed25519.PublicKey, edit func([]LocalTo
 	return writeListFile(TokensDir(w.DataDir), w.tokenListPath(account), data)
 }
 
-// addLocalTokens records tokens in the local list ("added" wins over "sent", which wins over "seen").
+// addLocalTokens records tokens in the local list ("added" wins over "sent").
 func (w *Wallet) addLocalTokens(account ed25519.PublicKey, tokens []ed25519.PublicKey, how string) error {
 	if len(tokens) == 0 || w.DataDir == "" {
 		return nil
 	}
-	rank := map[string]int{"seen": 0, "sent": 1, "added": 2}
+	rank := map[string]int{"sent": 1, "added": 2}
 	network := string(w.Profile.Network)
 	return w.writeLocalTokens(account, func(list []LocalToken) ([]LocalToken, bool) {
 		changed := false

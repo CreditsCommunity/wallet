@@ -222,8 +222,8 @@ func TestTokensWithoutTokenCache(t *testing.T) {
 	}
 }
 
-// With the node's token cache: every token held, its full address and decimals, and the tokens
-// seen there are kept in the local list.
+// With the node's token cache: every token held, its full address and decimals; what the cache
+// lists is not written to the local list (only tokens the user acted on are).
 func TestTokensWithTokenCache(t *testing.T) {
 	fake := startFakeNode(t)
 	home := t.TempDir()
@@ -233,9 +233,8 @@ func TestTokensWithTokenCache(t *testing.T) {
 		!strings.Contains(out, `"decimals": 2`) || !strings.Contains(out, `"complete": true`) {
 		t.Fatalf("tokens with the cache: %d %s %s", code, out, stderr)
 	}
-	list, err := os.ReadFile(filepath.Join(home, "tokens", testAddr+".json"))
-	if err != nil || !strings.Contains(string(list), `"how": "seen"`) || !strings.Contains(string(list), fakeToken) {
-		t.Fatalf("the local token list: %v %s", err, list)
+	if _, err := os.Stat(filepath.Join(home, "tokens", testAddr+".json")); !os.IsNotExist(err) {
+		t.Fatalf("the cache's tokens were written to the local list: %v", err)
 	}
 }
 

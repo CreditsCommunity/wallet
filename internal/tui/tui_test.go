@@ -179,3 +179,22 @@ func TestTokensScreenFullAddressAndCopy(t *testing.T) {
 		t.Errorf("copy: %q, want %q", buf.String(), want)
 	}
 }
+
+// x takes the selected token off the account's local list.
+func TestTokensScreenRemove(t *testing.T) {
+	w := wallet.New(config.Default(), config.Profile{Name: "local", Address: "127.0.0.1:1", Network: config.Mainnet}, t.TempDir())
+	m := newModel(w)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	f := &keys.File{Name: "main", Public: "FAe4sisG95oZ42w7buUn5qEE4TAnfTTFPiguZUHmhiF"}
+	tok, _ := keys.ParseAddress("9vX2wH7ytrbbo1KtNa13dUz3nvtJqaCH4oGrr2NEsBqd")
+	s := newTokensScreen(f)
+	m.screen = s
+	m.Update(tokensMsg{list: &wallet.TokenList{Describe: "x", Holdings: []wallet.TokenHolding{{Token: tok, Code: "FTK", Origin: "received from u6PJ8DtQuPFnfmwHbGFULQ4u4EgjDiyYKjVEsynXq2w: not added by you"}}}})
+	if v := m.View(); !strings.Contains(v, "not added by you") || !strings.Contains(v, "[x] remove") {
+		t.Errorf("origin or key help missing:\n%s", v)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if !strings.Contains(m.View(), "not in your list") {
+		t.Errorf("x on a token not in the list:\n%s", m.View())
+	}
+}

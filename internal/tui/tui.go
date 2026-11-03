@@ -603,7 +603,7 @@ func (helpScreen) view(m *model) string {
 		"  s            send CS from the selected account (optional user data: public text)",
 		"  d            delegations: made and received; n delegate, w withdraw",
 		"  t            tokens: every token held with its contract address; s send, a add a token,",
-		"               y copy the address (or Shift+drag to select it)",
+		"               x remove it from your list, y copy the address (or Shift+drag)",
 		"  c            contracts: o open a .java, n new from a template, a open an address;",
 		"               a source compiles on the node (e edits it in $EDITOR, d deploys);",
 		"               a contract's methods: Enter reads a @Getter free or signs a call",

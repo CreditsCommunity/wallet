@@ -135,6 +135,24 @@ func (s *tokensScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			copyAddress(keys.Address(h.Token))
 			s.note = stOK.Render("address sent to the clipboard (terminals with OSC 52); or select it with Shift+drag")
 		}
+	case "x":
+		if h := s.selected(); h != nil {
+			addr := keys.Address(h.Token)
+			pub, err := s.account.PublicKey()
+			if err == nil {
+				var removed bool
+				if removed, err = m.w.RemoveToken(pub, addr); err == nil && !removed {
+					s.note = stDim.Render("not in your list (it comes from the node or the history): nothing to remove")
+					return nil
+				}
+			}
+			if err != nil {
+				s.note = stBad.Render(oneLine(err.Error()))
+				return nil
+			}
+			s.note = stOK.Render("✓ removed from your list: " + addr)
+			return s.load(m)
+		}
 	case "r":
 		return s.load(m)
 	}
@@ -193,7 +211,7 @@ func (s *tokensScreen) view(m *model) string {
 			bal = "?"
 		}
 		mark := " "
-		if len(h.Warnings) > 0 {
+		if len(h.Warnings) > 0 || h.Origin != "" {
 			mark = "!"
 		}
 		line := truncate(fmt.Sprintf("%s %-8s %24s  %s", mark, printable(h.Code), bal, printable(h.Name)), m.width-4)
@@ -215,7 +233,7 @@ func (s *tokensScreen) view(m *model) string {
 		if s.note != "" {
 			b.WriteString("\n" + truncate(s.note, m.width) + "\n")
 		}
-		b.WriteString("\n" + keyHelp("s", "send", "a", "add a token", "y", "copy address", "r", "refresh", "Esc", "back"))
+		b.WriteString("\n" + keyHelp("s", "send", "a", "add", "x", "remove", "y", "copy address", "r", "refresh", "Esc", "back"))
 	}
 	return b.String()
 }
@@ -234,6 +252,9 @@ func tokenDetail(h *wallet.TokenHolding, width int) string {
 		b.WriteString(stBad.Render(truncate("Balance   not read: "+oneLine(h.Err.Error()), width)) + "\n")
 	} else {
 		b.WriteString(truncate(fmt.Sprintf("Balance   %s   Decimals  %s", printable(h.Balance), dec), width) + "\n")
+	}
+	if h.Origin != "" {
+		b.WriteString(stWarn.Render(truncate("! "+printable(h.Origin), width)) + "\n")
 	}
 	for i, w := range h.Warnings {
 		if i == 2 {

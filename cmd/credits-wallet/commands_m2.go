@@ -132,12 +132,13 @@ func (a *app) cmdTokens(ctx context.Context, args []string) error {
 		Decimals *int     `json:"decimals,omitempty"`
 		Balance  string   `json:"balance"`
 		Added    bool     `json:"added,omitempty"`
+		Origin   string   `json:"origin,omitempty"`
 		Warnings []string `json:"warnings,omitempty"`
 		Error    string   `json:"error,omitempty"`
 	}
 	rows := []row{}
 	for _, h := range l.Holdings {
-		r := row{Token: keys.Address(h.Token), Code: h.Code, Name: h.Name, Balance: h.Balance, Added: h.Added, Warnings: h.Warnings}
+		r := row{Token: keys.Address(h.Token), Code: h.Code, Name: h.Name, Balance: h.Balance, Added: h.Added, Origin: h.Origin, Warnings: h.Warnings}
 		if h.Decimals >= 0 {
 			d := h.Decimals
 			r.Decimals = &d
@@ -180,6 +181,9 @@ func (a *app) cmdTokens(ctx context.Context, args []string) error {
 			continue
 		}
 		fmt.Fprintf(a.out, "%-8s %24s  %s  %s\n", printable(r.Code), printable(r.Balance), r.Token, printable(r.Name))
+		if r.Origin != "" {
+			fmt.Fprintf(a.out, "         ! %s\n", printable(r.Origin))
+		}
 		for _, w := range r.Warnings {
 			fmt.Fprintf(a.out, "         ! %s\n", printable(w))
 		}

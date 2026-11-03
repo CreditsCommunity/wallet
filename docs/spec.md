@@ -178,10 +178,13 @@ transactions. Running the wallet next to the user's own node is what the design 
      same cache as `TokenBalancesGet`, so it adds nothing where the cache is off.
   The **local token list** is `tokens/<address>.json` in the data folder (mode 600, written whole then
   renamed, only a regular file is read; public data only): address, network, how (`added` by
-  `token add` or the TUI's `a`, always listed with its balance, 0 included; `sent` by the wallet;
-  `seen` in a token cache) and since when. `token remove` takes a token off. In the TUI the selected
-  token's address stands alone on a line (Shift+drag selects it) and `y` sends it to the clipboard
-  with OSC 52 (through tmux or screen when the wallet runs in one).
+  `token add` or the TUI's `a`, always listed with its balance, 0 included; `sent` by the wallet)
+  and since when: only tokens the user acted on, never what a token cache lists. `token remove` (the
+  TUI's `x`) takes a token off. A token found only in a transfer the account received (in the
+  history, a token transfer whose receiver is the account) is marked "received from ADDRESS: not
+  added by you": anyone can send a token, look-alikes included. In the TUI the selected token's
+  address stands alone on a line (Shift+drag selects it) and `y` sends it to the clipboard with OSC
+  52 (through tmux or screen when the wallet runs in one).
 - Amounts are exact decimals (CS has 18 fractional digits); never floating point.
 
 ### 5.3 Transfers
@@ -478,7 +481,9 @@ use (documented with its risks).
   publishes, `wallet-vX.Y.Z-rcN` publishes a pre-release; pull requests build only. linux/amd64,
   windows/amd64 and darwin/arm64 are cross-compiled on one Linux runner with CGO off (Go and the
   libraries are pure Go: macOS needs no native runner to build); before publishing, the Windows
-  and macOS binaries run on their own systems (`version`, `help`, `status` without a node). The
+  and macOS binaries run on their own systems (`version`, `help`, `status` without a node), and a
+  second runner builds the tag again and must get the same `SHA256SUMS`. Only the push of a tag
+  publishes (a manual run on a tag builds only); the notes name the tag's commit. The
   build is reproducible: `-trimpath -buildvcs=true`, ldflags `-s -w -buildid= -X
   main.version=X.Y.Z`, archives dated at the commit's time (SOURCE_DATE_EPOCH), owner 0:0, fixed
   modes, name order, gzip `-n`, zip `-X`; Go 1.27.3 and Thrift 0.19.0 pinned. Each archive holds
