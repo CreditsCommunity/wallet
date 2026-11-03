@@ -2,6 +2,7 @@ package amount
 
 import (
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/CreditsCommunity/wallet/thrift/general"
@@ -98,5 +99,17 @@ func TestCommission(t *testing.T) {
 	}
 	if c := EncodeCommission(10.0).Amount(); c.String() != "9.9609375" {
 		t.Errorf("10 CS = %s", c)
+	}
+}
+
+func TestErrorsDoNotEchoLongInput(t *testing.T) {
+	secret := "1GMkH3brNXiNNs1tiFZHu4yZSRrzJwxi5wB9bHFtMikjwpAW9DMZzU2Pqakc5it8X3N5vPmqdN7KF4CCUpmKhq"
+	for _, text := range []string{secret, "abandon ability able about"} {
+		if _, err := ParsePositive(text); err == nil || strings.Contains(err.Error(), text[:12]) {
+			t.Errorf("echoed: %v", err)
+		}
+	}
+	if _, err := Parse("1,5"); err == nil || !strings.Contains(err.Error(), `"1,5"`) {
+		t.Errorf("a short input should be quoted back: %v", err)
 	}
 }

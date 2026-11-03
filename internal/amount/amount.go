@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/thrift/general"
 )
 
@@ -58,21 +59,21 @@ func Parse(text string) (Amount, error) {
 	s := strings.TrimSpace(text)
 	whole, frac, dot := strings.Cut(s, ".")
 	if s == "" || (whole == "" && frac == "") || (dot && frac == "" && whole == "") {
-		return a, fmt.Errorf("%q: not an amount", text)
+		return a, fmt.Errorf("%s: not an amount", echo.Quote(text))
 	}
 	for _, part := range []string{whole, frac} {
 		for _, c := range part {
 			if c < '0' || c > '9' {
-				return a, fmt.Errorf("%q: not an amount (digits and one '.' only)", text)
+				return a, fmt.Errorf("%s: not an amount (digits and one '.' only)", echo.Quote(text))
 			}
 		}
 	}
 	if len(frac) > Decimals {
-		return a, fmt.Errorf("%q: CS has at most %d decimals", text, Decimals)
+		return a, fmt.Errorf("%s: CS has at most %d decimals", echo.Quote(text), Decimals)
 	}
 	digits := whole + frac + strings.Repeat("0", Decimals-len(frac))
 	if _, ok := a.units.SetString(digits, 10); !ok {
-		return a, fmt.Errorf("%q: not an amount", text)
+		return a, fmt.Errorf("%s: not an amount", echo.Quote(text))
 	}
 	return a, nil
 }
@@ -84,10 +85,10 @@ func ParsePositive(text string) (Amount, error) {
 		return a, err
 	}
 	if a.Sign() <= 0 {
-		return a, fmt.Errorf("%q: the amount must be more than 0", text)
+		return a, fmt.Errorf("%s: the amount must be more than 0", echo.Quote(text))
 	}
 	if _, err := a.Thrift(); err != nil {
-		return a, fmt.Errorf("%q: %w", text, err)
+		return a, fmt.Errorf("%s: %w", echo.Quote(text), err)
 	}
 	return a, nil
 }

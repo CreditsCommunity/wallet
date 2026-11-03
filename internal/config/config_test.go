@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -93,5 +95,24 @@ func TestDataDir(t *testing.T) {
 	}
 	if AccountsDir("/a") != filepath.Join("/a", "accounts") {
 		t.Error("AccountsDir")
+	}
+}
+
+func TestPermissionWarnings(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix modes")
+	}
+	dir := t.TempDir()
+	os.Chmod(dir, 0o700)
+	os.Mkdir(AccountsDir(dir), 0o700)
+	if w := PermissionWarnings(dir); len(w) != 0 {
+		t.Errorf("private folders: %v", w)
+	}
+	os.Chmod(AccountsDir(dir), 0o755)
+	if w := PermissionWarnings(dir); len(w) != 1 || !strings.Contains(w[0], "accounts") {
+		t.Errorf("open accounts folder: %v", w)
+	}
+	if !isWithin("/home/u/x", "/home/u") || isWithin("/home/ux", "/home/u") || isWithin("/tmp", "/home/u") {
+		t.Error("isWithin")
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/CreditsCommunity/wallet/internal/amount"
 	"github.com/CreditsCommunity/wallet/internal/config"
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/history"
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/internal/node"
@@ -77,7 +78,7 @@ func (w *Wallet) Account(nameOrAddress string) (name string, pub ed25519.PublicK
 	if pub, err := keys.ParseAddress(nameOrAddress); err == nil {
 		return "", pub, nil
 	}
-	return "", nil, fmt.Errorf("%q is neither an account (see 'account list') nor an address", nameOrAddress)
+	return "", nil, fmt.Errorf("%s is neither an account (see 'account list') nor an address", echo.Quote(nameOrAddress))
 }
 
 // CreateAccount encrypts and saves a key under name.

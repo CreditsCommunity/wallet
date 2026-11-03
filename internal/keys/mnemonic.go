@@ -93,7 +93,7 @@ func MasterSeedFromWords(words []string) ([MasterSeedSize]byte, error) {
 	for w, word := range words {
 		index, ok := wordIndex[strings.ToLower(word)]
 		if !ok {
-			return master, fmt.Errorf("word %d (%q) is not in the word list", w+1, word)
+			return master, fmt.Errorf("word %d is not in the word list", w+1)
 		}
 		for k := 0; k < bitsPerWord; k++ {
 			setBit(bits, w*bitsPerWord+k, (index>>k)&1)

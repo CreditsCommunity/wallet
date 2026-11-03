@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/CreditsCommunity/wallet/internal/echo"
 )
 
 // Network is what the wallet believes the node's network is.
@@ -184,14 +186,14 @@ func (c *Config) Resolve(profile, addressOverride string) (Profile, error) {
 	}
 	p, ok := c.Nodes[name]
 	if !ok {
-		return Profile{}, fmt.Errorf("no node profile %q (known: %s)", name, strings.Join(c.ProfileNames(), ", "))
+		return Profile{}, fmt.Errorf("no node profile %s (known: %s)", echo.Quote(name), strings.Join(c.ProfileNames(), ", "))
 	}
 	out := *p
 	if addressOverride == "" || addressOverride == p.Address {
 		return out, nil
 	}
 	if _, _, err := net.SplitHostPort(addressOverride); err != nil {
-		return Profile{}, fmt.Errorf("--node %q: expected HOST:PORT", addressOverride)
+		return Profile{}, fmt.Errorf("--node %s: expected HOST:PORT", echo.Quote(addressOverride))
 	}
 	out.Address = addressOverride
 	out.Network = Mainnet
@@ -204,4 +206,34 @@ func (c *Config) Resolve(profile, addressOverride string) (Profile, error) {
 		}
 	}
 	return out, nil
+}
+
+// PermissionWarnings checks that the data folder and its accounts folder are private. On Linux and
+// macOS they must not be accessible by group or others. On Windows the wallet does not set ACLs
+// itself: %APPDATA% is private to the user by default, so it warns when CREDITS_WALLET_HOME puts
+// the data outside the user's profile, where the folder's ACL may let others read it.
+func PermissionWarnings(dataDir string) []string {
+	var warnings []string
+	if runtime.GOOS == "windows" {
+		profile := os.Getenv("USERPROFILE")
+		if os.Getenv("CREDITS_WALLET_HOME") != "" && profile != "" && !isWithin(dataDir, profile) {
+			warnings = append(warnings, fmt.Sprintf("%s is outside your user profile (%s): make sure only you can read it (folder Properties > Security)", dataDir, profile))
+		}
+		return warnings
+	}
+	for _, d := range []string{dataDir, AccountsDir(dataDir)} {
+		st, err := os.Stat(d)
+		if err != nil {
+			continue
+		}
+		if st.Mode().Perm()&0o077 != 0 {
+			warnings = append(warnings, fmt.Sprintf("%s is accessible by other users (mode %v): chmod 700 it", d, st.Mode().Perm()))
+		}
+	}
+	return warnings
+}
+
+func isWithin(path, dir string) bool {
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }

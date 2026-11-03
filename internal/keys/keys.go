@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/mr-tron/base58"
+
+	"github.com/CreditsCommunity/wallet/internal/echo"
 )
 
 // Address is the base58 text of a public key, the form addresses take everywhere.
@@ -22,7 +24,7 @@ func Address(pub ed25519.PublicKey) string { return base58.Encode(pub) }
 func ParseAddress(text string) (ed25519.PublicKey, error) {
 	b, err := base58.Decode(strings.TrimSpace(text))
 	if err != nil || len(b) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("%q is not an address (base58 of 32 bytes)", text)
+		return nil, fmt.Errorf("%s is not an address (base58 of 32 bytes)", echo.Quote(strings.TrimSpace(text)))
 	}
 	return ed25519.PublicKey(b), nil
 }
