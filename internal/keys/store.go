@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ import (
 	"github.com/mr-tron/base58"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
+
+	"github.com/CreditsCommunity/wallet/internal/echo"
 )
 
 // The key store: one JSON file per account, <dir>/<name>.json, mode 0600, holding the 32-byte
@@ -38,6 +41,12 @@ type KDFParams struct {
 
 // DefaultKDF is what new files use (spec 4.2): time 3, 256 MiB, 4 threads.
 var DefaultKDF = KDFParams{Name: "argon2id", Time: 3, MemoryKiB: 256 * 1024, Threads: 4}
+
+// MinKDF and MaxKDF bound the parameters a key file may have, on writing and on reading.
+var (
+	MinKDF = KDFParams{Time: 1, MemoryKiB: 64 * 1024, Threads: 1}
+	MaxKDF = KDFParams{Time: 16, MemoryKiB: 1024 * 1024, Threads: 32}
+)
 
 // File is the JSON of a key file.
 type File struct {
@@ -65,7 +74,7 @@ var (
 // ValidName tells whether a name can be an account name (and a file name on every system).
 func ValidName(name string) error {
 	if !nameRE.MatchString(name) || strings.HasSuffix(name, ".") {
-		return fmt.Errorf("%q: an account name has 1 to 32 letters, digits, '.', '_' or '-'", name)
+		return fmt.Errorf("%s: an account name has 1 to 32 letters, digits, '.', '_' or '-'", echo.Quote(name))
 	}
 	return nil
 }
@@ -79,9 +88,12 @@ func deriveFileKey(password []byte, kdf KDFParams) ([]byte, error) {
 	if kdf.Name != "argon2id" {
 		return nil, fmt.Errorf("unknown key derivation %q", kdf.Name)
 	}
-	// bounds against a file that would make the wallet hang or exhaust memory
-	if kdf.Time < 1 || kdf.Time > 64 || kdf.MemoryKiB < 8*1024 || kdf.MemoryKiB > 4*1024*1024 || kdf.Threads < 1 {
-		return nil, fmt.Errorf("key derivation parameters out of range: t=%d m=%d KiB p=%d", kdf.Time, kdf.MemoryKiB, kdf.Threads)
+	// bounds: not more than a file may make the wallet spend (memory, time), and not weaker than
+	// the wallet ever writes (a file with weak parameters was not made by it)
+	if kdf.Time < MinKDF.Time || kdf.Time > MaxKDF.Time || kdf.MemoryKiB < MinKDF.MemoryKiB || kdf.MemoryKiB > MaxKDF.MemoryKiB ||
+		kdf.Threads < MinKDF.Threads || kdf.Threads > MaxKDF.Threads {
+		return nil, fmt.Errorf("key derivation parameters out of range: t=%d m=%d KiB p=%d (accepted: t %d-%d, m %d-%d MiB, p %d-%d)",
+			kdf.Time, kdf.MemoryKiB, kdf.Threads, MinKDF.Time, MaxKDF.Time, MinKDF.MemoryKiB/1024, MaxKDF.MemoryKiB/1024, MinKDF.Threads, MaxKDF.Threads)
 	}
 	salt, err := base64.StdEncoding.DecodeString(kdf.Salt)
 	if err != nil || len(salt) != saltSize {
@@ -194,23 +206,55 @@ func (s Store) Save(f *File) error {
 	if err != nil {
 		return err
 	}
-	out, err := os.OpenFile(s.path(f.Name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
+	final := s.path(f.Name)
+	if _, err := os.Lstat(final); err == nil {
 		return fmt.Errorf("an account named %q already exists", f.Name)
 	}
+	// written whole to a temporary file (created O_EXCL, mode 0600), synced, then linked to its
+	// name: a crash never leaves a half-written key file, and an existing one is never replaced
+	tmp, err := os.CreateTemp(s.Dir, f.Name+".json.tmp-*")
 	if err != nil {
 		return err
 	}
-	if _, err := out.Write(append(data, '\n')); err != nil {
-		out.Close()
-		os.Remove(s.path(f.Name))
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
+		tmp.Close()
 		return err
 	}
-	if err := out.Sync(); err != nil {
-		out.Close()
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
 		return err
 	}
-	return out.Close()
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// os.Link fails if the name exists (unlike rename, which would replace it)
+	if err := os.Link(tmp.Name(), final); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("an account named %q already exists", f.Name)
+		}
+		// no hard links on this file system: rename, after the existence check above
+		if _, statErr := os.Lstat(final); statErr == nil {
+			return fmt.Errorf("an account named %q already exists", f.Name)
+		}
+		if err := os.Rename(tmp.Name(), final); err != nil {
+			return err
+		}
+	}
+	syncDir(s.Dir)
+	return nil
+}
+
+// syncDir makes the new directory entry durable (Unix; a no-op where directories cannot be synced).
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
 }
 
 // Load reads the key file of an account (without decrypting it).
@@ -243,28 +287,33 @@ func ParseFile(data []byte) (*File, error) {
 	return &f, nil
 }
 
-// List returns the accounts, sorted by name.
-func (s Store) List() ([]*File, error) {
+// List returns the accounts, sorted by name, and the key files it could not read (reported, not
+// skipped silently: a damaged key file is something the user must know about).
+func (s Store) List() (files []*File, problems []error, err error) {
 	entries, err := os.ReadDir(s.Dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var files []*File
 	for _, e := range entries {
 		name, ok := strings.CutSuffix(e.Name(), ".json")
-		if !ok || e.IsDir() || ValidName(name) != nil {
+		if !ok || e.IsDir() {
+			continue
+		}
+		if ValidName(name) != nil {
+			problems = append(problems, fmt.Errorf("%s: not a valid account name, file ignored", e.Name()))
 			continue
 		}
 		f, err := s.Load(name)
 		if err != nil {
-			continue // not ours: skipped, not fatal
+			problems = append(problems, fmt.Errorf("%s: %w", e.Name(), err))
+			continue
 		}
 		f.Name = name // the file name wins
 		files = append(files, f)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
-	return files, nil
+	return files, problems, nil
 }

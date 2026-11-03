@@ -172,8 +172,9 @@ func TestOfficialJSON(t *testing.T) {
 	}
 }
 
-// fastKDF keeps the tests quick; the format and code path are those of DefaultKDF.
-var fastKDF = KDFParams{Name: "argon2id", Time: 1, MemoryKiB: 8 * 1024, Threads: 1}
+// fastKDF keeps the tests quick (the lowest parameters accepted); the format and code path are
+// those of DefaultKDF.
+var fastKDF = KDFParams{Name: "argon2id", Time: 1, MemoryKiB: 64 * 1024, Threads: 1}
 
 func TestStoreRoundTrip(t *testing.T) {
 	store := Store{Dir: filepath.Join(t.TempDir(), "accounts")}
@@ -213,9 +214,9 @@ func TestStoreRoundTrip(t *testing.T) {
 	if _, err := loaded.Decrypt([]byte("wrong horse")); !errors.Is(err, ErrWrongPassword) {
 		t.Errorf("wrong password: %v", err)
 	}
-	list, err := store.List()
-	if err != nil || len(list) != 1 || list[0].Name != "main" {
-		t.Errorf("List: %v %v", list, err)
+	list, problems, err := store.List()
+	if err != nil || len(problems) != 0 || len(list) != 1 || list[0].Name != "main" {
+		t.Errorf("List: %v %v %v", list, problems, err)
 	}
 	if _, err := store.Load("nobody"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Load(nobody): %v", err)
@@ -281,5 +282,81 @@ func TestValidName(t *testing.T) {
 		if ValidName(bad) == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+func TestKDFBounds(t *testing.T) {
+	key, _ := FromBase58(testSecret)
+	for name, p := range map[string]KDFParams{
+		"memory below 64 MiB": {Name: "argon2id", Time: 1, MemoryKiB: 64*1024 - 1, Threads: 1},
+		"memory above 1 GiB":  {Name: "argon2id", Time: 1, MemoryKiB: 1024*1024 + 1, Threads: 1},
+		"time 0":              {Name: "argon2id", Time: 0, MemoryKiB: 64 * 1024, Threads: 1},
+		"time 17":             {Name: "argon2id", Time: 17, MemoryKiB: 64 * 1024, Threads: 1},
+		"threads 0":           {Name: "argon2id", Time: 1, MemoryKiB: 64 * 1024, Threads: 0},
+		"threads 33":          {Name: "argon2id", Time: 1, MemoryKiB: 64 * 1024, Threads: 33},
+		"argon2i":             {Name: "argon2i", Time: 3, MemoryKiB: 256 * 1024, Threads: 4},
+	} {
+		if _, err := Encrypt("main", key, []byte("pw"), p); err == nil {
+			t.Errorf("%s: written", name)
+		}
+		// a file claiming these parameters is refused on reading too
+		f, _ := Encrypt("main", key, []byte("pw"), fastKDF)
+		f.KDF.Time, f.KDF.MemoryKiB, f.KDF.Threads, f.KDF.Name = p.Time, p.MemoryKiB, p.Threads, p.Name
+		if _, err := f.Decrypt([]byte("pw")); err == nil || errors.Is(err, ErrWrongPassword) {
+			t.Errorf("%s: read with %v", name, err)
+		}
+	}
+}
+
+func TestSaveAtomicAndListReportsProblems(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	key, _ := FromBase58(testSecret)
+	f, _ := Encrypt("main", key, []byte("pw"), fastKDF)
+	if err := store.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(store.FilePath("main"))
+	other, _ := Encrypt("main", ed25519.NewKeyFromSeed(make([]byte, 32)), []byte("pw"), fastKDF)
+	if err := store.Save(other); err == nil {
+		t.Fatal("an existing account was replaced")
+	}
+	after, _ := os.ReadFile(store.FilePath("main"))
+	if !bytes.Equal(before, after) {
+		t.Fatal("the existing key file changed")
+	}
+	entries, _ := os.ReadDir(store.Dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("temporary file left: %s", e.Name())
+		}
+	}
+	os.WriteFile(filepath.Join(store.Dir, "broken.json"), []byte("{not json"), 0o600)
+	os.WriteFile(filepath.Join(store.Dir, "-bad name.json"), []byte("{}"), 0o600)
+	list, problems, err := store.List()
+	if err != nil || len(list) != 1 || len(problems) != 2 {
+		t.Fatalf("List: %d files, problems %v, %v", len(list), problems, err)
+	}
+	if runtime.GOOS != "windows" {
+		os.Chmod(filepath.Join(store.Dir, "broken.json"), 0)
+		if os.Getuid() != 0 {
+			if _, problems, _ := store.List(); len(problems) != 2 {
+				t.Errorf("unreadable file not reported: %v", problems)
+			}
+		}
+	}
+}
+
+func TestErrorsDoNotEchoSecrets(t *testing.T) {
+	_, err := ParseAddress(testSecret)
+	if err == nil || strings.Contains(err.Error(), testSecret[:20]) {
+		t.Errorf("ParseAddress echoed the input: %v", err)
+	}
+	words := SplitPhrase(loadVectors(t)[3].Words)
+	words[5] = "zzzsecretword"
+	if _, err := MasterSeedFromWords(words); err == nil || strings.Contains(err.Error(), "zzzsecretword") {
+		t.Errorf("MasterSeedFromWords echoed a word: %v", err)
+	}
+	if err := ValidName(testSecret); err == nil || strings.Contains(err.Error(), testSecret[:20]) {
+		t.Errorf("ValidName echoed the input: %v", err)
 	}
 }
