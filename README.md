@@ -4,15 +4,29 @@ An open-source terminal wallet for the CREDITS network that runs next to a node,
 macOS: keys kept on the machine, transfers, delegations, and smart contracts compiled, deployed and
 called through the local node. No browser, no web server, no open ports.
 
-Status: **milestone 3**: accounts, key store, status, balances, transfers with optional user data,
-delegations, tokens (balances, info, transfers), the history from the local node or a remote full
-node with the token transfers and a CSV export, smart contracts (templates, compile, deploy,
-methods, getters, calls, payments, the contract list), the network identity of community nodes,
-the terminal interface and the scriptable commands. Packaging in the node releases comes in
-milestone 4 — see [docs/spec.md](docs/spec.md) §10.
+Status: **milestone 4**: accounts, key store, status, balances, transfers with optional user data,
+delegations, tokens (every token held with its contract address, also without the node's token
+cache; info, transfers), the history from the local node or a remote full node with the token
+transfers and a CSV export, smart contracts (templates, compile, deploy, methods, getters, calls,
+payments, the contract list), the network identity of community nodes, the terminal interface and
+the scriptable commands; reproducible release archives, shipped in the community node packages
+from release community.17 on. What is left for later: [docs/spec.md](docs/spec.md) §10.
+
+**User guide: [docs/guide.md](docs/guide.md)** (in Italian: [docs/guide.it.md](docs/guide.it.md)).
 
 Part of the [CreditsCommunity](https://github.com/CreditsCommunity) projects, next to the
 [community node](https://github.com/CreditsCommunity/node).
+
+## Install
+
+- **With the community node**: every package from release community.17 on has `credits-wallet`
+  (`credits-wallet.exe` on Windows) in its `csnode` folder, next to the node, with this guide as
+  `wallet-guide.md`; the Docker image has it on the `PATH`. The node's set-up offers to create or
+  import an account.
+- **On its own**: the [releases](https://github.com/CreditsCommunity/wallet/releases) have an
+  archive for Linux x86-64 (static), Windows x64 and macOS Apple Silicon, and `SHA256SUMS`.
+
+See the [guide](docs/guide.md#1-install-and-first-start).
 
 ## Build
 
@@ -162,9 +176,19 @@ front).
 
 ### Tokens
 
-`tokens ACCOUNT` lists token balances; the node must keep the token cache (`tokens_cache=true` in the
-`[api]` section of its `config.ini`), otherwise the wallet says so. Without it, `token balance TOKEN
-ACCOUNT` still reads one balance from the token contract. `token info TOKEN` shows code, name and
+`tokens ACCOUNT` (and `[t]` in the interface) lists every token the account holds, each with its full
+contract address, decimals and balance, and the look-alike warnings; the main screen shows the
+balances and the count. The list comes from the node's token cache (`tokens_cache=true` in the
+`[api]` section of its `config.ini`, off by default). Without it the wallet uses the token cache of
+the profile's `history_node` (balances still from the local node), or else finds the tokens in the
+account's history (the latest 1000 transactions on the history node and the local node: the
+contracts it called, deployed, paid or sent tokens of) and in its local token list
+(`tokens/<address>.json` in the data folder: tokens added with `token add`, sent, or seen in a
+cache), and reads each balance from the contract (`balanceOf`, free). Such a list is labelled "found
+from history (may be incomplete on a pruned node)": tokens received from others are not in the
+account's own history. `token add ACCOUNT TOKEN` keeps a token listed (0 included), `token remove`
+takes it off. In the interface `y` copies the selected address (OSC 52), `a` adds a token. `token
+balance TOKEN ACCOUNT` reads one balance from the token contract. `token info TOKEN` shows code, name and
 decimals (and supply and holders with the cache). `token send ACCOUNT TOKEN TO AMOUNT` signs a call of
 the token's `transfer(to, amount)`: the amount may have at most the token's decimals and must be
 within the token balance; the CS balance must cover the signed max fee (1 CS), which the node holds
@@ -244,7 +268,8 @@ receives the account's public address only; every history output names the sourc
   and `samples/clients/python/credits_client.py` build them), key store, amounts, the network-identity
   rules, the commands against `testdata/fake_node.py` (contracts and its diag API included), the
   screens at 80x24.
-- `.github/workflows/ci.yml`: vet, govulncheck, the tests, the four release builds.
+- `.github/workflows/ci.yml`: vet, govulncheck, the tests, the four cross-compiled builds.
+- `.github/workflows/release.yml`: the release archives (below); on pull requests it only builds.
 - `.github/workflows/privnet.yml` (pull requests to main, on demand): `ci/privnet/e2e.sh` starts a
   private network of 5 community nodes with their contract executors and runs the wallet's commands
   end to end: transfers, delegations, history, the network identity, and the contracts deployed,
@@ -254,6 +279,28 @@ receives the account's public address only; every history output names the sourc
   which cannot fund a private network), cached per release, so only the first run after a release
   builds it. Locally: `NODE_BIN=… PKG=…/csnode NODE_FILES=… IDL=third-party/thrift-interface-definitions
   WALLET=./credits-wallet ci/privnet/e2e.sh` (see the script's header).
+
+## Releases
+
+A tag `wallet-vX.Y.Z` (on main) publishes a release; `wallet-vX.Y.Z-rcN` a pre-release, from any
+branch. `.github/workflows/release.yml` cross-compiles linux-amd64, windows-amd64 and darwin-arm64
+on one Linux runner with CGO off (`ci/release/build.sh`), runs each binary on its own system
+(`version` must print the tag's version), then publishes the archives and `SHA256SUMS`. Each archive
+holds `credits-wallet-X.Y.Z/` with the binary, README.md, LICENSE, guide.md and guide.it.md.
+
+The build is reproducible: `-trimpath -buildvcs=true` (the commit is recorded, `go version -m
+credits-wallet`), fixed ldflags (`-s -w -buildid= -X main.version=X.Y.Z`), every archived file dated
+at the commit's time, owned by 0:0, in name order. To check a release:
+
+```sh
+git checkout wallet-v0.1.0 && git submodule update --init
+go generate ./thrift                   # Thrift 0.19.0
+ci/release/build.sh 0.1.0 dist         # Go 1.27.3 (go.mod's toolchain)
+diff dist/SHA256SUMS <(curl -sSL https://github.com/CreditsCommunity/wallet/releases/download/wallet-v0.1.0/SHA256SUMS)
+```
+
+The community node pins the release it ships in `packaging/wallet-tag`: release a wallet tag
+first, then bump that file, then release the node.
 
 ## Licence
 
