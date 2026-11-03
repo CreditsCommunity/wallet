@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -98,15 +99,28 @@ func startFakeNode(t *testing.T) *fakeNode {
 // runWallet runs the command line in-process and returns its standard output and exit code.
 func runWallet(t *testing.T, args ...string) (string, int) {
 	t.Helper()
-	r, w, _ := os.Pipe()
-	saved := os.Stdout
-	os.Stdout = w
+	out, _, code := runWallet2(t, args...)
+	return out, code
+}
+
+// runWallet2 also returns the standard error.
+func runWallet2(t *testing.T, args ...string) (string, string, int) {
+	t.Helper()
+	rOut, wOut, _ := os.Pipe()
+	rErr, wErr, _ := os.Pipe()
+	savedOut, savedErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = wOut, wErr
+	var stdout, stderr bytes.Buffer
+	done := make(chan struct{})
+	go func() { stdout.ReadFrom(rOut); done <- struct{}{} }()
+	go func() { stderr.ReadFrom(rErr); done <- struct{}{} }()
 	code := run(args)
-	w.Close()
-	os.Stdout = saved
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	return buf.String(), code
+	wOut.Close()
+	wErr.Close()
+	<-done
+	<-done
+	os.Stdout, os.Stderr = savedOut, savedErr
+	return stdout.String(), stderr.String(), code
 }
 
 func TestOfflineAgainstFakeNode(t *testing.T) {
@@ -184,16 +198,38 @@ func TestAccountsOffline(t *testing.T) {
 	pwFile := filepath.Join(home, "pw")
 	os.WriteFile(pwFile, []byte("pw\n"), 0o600)
 
-	out, code := runWallet(t, "account", "new", "fresh", "--password-file", pwFile, "--json")
+	// without a terminal and without saying where the phrase goes: refused, nothing created
+	if _, code := runWallet(t, "account", "new", "fresh", "--password-file", pwFile, "--json"); code == 0 {
+		t.Fatal("account new without a terminal and without --words-file/--show-words was not refused")
+	}
+	phraseFile := filepath.Join(home, "phrase")
+	out, code := runWallet(t, "account", "new", "fresh", "--password-file", pwFile, "--json", "--words-file", phraseFile)
 	var created map[string]string
-	if code != 0 || json.Unmarshal([]byte(out), &created) != nil || len(strings.Fields(created["words"])) != 24 {
-		t.Fatalf("new: %d %s", code, out)
+	if code != 0 || json.Unmarshal([]byte(out), &created) != nil || created["words"] != "" || created["address"] == "" {
+		t.Fatalf("new: %d %s (the words must not be in the JSON)", code, out)
+	}
+	phrase, _ := os.ReadFile(phraseFile)
+	if len(strings.Fields(string(phrase))) != 24 {
+		t.Fatalf("words file: %q", phrase)
+	}
+	if runtime.GOOS != "windows" {
+		if st, _ := os.Stat(phraseFile); st.Mode().Perm() != 0o600 {
+			t.Errorf("words file mode %v", st.Mode().Perm())
+		}
+	}
+	// --words-file never overwrites; the account is then not created
+	if _, code := runWallet(t, "account", "new", "fresh2", "--password-file", pwFile, "--words-file", phraseFile); code == 0 {
+		t.Fatal("an existing words file was overwritten")
+	}
+	freshAddress := created["address"]
+	var shown map[string]string
+	out, code = runWallet(t, "account", "new", "shown", "--password-file", pwFile, "--json", "--show-words")
+	if code != 0 || json.Unmarshal([]byte(out), &shown) != nil || len(strings.Fields(shown["words"])) != 24 {
+		t.Fatalf("new --show-words: %d %s", code, out)
 	}
 	// the phrase restores the same address
-	phraseFile := filepath.Join(home, "phrase")
-	os.WriteFile(phraseFile, []byte(created["words"]), 0o600)
 	out, code = runWallet(t, "account", "import", "restored", phraseFile, "--password-file", pwFile, "--json")
-	if code != 0 || !strings.Contains(out, created["address"]) || !strings.Contains(out, "seed phrase") {
+	if code != 0 || !strings.Contains(out, freshAddress) || !strings.Contains(out, "seed phrase") {
 		t.Fatalf("import phrase: %d %s", code, out)
 	}
 	// official JSON
@@ -223,6 +259,69 @@ func TestAccountsOffline(t *testing.T) {
 	}
 	if _, code = runWallet(t, "account", "export", "official", "--format", "base58", "--password-file", phraseFile); code == 0 {
 		t.Fatal("export with a wrong password")
+	}
+}
+
+func TestPasswordFileMustBePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix modes")
+	}
+	home := t.TempDir()
+	t.Setenv("CREDITS_WALLET_HOME", home)
+	pwFile := filepath.Join(home, "pw")
+	os.WriteFile(pwFile, []byte("pw\n"), 0o644)
+	keyFile := filepath.Join(home, "key.txt")
+	os.WriteFile(keyFile, []byte(testKey+"\n"), 0o600)
+	_, stderr, code := runWallet2(t, "account", "import", "x", keyFile, "--password-file", pwFile)
+	if code == 0 || !strings.Contains(stderr, "chmod 600") {
+		t.Fatalf("a world-readable password file was used: %d %s", code, stderr)
+	}
+}
+
+// A secret pasted in the wrong place must not come back in an error (text or --json).
+func TestErrorsDoNotEchoSecrets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CREDITS_WALLET_HOME", home)
+	pwFile := filepath.Join(home, "pw")
+	os.WriteFile(pwFile, []byte("pw\n"), 0o600)
+	keyFile := filepath.Join(home, "key.txt")
+	os.WriteFile(keyFile, []byte(testKey+"\n"), 0o600)
+	if _, code := runWallet(t, "account", "import", "test", keyFile, "--password-file", pwFile); code != 0 {
+		t.Fatal("import")
+	}
+	for _, args := range [][]string{
+		{"send", "test", testKey, "1", "--node", "127.0.0.1:1", "--yes", "--json"},    // secret as recipient
+		{"send", "test", toAddr, testKey, "--node", "127.0.0.1:1", "--yes", "--json"}, // secret as amount
+		{"balance", testKey, "--node", "127.0.0.1:1", "--json"},                       // secret as account
+		{"history", "abandon ability able about above", "--node", "127.0.0.1:1"},      // words as account
+		{testKey}, // secret as a command
+	} {
+		out, stderr, code := runWallet2(t, args...)
+		if code == 0 {
+			t.Errorf("%v: no error", args)
+		}
+		for _, secret := range []string{testKey[:20], "ability able"} {
+			if strings.Contains(out+stderr, secret) {
+				t.Errorf("%v echoed the secret:\n%s%s", args, out, stderr)
+			}
+		}
+	}
+}
+
+func TestHistoryCSVDoesNotOverwrite(t *testing.T) {
+	fake := startFakeNode(t)
+	home := t.TempDir()
+	t.Setenv("CREDITS_WALLET_HOME", home)
+	csv := filepath.Join(home, "h.csv")
+	os.WriteFile(csv, []byte("keep me"), 0o600)
+	if _, code := runWallet(t, "history", toAddr, "--node", fake.addr, "--csv", csv); code == 0 {
+		t.Fatal("an existing CSV file was overwritten")
+	}
+	if data, _ := os.ReadFile(csv); string(data) != "keep me" {
+		t.Fatal("the existing file changed")
+	}
+	if _, code := runWallet(t, "history", toAddr, "--node", fake.addr, "--csv", csv, "--force"); code != 0 {
+		t.Fatal("--force")
 	}
 }
 

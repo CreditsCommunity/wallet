@@ -163,7 +163,8 @@ func (s *sendScreen) view(m *model) string {
 		p := s.plan
 		fmt.Fprintf(&b, "%-10s %s %s\n", "To", keys.Address(p.To), stOK.Render("✓"))
 		fmt.Fprintf(&b, "%-10s %s CS\n", "Amount", p.Amount.Grouped())
-		fmt.Fprintf(&b, "%-10s %s CS %s\n", "Fee", p.Fee.Fixed(6), stDim.Render("(at most "+p.MaxFee.Amount().String()+")"))
+		fmt.Fprintf(&b, "%-10s %s CS expected\n", "Fee", p.Fee.Fixed(6))
+		fmt.Fprintf(&b, "%-10s %s\n", "Max fee", stWarn.Render(p.MaxFee.Amount().String()+" CS signed: the most the network may charge"))
 		fmt.Fprintf(&b, "%-10s %s\n", "Data", stDim.Render("(none)"))
 		b.WriteString("\n")
 		if p.Network.IsMainnet() {

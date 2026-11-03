@@ -55,11 +55,15 @@ func (a *app) readPassword(prompt string, confirm bool) ([]byte, error) {
 }
 
 // readPasswordFile reads the first line of a password file. The file holds the password in clear:
-// it should be readable by its owner only, which is checked on Linux and macOS.
+// on Linux and macOS it must be accessible by its owner only, or it is refused.
 func readPasswordFile(path string) ([]byte, error) {
 	if runtime.GOOS != "windows" {
-		if st, err := os.Stat(path); err == nil && st.Mode().Perm()&0o077 != 0 {
-			fmt.Fprintf(os.Stderr, "warning: %s can be read by other users (mode %v): chmod 600 it\n", path, st.Mode().Perm())
+		st, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if st.Mode().Perm()&0o077 != 0 {
+			return nil, fmt.Errorf("%s is accessible by other users (mode %v): refused, chmod 600 it first", path, st.Mode().Perm())
 		}
 	}
 	data, err := os.ReadFile(path)

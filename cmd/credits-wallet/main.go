@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/CreditsCommunity/wallet/internal/config"
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/tui"
 	"github.com/CreditsCommunity/wallet/internal/wallet"
 )
@@ -35,7 +36,10 @@ usage: credits-wallet [global flags] [command] [arguments]
 
   (no command)                          the terminal interface
   status                                the node: last block, round, synced, network
-  account new <name>                    create an account (shows its 24-word phrase once)
+  account new <name> [--words-file FILE | --show-words]
+                                        create an account; on a terminal its 24-word phrase is
+                                        shown once and checked; without one, the phrase goes to
+                                        FILE (new, mode 600) or, with --show-words, the output
   account import <name> [file]          import a secret key (base58), a 24-word phrase or the
                                         official wallets' keys JSON; asks for it without a file
   account export <name> [--format encrypted|base58|official] [--out FILE]
@@ -43,7 +47,7 @@ usage: credits-wallet [global flags] [command] [arguments]
   balance [account|address...]          CS balances (all accounts without arguments)
   send <account> <to> <amount> [--yes] [--wait SECONDS]
                                         sign and send CS; on MAINNET it spends real CS
-  history <account|address> [--limit N] [--offset N] [--csv FILE]
+  history <account|address> [--limit N] [--offset N] [--csv FILE [--force]]
   config                                print an example configuration file
   version
 
@@ -121,6 +125,9 @@ func (a *app) open() error {
 		return err
 	}
 	a.w = wallet.New(cfg, p, dir)
+	for _, warning := range config.PermissionWarnings(dir) {
+		fmt.Fprintln(os.Stderr, "warning:", warning)
+	}
 	return nil
 }
 
@@ -172,7 +179,7 @@ func run(args []string) int {
 
 // valueFlags are the flags that take a value (the next argument, unless written --flag=value).
 var valueFlags = map[string]bool{"config": true, "profile": true, "node": true, "password-file": true,
-	"format": true, "out": true, "csv": true, "limit": true, "offset": true, "wait": true}
+	"format": true, "out": true, "csv": true, "limit": true, "offset": true, "wait": true, "words-file": true}
 
 // findCommand returns the first argument that is neither a flag nor a flag's value.
 func findCommand(args []string) string {
@@ -232,7 +239,7 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 	case "history":
 		return a.cmdHistory(ctx, args)
 	}
-	return usagef("unknown command %q", cmd)
+	return usagef("unknown command %s", echo.Quote(cmd))
 }
 
 // commandArgs parses a command's line with its flags and returns the positional arguments after

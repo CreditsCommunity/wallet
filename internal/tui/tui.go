@@ -5,7 +5,9 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/CreditsCommunity/wallet/internal/config"
 	"github.com/CreditsCommunity/wallet/internal/history"
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/internal/node"
@@ -54,7 +57,7 @@ type model struct {
 }
 
 func newModel(w *wallet.Wallet) *model {
-	return &model{w: w, width: 80, height: 24, balances: map[string]node.Balance{}, balErr: map[string]error{},
+	return &model{flash: strings.Join(config.PermissionWarnings(filepath.Dir(w.Store.Dir)), "; "), w: w, width: 80, height: 24, balances: map[string]node.Balance{}, balErr: map[string]error{},
 		recent: map[string][]history.Entry{}, total: map[string]int{}}
 }
 
@@ -82,7 +85,10 @@ const callTimeout = 30 * time.Second
 
 func (m *model) loadAccounts() tea.Cmd {
 	return func() tea.Msg {
-		files, err := m.w.Store.List()
+		files, problems, err := m.w.Store.List()
+		if err == nil && len(problems) > 0 {
+			err = fmt.Errorf("key files not readable: %w", errors.Join(problems...))
+		}
 		return accountsMsg{files, err}
 	}
 }
