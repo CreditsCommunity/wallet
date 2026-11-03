@@ -136,21 +136,106 @@ func TestM2AgainstFakeNode(t *testing.T) {
 	t.Logf("fake node log:\n%s", fake.Log())
 }
 
+// Without the node's token cache the account's tokens are found from its history and its local
+// token list, each balance read from the contract; the remote history node's cache is used for
+// the list when it has one, the balances still coming from the local node.
 func TestTokensWithoutTokenCache(t *testing.T) {
 	fake := startFakeNode(t, "--no-token-cache")
 	home := t.TempDir()
 	t.Setenv("CREDITS_WALLET_HOME", home)
-	_, stderr, code := runWallet2(t, "tokens", testAddr, "--node", fake.addr)
-	if code == 0 || !strings.Contains(stderr, "tokens_cache=true") {
-		t.Fatalf("tokens without the cache: %d %s", code, stderr)
+	pwFile := filepath.Join(home, "pw")
+	os.WriteFile(pwFile, []byte("a test password\n"), 0o600)
+	keyFile := filepath.Join(home, "key.txt")
+	os.WriteFile(keyFile, []byte(testKey+"\n"), 0o600)
+	node := "--node=" + fake.addr
+	if _, stderr, code := runWallet2(t, "account", "import", "test", keyFile, "--password-file", pwFile); code != 0 {
+		t.Fatal("import: " + stderr)
 	}
-	// a token is still read from its contract
-	if out, _, code := runWallet2(t, "token", "balance", fakeToken, testAddr, "--node", fake.addr); code != 0 || strings.TrimSpace(out) != "1000.00 FTK" {
+	tokens := func(who string, extra ...string) (string, string) {
+		t.Helper()
+		out, stderr, code := runWallet2(t, append([]string{"tokens", who, node}, extra...)...)
+		if code != 0 {
+			t.Fatalf("tokens %s: %d %s %s", who, code, out, stderr)
+		}
+		return out, stderr
+	}
+
+	// nothing in the history yet: none found, and the list says it may be incomplete
+	out, stderr := tokens("test")
+	if !strings.Contains(out, "holds no tokens that were found") || !strings.Contains(stderr, "found from history (may be incomplete on a pruned node)") ||
+		!strings.Contains(stderr, "tokens_cache=true") {
+		t.Fatalf("tokens without the cache, empty history: %s %s", out, stderr)
+	}
+	// a token added by hand is listed with its balance and full address
+	if out, stderr, code := runWallet2(t, "token", "add", "test", fakeToken, node); code != 0 || !strings.Contains(out, "added "+fakeToken+" FTK") {
+		t.Fatalf("token add: %d %s %s", code, out, stderr)
+	}
+	if _, _, code := runWallet2(t, "token", "add", "test", toAddr, node); code == 0 {
+		t.Fatal("token add of an address that is not a contract: accepted")
+	}
+	if out, _ = tokens("test"); !strings.Contains(out, "FTK") || !strings.Contains(out, "1000.00") || !strings.Contains(out, fakeToken) {
+		t.Fatalf("tokens after token add: %s", out)
+	}
+	if out, _, code := runWallet2(t, "token", "remove", "test", fakeToken, node); code != 0 || !strings.Contains(out, "removed") {
+		t.Fatalf("token remove: %d %s", code, out)
+	}
+	if out, _ = tokens("test"); strings.Contains(out, "FTK") {
+		t.Fatalf("tokens after token remove: %s", out)
+	}
+	// a token sent is in the account's history: found there by a wallet with no local list
+	pw := []string{node, "--password-file", pwFile, "--yes"}
+	if out, stderr, code := runWallet2(t, append([]string{"token", "send", "test", fakeToken, toAddr, "250.50"}, pw...)...); code != 0 {
+		t.Fatalf("token send: %d %s %s", code, out, stderr)
+	}
+	os.RemoveAll(filepath.Join(home, "tokens"))
+	out, _ = tokens("test", "--json")
+	var l struct {
+		Source   string `json:"source"`
+		Complete bool   `json:"complete"`
+		Note     string `json:"note"`
+		Tokens   []struct {
+			Token, Code, Name, Balance string
+			Decimals                   *int
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal([]byte(out), &l); err != nil || l.Source != "history" || l.Complete || l.Note == "" || len(l.Tokens) != 1 ||
+		l.Tokens[0].Token != fakeToken || l.Tokens[0].Balance != "749.50" || l.Tokens[0].Code != "FTK" || l.Tokens[0].Decimals == nil || *l.Tokens[0].Decimals != 2 {
+		t.Fatalf("tokens found from the history: %v %s", err, out)
+	}
+	// the receiver's history does not hold the transfer: the limit the note states
+	if out, _ = tokens(toAddr); !strings.Contains(out, "holds no tokens that were found") {
+		t.Fatalf("tokens of the receiver without the cache: %s", out)
+	}
+	// a remote history node with a token cache gives the list; the balance is the local node's
+	remote := startFakeNode(t)
+	out, _ = tokens("test", "--history-node", remote.addr, "--json")
+	if err := json.Unmarshal([]byte(out), &l); err != nil || l.Source != "remote-cache" || len(l.Tokens) != 1 || l.Tokens[0].Balance != "749.50" {
+		t.Fatalf("tokens from the remote node's cache: %v %s", err, out)
+	}
+	// a token balance still reads from the contract
+	if out, _, code := runWallet2(t, "token", "balance", fakeToken, testAddr, node); code != 0 || strings.TrimSpace(out) != "749.50 FTK" {
 		t.Fatalf("token balance without the cache: %d %s", code, out)
 	}
 	csv := filepath.Join(home, "h.csv")
-	if _, stderr, code := runWallet2(t, "history", testAddr, "--node", fake.addr, "--csv", csv); code != 0 || !strings.Contains(stderr, "without token transfers") {
+	if _, stderr, code := runWallet2(t, "history", testAddr, node, "--csv", csv); code != 0 || !strings.Contains(stderr, "without token transfers") {
 		t.Fatalf("csv without the cache: %d %s", code, stderr)
+	}
+}
+
+// With the node's token cache: every token held, its full address and decimals, and the tokens
+// seen there are kept in the local list.
+func TestTokensWithTokenCache(t *testing.T) {
+	fake := startFakeNode(t)
+	home := t.TempDir()
+	t.Setenv("CREDITS_WALLET_HOME", home)
+	out, stderr, code := runWallet2(t, "tokens", testAddr, "--node", fake.addr, "--json")
+	if code != 0 || !strings.Contains(out, `"source": "cache"`) || !strings.Contains(out, `"token": "`+fakeToken+`"`) ||
+		!strings.Contains(out, `"decimals": 2`) || !strings.Contains(out, `"complete": true`) {
+		t.Fatalf("tokens with the cache: %d %s %s", code, out, stderr)
+	}
+	list, err := os.ReadFile(filepath.Join(home, "tokens", testAddr+".json"))
+	if err != nil || !strings.Contains(string(list), `"how": "seen"`) || !strings.Contains(string(list), fakeToken) {
+		t.Fatalf("the local token list: %v %s", err, list)
 	}
 }
 

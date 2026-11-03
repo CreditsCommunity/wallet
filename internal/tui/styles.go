@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Colours adapt to light and dark terminals (lipgloss detects the background).
@@ -117,3 +118,6 @@ func (f *form) wipe() {
 
 // printable: see echo.Printable.
 func printable(s string) string { return echo.Printable(s) }
+
+// truncate cuts a line to the screen's width (less the margin).
+func truncate(s string, width int) string { return ansi.Truncate(s, max(width-2, 10), "…") }

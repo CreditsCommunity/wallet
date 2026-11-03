@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/CreditsCommunity/wallet/internal/keys"
@@ -121,31 +121,68 @@ func (a *app) cmdTokens(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	list, err := a.w.Node.TokenBalances(ctx, pub)
-	if errors.Is(err, node.ErrNoTokenCache) {
-		return fmt.Errorf("%w; meanwhile 'token balance TOKEN ACCOUNT' reads one balance from the contract", err)
-	}
+	l, err := a.w.Tokens(ctx, pub)
 	if err != nil {
 		return err
 	}
 	type row struct {
-		Token   string `json:"token"`
-		Code    string `json:"code"`
-		Name    string `json:"name"`
-		Balance string `json:"balance"`
+		Token    string   `json:"token"`
+		Code     string   `json:"code"`
+		Name     string   `json:"name"`
+		Decimals *int     `json:"decimals,omitempty"`
+		Balance  string   `json:"balance"`
+		Added    bool     `json:"added,omitempty"`
+		Warnings []string `json:"warnings,omitempty"`
+		Error    string   `json:"error,omitempty"`
 	}
 	rows := []row{}
-	for _, b := range list {
-		rows = append(rows, row{keys.Address(b.Token), b.Code, b.Name, b.Balance})
+	for _, h := range l.Holdings {
+		r := row{Token: keys.Address(h.Token), Code: h.Code, Name: h.Name, Balance: h.Balance, Added: h.Added, Warnings: h.Warnings}
+		if h.Decimals >= 0 {
+			d := h.Decimals
+			r.Decimals = &d
+		}
+		if h.Err != nil {
+			r.Error = h.Err.Error()
+		}
+		rows = append(rows, r)
 	}
 	if a.json {
-		return a.printJSON(map[string]any{"address": keys.Address(pub), "tokens": rows})
+		out := map[string]any{"address": keys.Address(pub), "tokens": rows, "source": string(l.Source), "source_text": l.Describe,
+			"complete": l.Note == ""}
+		if l.Note != "" {
+			out["note"] = l.Note
+			out["zero_balance"] = l.Zero
+			out["transactions_scanned"] = l.Scanned
+		}
+		return a.printJSON(out)
+	}
+	fmt.Fprintf(os.Stderr, "tokens from %s\n", l.Describe)
+	if l.Note != "" {
+		fmt.Fprintf(os.Stderr, "%s: %s; the node keeps no token cache ([api] tokens_cache=true in its config.ini lists them all)\n",
+			"note", l.Note)
+		if l.Capped {
+			fmt.Fprintf(os.Stderr, "note: only the latest %d transactions were read\n", l.Scanned)
+		}
+		if l.Zero > 0 {
+			fmt.Fprintf(os.Stderr, "%s with a balance of 0 not shown\n", plural(l.Zero, "token"))
+		}
+	}
+	if l.LocalErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: the local token list: %s\n", printable(l.LocalErr.Error()))
 	}
 	if len(rows) == 0 {
-		fmt.Fprintf(a.out, "%s holds no tokens\n", keys.Address(pub))
+		fmt.Fprintf(a.out, "%s holds no tokens%s\n", keys.Address(pub), map[bool]string{true: " that were found", false: ""}[l.Note != ""])
 	}
 	for _, r := range rows {
+		if r.Error != "" {
+			fmt.Fprintf(a.out, "%-8s %24s  %s  %s\n", printable(r.Code), "?", r.Token, printable(r.Error))
+			continue
+		}
 		fmt.Fprintf(a.out, "%-8s %24s  %s  %s\n", printable(r.Code), printable(r.Balance), r.Token, printable(r.Name))
+		for _, w := range r.Warnings {
+			fmt.Fprintf(a.out, "         ! %s\n", printable(w))
+		}
 	}
 	return nil
 }
@@ -159,7 +196,7 @@ func (a *app) cmdToken(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(pos) == 0 {
-		return usagef("token: info, balance or send")
+		return usagef("token: info, balance, add, remove or send")
 	}
 	sub, rest := pos[0], pos[1:]
 	switch {
@@ -186,6 +223,42 @@ func (a *app) cmdToken(ctx context.Context, args []string) error {
 			return a.printJSON(map[string]any{"token": rest[0], "code": tp.Code, "address": keys.Address(pub), "balance": bal})
 		}
 		fmt.Fprintf(a.out, "%s %s\n", printable(bal), printable(tp.Code))
+		return nil
+	case sub == "add" && len(rest) == 2:
+		_, pub, err := a.w.Account(rest[0])
+		if err != nil {
+			return err
+		}
+		h, err := a.w.AddToken(ctx, pub, rest[1])
+		if err != nil {
+			return err
+		}
+		if a.json {
+			return a.printJSON(map[string]any{"address": keys.Address(pub), "token": keys.Address(h.Token), "code": h.Code,
+				"name": h.Name, "decimals": h.Decimals, "balance": h.Balance, "warnings": h.Warnings})
+		}
+		fmt.Fprintf(a.out, "added %s %s (%s), balance %s\n", keys.Address(h.Token), printable(h.Code), printable(h.Name), printable(h.Balance))
+		for _, w := range h.Warnings {
+			fmt.Fprintf(a.out, "! %s\n", printable(w))
+		}
+		return nil
+	case sub == "remove" && len(rest) == 2:
+		_, pub, err := a.w.Account(rest[0])
+		if err != nil {
+			return err
+		}
+		removed, err := a.w.RemoveToken(pub, rest[1])
+		if err != nil {
+			return err
+		}
+		if a.json {
+			return a.printJSON(map[string]any{"address": keys.Address(pub), "token": rest[1], "removed": removed})
+		}
+		if !removed {
+			fmt.Fprintf(a.out, "%s was not in the account's token list\n", printable(rest[1]))
+		} else {
+			fmt.Fprintf(a.out, "removed %s from the account's token list\n", printable(rest[1]))
+		}
 		return nil
 	case sub == "send" && len(rest) == 4:
 		plan, err := a.w.PrepareTokenSend(ctx, rest[0], rest[1], rest[2], rest[3])

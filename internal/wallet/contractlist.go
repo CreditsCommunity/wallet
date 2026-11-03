@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -41,9 +39,6 @@ type localContracts struct {
 	Contracts []LocalContract `json:"contracts"`
 }
 
-// maxLocalList bounds the file the wallet reads.
-const maxLocalList = 4 << 20
-
 // ContractsDir is the folder of the local contract lists.
 func ContractsDir(dataDir string) string { return filepath.Join(dataDir, "contracts") }
 
@@ -55,37 +50,16 @@ func (w *Wallet) localListPath(deployer ed25519.PublicKey) string {
 // file is read: a link, a FIFO or a device in its place is refused.
 func (w *Wallet) LocalContracts(deployer ed25519.PublicKey) ([]LocalContract, error) {
 	path := w.localListPath(deployer)
-	st, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
+	data, err := readListFile(path)
+	if data == nil || err != nil {
 		return nil, err
-	}
-	if !st.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file (%v): refused, remove it", path, st.Mode().Type())
-	}
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxLocalList+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxLocalList {
-		return nil, fmt.Errorf("%s is larger than %d bytes: not read", f.Name(), maxLocalList)
 	}
 	var l localContracts
 	if err := json.Unmarshal(data, &l); err != nil {
-		return nil, fmt.Errorf("%s: %w", f.Name(), err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if l.Deployer != keys.Address(deployer) {
-		return nil, fmt.Errorf("%s is the list of another account", f.Name())
+		return nil, fmt.Errorf("%s is the list of another account", path)
 	}
 	out := l.Contracts[:0]
 	for _, c := range l.Contracts {
@@ -119,31 +93,7 @@ func (w *Wallet) AddLocalContract(deployer ed25519.PublicKey, c LocalContract) e
 	if err != nil {
 		return err
 	}
-	dir := ContractsDir(w.DataDir)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".list-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), w.localListPath(deployer))
+	return writeListFile(ContractsDir(w.DataDir), w.localListPath(deployer), data)
 }
 
 // ContractRow is a contract of an account: listed by the node, in the local list, or both.

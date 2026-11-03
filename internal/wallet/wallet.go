@@ -27,6 +27,8 @@ type Wallet struct {
 	DataDir string
 
 	historyNode *node.Client // the remote history node, when the profile names one
+
+	tokens tokenCaches // what the wallet learnt of tokens while it runs (tokens.go)
 }
 
 // New opens a wallet on the data folder and the chosen node profile.

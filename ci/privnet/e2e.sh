@@ -8,7 +8,8 @@
 # history (from node 1, and from node 2 as a remote history node), the network identity from node 1's
 # diagnostic API, and with CONTRACTS=1 the smart contracts with the wallet itself: its templates
 # compared with the node's samples/contracts, a compile error with its line, TestToken deployed,
-# tokens sent (token balances, the token history and the CSV export), Counter deployed, its methods,
+# tokens sent (token balances with and without the node's token cache, the token history and the CSV
+# export), Counter deployed, its methods,
 # getters and calls, TipJar deployed and paid (payable()), and the account's contract list.
 #
 # The network part is a minimal subset of CreditsCommunity/node ci/testnet/run.sh (AGPL-3.0): the
@@ -115,7 +116,7 @@ apiexec_port=$((9200 + i))
 executor_port=$((9300 + i))
 executor_command=$dir/executor.sh
 executor_multi_instance=true
-tokens_cache=true
+$([ "$i" = 3 ] && echo "tokens_cache=false" || echo "tokens_cache=true")
 executor_send_timeout=60000
 executor_receive_timeout=60000
 executor_check_version_delay=60000"
@@ -187,6 +188,10 @@ network = "mainnet"
 diag = "127.0.0.1:9401"
 [nodes.n2]
 address = "127.0.0.1:9102"
+network = "private"
+# node 3 keeps no token cache: the wallet finds the tokens from the history
+[nodes.n3]
+address = "127.0.0.1:9103"
 network = "private"
 CFG
 PW=$WORK/password
@@ -310,6 +315,21 @@ if [ "$CONTRACTS" = 1 ]; then
     # the token cache follows the blocks: give it a moment
     for _ in $(seq 1 30); do json tokens alice | jq -e '.tokens[] | select(.code == "CTT")' >/dev/null && break; sleep 2; done
     expect "CTT" tokens alice
+    # every token held, with its full contract address: Bob only received CTT (node 1's cache)
+    for _ in $(seq 1 30); do json tokens bob | jq -e '.tokens[] | select(.code == "CTT")' >/dev/null && break; sleep 2; done
+    bt=$(json tokens bob) || fail "tokens bob"
+    [ "$(jq -r '.source' <<< "$bt")" = cache ] || { echo "$bt"; fail "tokens bob: not from the token cache"; }
+    [ "$(jq -r --arg t "$TOKEN" '.tokens[] | select(.token == $t) | .balance' <<< "$bt")" = 0.50 ] || { echo "$bt"; fail "tokens bob: no 0.50 CTT at $TOKEN"; }
+    # node 3 keeps no token cache: Alice's tokens come from her history (she sent CTT), the balance
+    # from the contract; Bob's history holds no CTT transaction, until he adds the token
+    rm -f "$CREDITS_WALLET_HOME/tokens/$ALICE.json"   # her local list would name it too
+    at=$(json tokens alice --profile n3) || fail "tokens alice on node 3"
+    [ "$(jq -r '.source' <<< "$at")" = history ] && [ "$(jq -r '.complete' <<< "$at")" = false ] || { echo "$at"; fail "tokens alice on node 3: not from the history"; }
+    [ "$(jq -r --arg t "$TOKEN" '.tokens[] | select(.token == $t) | .balance' <<< "$at")" = 250.00 ] || { echo "$at"; fail "tokens alice on node 3: no 250.00 CTT"; }
+    rm -f "$CREDITS_WALLET_HOME/tokens/$BOB.json"
+    expect "holds no tokens that were found" tokens bob --profile n3
+    expect "added $TOKEN CTT" token add bob "$TOKEN" --profile n3
+    expect "0.50" tokens bob --profile n3
     expect "-0.5 CTT" history alice --tokens
     expect "+250.5 CTT" history alice --tokens --history-node 127.0.0.1:9102
     w history alice --csv "$WORK/alice-tokens.csv"

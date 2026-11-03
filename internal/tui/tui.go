@@ -54,7 +54,7 @@ type model struct {
 	balErr   map[string]error
 	recent   map[string][]history.Entry
 	total    map[string]int
-	tokens   map[string][]node.TokenBalance
+	tokens   map[string]*wallet.TokenList
 	tokErr   map[string]error
 
 	screen screen // nil: the main screen
@@ -63,7 +63,7 @@ type model struct {
 
 func newModel(w *wallet.Wallet) *model {
 	return &model{flash: strings.Join(config.PermissionWarnings(filepath.Dir(w.Store.Dir)), "; "), w: w, width: 80, height: 24, balances: map[string]node.Balance{}, balErr: map[string]error{},
-		recent: map[string][]history.Entry{}, total: map[string]int{}, tokens: map[string][]node.TokenBalance{}, tokErr: map[string]error{}}
+		recent: map[string][]history.Entry{}, total: map[string]int{}, tokens: map[string]*wallet.TokenList{}, tokErr: map[string]error{}}
 }
 
 // ---- messages and commands -----------------------------------------------------------------------
@@ -84,9 +84,15 @@ type accountDataMsg struct {
 	bal     node.Balance
 	entries []history.Entry
 	total   int
-	tokens  []node.TokenBalance
-	tokErr  error
 	err     error
+}
+
+// accountTokensMsg: the tokens of an account, read apart (without a token cache the wallet reads
+// the history, which takes longer than the balance)
+type accountTokensMsg struct {
+	name string
+	list *wallet.TokenList
+	err  error
 }
 type tickMsg struct{}
 
@@ -130,8 +136,20 @@ func (m *model) loadAccount(f *keys.File) tea.Cmd {
 			return accountDataMsg{name: f.Name, err: err}
 		}
 		page, err := m.w.History().Page(ctx, pub, 0, 8)
-		tokens, tokErr := m.w.Node.TokenBalances(ctx, pub)
-		return accountDataMsg{name: f.Name, bal: bal, entries: page.Entries, total: page.Total, tokens: tokens, tokErr: tokErr, err: err}
+		return accountDataMsg{name: f.Name, bal: bal, entries: page.Entries, total: page.Total, err: err}
+	}
+}
+
+func (m *model) loadAccountTokens(f *keys.File) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*callTimeout)
+		defer cancel()
+		pub, err := f.PublicKey()
+		if err != nil {
+			return accountTokensMsg{name: f.Name, err: err}
+		}
+		list, err := m.w.Tokens(ctx, pub)
+		return accountTokensMsg{name: f.Name, list: list, err: err}
 	}
 }
 
@@ -146,7 +164,7 @@ func (m *model) current() *keys.File {
 
 func (m *model) refreshCurrent() tea.Cmd {
 	if f := m.current(); f != nil {
-		return m.loadAccount(f)
+		return tea.Batch(m.loadAccount(f), m.loadAccountTokens(f))
 	}
 	return nil
 }
@@ -183,7 +201,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			delete(m.balErr, msg.name)
 			m.balances[msg.name], m.recent[msg.name], m.total[msg.name] = msg.bal, msg.entries, msg.total
-			m.tokens[msg.name], m.tokErr[msg.name] = msg.tokens, msg.tokErr
+		}
+		return m, nil
+	case accountTokensMsg:
+		if msg.err != nil {
+			m.tokErr[msg.name] = msg.err
+		} else {
+			delete(m.tokErr, msg.name)
+			m.tokens[msg.name] = msg.list
 		}
 		return m, nil
 	case tickMsg:
@@ -406,23 +431,39 @@ func (m *model) mainView() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, leftCol, sep, " ", rightCol)
 }
 
-// tokenLine is "Tokens     CTT 998,900.50  XYZ 3" for the main screen.
+// tokenLine is "Tokens     CTT 998,900.50  XYZ 3  [t]" for the main screen: every token held, as
+// many as fit, and how many there are.
 func (m *model) tokenLine(name string, width int) string {
-	if err := m.tokErr[name]; err != nil {
-		if errors.Is(err, node.ErrNoTokenCache) {
-			return stDim.Render("Tokens     the node has no token cache ([api] tokens_cache=true)")
+	l := m.tokens[name]
+	if err := m.tokErr[name]; err != nil && l == nil {
+		return stDim.Render(truncate("Tokens     "+oneLine(err.Error()), width))
+	}
+	if l == nil {
+		return stDim.Render("Tokens     loading…")
+	}
+	where := ""
+	if l.Note != "" {
+		where = " (found from history)"
+	}
+	if len(l.Holdings) == 0 {
+		return stDim.Render("Tokens     none" + where)
+	}
+	parts := make([]string, 0, len(l.Holdings))
+	for _, h := range l.Holdings {
+		bal := printable(h.Balance)
+		if h.Err != nil {
+			bal = "?"
 		}
-		return stDim.Render("Tokens     " + oneLine(err.Error()))
+		parts = append(parts, printable(h.Code)+" "+bal)
 	}
-	list := m.tokens[name]
-	if len(list) == 0 {
-		return stDim.Render("Tokens     none")
+	n := fmt.Sprintf("%d tokens", len(l.Holdings))
+	if len(l.Holdings) == 1 {
+		n = "1 token"
 	}
-	parts := make([]string, 0, len(list))
-	for _, t := range list {
-		parts = append(parts, printable(t.Code)+" "+printable(t.Balance))
-	}
-	return ansi.Truncate("Tokens     "+strings.Join(parts, "  "), width, "…")
+	tail := stDim.Render("  · "+n+where+" ") + stKey.Render("[t]")
+	head := "Tokens     " + strings.Join(parts, "  ")
+	room := max(width-2-lipgloss.Width(tail), 20)
+	return ansi.Truncate(head, room, "…") + tail
 }
 
 func (m *model) historyNote() string {
@@ -561,7 +602,8 @@ func (helpScreen) view(m *model) string {
 		"  ↑/↓ or j/k   select an account (or click it)",
 		"  s            send CS from the selected account (optional user data: public text)",
 		"  d            delegations: made and received; n delegate, w withdraw",
-		"  t            tokens: balances; s send a token, a send a token by its address",
+		"  t            tokens: every token held with its contract address; s send, a add a token,",
+		"               y copy the address (or Shift+drag to select it)",
 		"  c            contracts: o open a .java, n new from a template, a open an address;",
 		"               a source compiles on the node (e edits it in $EDITOR, d deploys);",
 		"               a contract's methods: Enter reads a @Getter free or signs a call",
