@@ -13,7 +13,7 @@ Part of the [CreditsCommunity](https://github.com/CreditsCommunity) projects, ne
 
 ## Build
 
-Needs Go 1.23 or later and the Thrift compiler **0.19.0** as `thrift` on the `PATH`
+Needs Go 1.26 or later (`go.mod` names the toolchain, go1.27.3, which `go` fetches by itself) and the Thrift compiler **0.19.0** as `thrift` on the `PATH`
 (`sudo apt install thrift-compiler` on Ubuntu 24.04; it must match `github.com/apache/thrift v0.19.0`
 in `go.mod`).
 
@@ -31,7 +31,8 @@ clone run `git submodule update --init`. Cross-compiling needs no C compiler:
 `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/credits-wallet`.
 
 The offline transfer test runs the node's fake node (`testdata/fake_node.py`) and needs `python3`
-with `thriftpy2`, `base58` and `PyNaCl`; without them it is skipped.
+with the packages of `testdata/requirements.txt` (pinned with hashes:
+`pip install --require-hashes -r testdata/requirements.txt` in a venv); without them it is skipped.
 
 ## Run
 
@@ -55,7 +56,11 @@ Global flags, anywhere on the line: `--node HOST:PORT`, `--profile NAME`, `--con
    to `127.0.0.1:9090`.
 2. `credits-wallet status` must say `synced: yes`; the wallet refuses to send otherwise.
 3. Create an account (`account new NAME`, or `[n]` in the interface) and write its 24 words on
-   paper: they are shown once, and restore the account (`account import NAME` and type them).
+   paper: they are shown once on the terminal (never in the output, `--json` included), you type
+   three of them back, and they restore the account (`account import NAME` and type them). The
+   screen is cleared afterwards, but a terminal's scrollback, tmux/screen or a session log may keep
+   them. Without a terminal (scripts) `account new` needs `--words-file FILE` (a new file, mode 600)
+   or `--show-words` (the words in the output).
    Or import an existing key: the node's `NodePrivate.txt` (base58), a 24-word phrase of the node, or
    the keys JSON of the official web and desktop wallets. Delete the plain file afterwards.
 4. Send: the wallet shows the recipient, the amount and the fee; on mainnet it asks you to type
@@ -91,14 +96,35 @@ network = "mainnet"      # or "testnet", "private"
 
 `send --yes` skips the question, for scripts only; without a terminal the wallet refuses to send
 without it. `--password-file FILE` reads the password from the first line of FILE: the password is
-then on disk in clear, so keep the file `chmod 600`, on an encrypted disk, and only where
-unattended sending is really needed. `--json` prints machine-readable results (and errors).
+then on disk in clear, so the wallet refuses the file unless it is `chmod 600` (Linux, macOS); keep
+it on an encrypted disk, and use it only where unattended sending is really needed. `--json`
+prints machine-readable results (and errors). `history --csv FILE` never replaces an existing
+file unless `--force` is given.
 
 ### History on a pruned node
 
 A pruned node keeps only its latest blocks. The wallet says from which block the node's history
 starts ("history from block N") and how many transactions the account has in all; older ones are on
 full nodes (a remote history source comes in milestone 2).
+
+## Threat model and limits
+
+- **What the wallet protects:** keys at rest (encrypted key files, mode 600 in a folder of mode
+  700; the wallet warns when the data folder or `accounts/` is open to other users), keys in use
+  (decrypted only to sign, then overwritten), and the user against mistakes (mainnet assumed,
+  explicit confirmation, the signed max fee shown, refusal while the node is not synced).
+- **What it cannot protect against:** malware or another user with access to your account on this
+  machine (they can read the terminal, replace the binary, or swap a key file for one of their
+  own, so that what you receive goes to them); a forgotten password (keep the 24 words).
+- **Memory:** Go cannot guarantee that secrets are wiped. The wallet zeroes the byte slices it
+  controls, but copies may remain: the TUI's text inputs hold passwords and pasted keys as
+  immutable strings, Argon2id's working memory is freed and not wiped, and a core dump or swap
+  may hold any of them. Disable core dumps and use encrypted swap on machines holding funds.
+- **The node:** the wallet trusts the node it talks to for balances, fees, inner ids, sync state
+  and history, but never sends it a secret; see docs/spec.md, "Trust in the node".
+- **Windows:** the wallet does not set ACLs itself. `%APPDATA%\credits-wallet` is private to the
+  user by default; with `CREDITS_WALLET_HOME` outside the user's profile the wallet warns, and the
+  folder's permissions are yours to check (Properties > Security).
 
 ## Licence
 

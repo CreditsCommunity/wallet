@@ -30,7 +30,7 @@ hardware-wallet integration, holding keys on a server.
 
 | Part | Choice | Why |
 |---|---|---|
-| Language | Go (1.23+) | static binaries for linux/amd64, linux/arm64, windows/amd64, darwin/arm64; the sample Go client of the node already implements the API calls, signing, deploy and calls |
+| Language | Go (1.26+; `go.mod` pins the toolchain) | static binaries for linux/amd64, linux/arm64, windows/amd64, darwin/arm64; the sample Go client of the node already implements the API calls, signing, deploy and calls |
 | Terminal UI | [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Lip Gloss](https://github.com/charmbracelet/lipgloss), [Bubbles](https://github.com/charmbracelet/bubbles) | modern TUI (panels, tables, forms, keyboard and mouse), works in Windows Terminal, macOS Terminal, Linux terminals and over SSH |
 | Node API | Thrift 0.19 generated Go code from `CreditsCommunity/node` `third-party/thrift-interface-definitions` | the node's binary protocol, buffered transport |
 | Crypto | `crypto/ed25519` (Go standard library), `golang.org/x/crypto` (blake2s for contract addresses, Argon2id for key files), `crypto/rand` | no C dependencies |
@@ -71,8 +71,14 @@ docs/                    this specification, user guide
   parameters, the salt, the nonce, the ciphertext and the public key (to list accounts without the
   password).
 - The secret key is decrypted only to sign, held in memory as briefly as possible and zeroed after use.
+- Key files are written whole to a temporary file (mode 0600), synced, then linked to their name:
+  never half-written, never replacing an existing account. Files whose KDF parameters are outside
+  time 1-16, memory 64 MiB-1 GiB, parallelism 1-32 are refused (more costs too much to open; less
+  was not written by the wallet). Unreadable key files are reported, not skipped.
 - New keys come from `crypto/rand` (the operating system's CSPRNG); a new account shows its 24-word
-  phrase once and asks the user to type back three of its words.
+  phrase once on the terminal and asks the user to type back three of its words. The phrase never
+  goes to the output (nor `--json`) by default; without a terminal the command needs
+  `--words-file FILE` (created, mode 0600) or `--show-words`.
 
 ## 5. Functions
 
@@ -95,6 +101,19 @@ docs/                    this specification, user guide
     derives from block 1, known to pruned nodes too) and its version; when it is there, the wallet
     recognises mainnet by itself, and refuses to send if the configuration says "testnet" for a mainnet
     node or the other way round; with an official node, which lacks the call, the configuration decides.
+
+#### Trust in the node
+
+The wallet talks to one node and believes what it answers: balances, the fee, the sender's last
+inner id, the sync state, the history. It never sends the node a secret, and a signed transaction
+cannot be altered, so a dishonest or broken node cannot spend the user's CS on its own. What it can
+do: show false balances or history; give a wrong inner id (the transfer is then rejected, or must
+wait); claim a transaction is in a block when it is not, or drop it; and make a transfer cost up to
+the **signed max fee** (shown in the confirmation, next to the expected fee). An unsynced node is
+refused, a missing status in an answer is an error, an inner id is guessed only for a wallet the
+node reports "not found", and a transfer is reported in a block only when the sender's last inner
+id equals its own, or a later one is recorded and the transfer is among the account's latest
+transactions. Running the wallet next to the user's own node is what the design assumes.
 
 ### 5.2 Accounts and balances
 
