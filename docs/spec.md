@@ -45,6 +45,9 @@ internal/tx/             transfers, delegations, contract deploy and calls: buil
 internal/keys/           key generation, import, the encrypted key store
 internal/history/        history sources (local node, a remote full node)
 internal/tui/            screens (Bubble Tea models)
+internal/amount/         exact CS amounts and the node's 16-bit fee encoding
+internal/config/         configuration file (TOML), node profiles, data folder
+internal/wallet/         what the commands and the TUI share: accounts, the steps of a transfer
 thrift/                  generated code (go generate, not committed)
 docs/                    this specification, user guide
 ```
@@ -85,6 +88,9 @@ docs/                    this specification, user guide
     asks for the full confirmation before sending; the only possible mistake is too much caution;
   - a **test or private network** is declared in the configuration (`network = testnet` or
     `network = private`, per node profile) and shown in another colour with a lighter confirmation;
+    a `--node` address that no profile declares counts as mainnet;
+  - the confirmation on mainnet is typing `send` and the password (TUI and commands); on a test
+    network the password alone (TUI) or `y` (commands);
   - the **community node** gets an API call that returns the network identifier (the `uuid` the node
     derives from block 1, known to pruned nodes too) and its version; when it is there, the wallet
     recognises mainnet by itself, and refuses to send if the configuration says "testnet" for a mainnet
@@ -102,7 +108,14 @@ docs/                    this specification, user guide
 
 - Send CS: recipient (base58, checked), amount, optional user data; fee from `ActualFeeGet`; inner id
   from `WalletTransactionsCountGet`; signed and sent with `TransactionFlow`; the result followed until
-  it is in a block (`TransactionsStateGet`).
+  it is in a block. The node's `TransactionsStateGet` is not implemented (it answers "not
+  implemented"), so the wallet relies on `TransactionFlow`, which answers once the transaction is in a
+  block, and when it answers "in progress" polls `WalletTransactionsCountGet` until the sender's last
+  inner id reaches the transfer's.
+- The signed max fee is "1 CS" (encoded 0x4c66, 0.99609375 CS) as in the node's samples and
+  `ci/testnet/fund.py`; the node charges the actual fee, which is what the confirmation shows.
+- User data on transfers is left for milestone 2: its signed serialization (a Text user field) must
+  first be checked against a node on a test network.
 - Send tokens: a call of the token contract's `transfer`, with the token's decimals.
 
 ### 5.4 Delegations
@@ -131,7 +144,8 @@ A pruned node keeps only recent blocks, so the history of an account may not be 
 
 - **History source**, configurable:
   1. the local node (default): what it has, with the oldest block it holds stated on screen ("history
-     from block N");
+     from block N"; the API has no call for it: the wallet finds it with a binary search over
+     `PoolInfoGet`, about 28 calls on mainnet);
   2. a **remote full node**, read-only, for the history only (`TransactionsGet`, `TokenTransfersGet`):
      an operator's full node or the user's own full node with backfill. It receives only public
      addresses; it is never used to send.
@@ -242,8 +256,8 @@ use (documented with its risks).
 
 ## 10. Milestones
 
-1. Accounts (new, import, key store), status, balances, transfers, history from the local node; the
-   TUI shell and the commands.
+1. Accounts (new, import, key store), status, balances, transfers, history from the local node
+   (with its CSV export); the TUI shell and the commands. User data on transfers moves to 2.
 2. Delegations; tokens; history from a remote full node; CSV export.
 3. Smart contracts: compile, deploy, methods, getters and calls; templates.
 4. Packaging in the node releases; user guide.

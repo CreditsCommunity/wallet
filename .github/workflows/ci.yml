@@ -1,0 +1,75 @@
+# One Linux job (Actions minutes are limited in this private repository): generate the Thrift
+# code, vet, test (including the offline transfers against testdata/fake_node.py), cross-compile
+# the four release platforms with CGO disabled and upload the binaries. It never talks to a real
+# node.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+
+      - name: Thrift compiler 0.19 and the fake node's Python packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q thrift-compiler
+          thrift --version
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q thriftpy2 base58 pynacl
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: Generate the API code
+        run: go generate ./thrift
+
+      - name: Vet
+        run: |
+          go vet ./...
+          test -z "$(gofmt -l cmd internal)" || { gofmt -l cmd internal; exit 1; }
+
+      - name: Test
+        env:
+          CREDITS_WALLET_FAKE_NODE: '1'  # the offline transfer test must run, not be skipped
+        run: go test -count=1 ./...
+
+      - name: Cross-compile
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          version="$(git describe --tags --always --dirty)"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do
+            os="${target%/*}" arch="${target#*/}"
+            out="dist/credits-wallet-$os-$arch"
+            [ "$os" = windows ] && out="$out.exe"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=$version" -o "$out" ./cmd/credits-wallet
+          done
+          (cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+          ./dist/credits-wallet-linux-amd64 version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: credits-wallet-${{ github.sha }}
+          path: dist/
+          retention-days: 14
