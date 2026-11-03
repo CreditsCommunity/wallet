@@ -57,7 +57,7 @@ docs/                    this specification, user guide
 |---|---|
 | Private key | base58 of the 64-byte ed25519 secret key (seed + public key), the node's `NodePrivate.txt` format; or base58 of the 32-byte seed |
 | Seed phrase | the node's 24 words (English list of `cscrypto`): 256-bit master seed + 8-bit checksum, key derived with libsodium `crypto_kdf_derive_from_key` (key id 0, empty context) then `crypto_sign_seed_keypair` — the same derivation as `node` when it generates its keys; the checksum is verified |
-| Keys JSON of the original desktop wallet | imported read-only; the exact layout is to be confirmed with a sample file (open point 9.1) |
+| Keys JSON of the official web wallet (wallet.credits.com) and desktop wallet | `{"key":{"public":"<base58 32 bytes>","private":"<base58 64 bytes>"}}`: the private key is the 64-byte ed25519 secret key (seed + public key), the same as `NodePrivate.txt`, **not encrypted**. Imported (both halves checked against each other); after the import the wallet suggests deleting the plain file. Exported in the same format only on request, with a warning, for use in the official wallets |
 
 ### 4.2 Key store
 
@@ -224,8 +224,8 @@ use (documented with its risks).
 
 ## 9. Open points
 
-1. The keys JSON of the original desktop wallet: its layout (a sample file needed) and whether its keys
-   are encrypted.
+1. ~~The keys JSON of the official wallets~~: settled (section 4.1), checked with a file generated on
+   wallet.credits.com on 2026-11-03.
 2. How the wallet tells mainnet from another network: an API field or a configured value.
 3. Fee estimate for contract calls (the API's `ActualFeeGet` covers transfers; calls are measured in
    CI at about 0.0175 CS).
