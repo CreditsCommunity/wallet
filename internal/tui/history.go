@@ -140,7 +140,7 @@ func (s *historyScreen) view(m *model) string {
 	src := m.w.History()
 	source := "Source: " + src.Describe()
 	if src.Remote() {
-		b.WriteString(stWarn.Render(source+", only public addresses are sent to it") + "\n")
+		b.WriteString(stWarn.Render(source) + "\n")
 	} else {
 		b.WriteString(stDim.Render(source) + "\n")
 	}

@@ -57,9 +57,10 @@ stop_all() {
     log "done, exit $rc"
 }
 trap stop_all EXIT
+trap 'exit 143' INT TERM
 
 # ---- the network ---------------------------------------------------------------------------------
-rm -rf "${WORK:?}"/n* "$WORK/wallet"
+rm -rf "${WORK:?}"/*
 mapfile -t KEYS < <(python3 -c '
 import os, sys, base58, nacl.signing
 for i in range(1, int(sys.argv[2]) + 1):
@@ -263,5 +264,5 @@ fi
 log "PASS"
 if [ "${KEEP:-0}" = 1 ]; then
     log "KEEP=1: the network keeps running; CREDITS_WALLET_HOME=$CREDITS_WALLET_HOME; stop this script to end it"
-    while sleep 3600; do :; done
+    while :; do sleep 3600 & wait $!; done
 fi

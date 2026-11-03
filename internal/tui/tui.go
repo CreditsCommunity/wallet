@@ -431,7 +431,11 @@ func entryLine(e history.Entry, width int) string {
 	when := e.Time.Local().Format("01-02 15:04")
 	value := amt + " CS"
 	if e.TokenAmount != "" {
-		value = printable(e.TokenAmount) + " " + printable(e.TokenCode)
+		ta := printable(e.TokenAmount)
+		if !strings.HasPrefix(ta, "-") {
+			ta = "+" + ta
+		}
+		value = ta + " " + printable(e.TokenCode)
 	}
 	line := fmt.Sprintf("%s  #%s  %s  %s", when, groupInt(e.Block), what, value)
 	if lipgloss.Width(line) > width {
