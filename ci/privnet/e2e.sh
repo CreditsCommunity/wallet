@@ -21,6 +21,8 @@
 #      IDL         the Thrift IDL folder (this repository's submodule)
 #      WALLET      the credits-wallet binary
 #      WORK        work folder (default ./privnet-run), NODES (5), CONTRACTS (1)
+#      KEEP=1      keep the network running after the test (until the script is stopped), to try the
+#                  wallet by hand: CREDITS_WALLET_HOME=$WORK/wallet, password file $WORK/password
 # python3 must have PyNaCl, base58 and thriftpy2 (testdata/requirements.txt).
 set -euo pipefail
 
@@ -259,3 +261,7 @@ if [ "$CONTRACTS" = 1 ]; then
     log "tokens: ok"
 fi
 log "PASS"
+if [ "${KEEP:-0}" = 1 ]; then
+    log "KEEP=1: the network keeps running; CREDITS_WALLET_HOME=$CREDITS_WALLET_HOME; stop this script to end it"
+    while sleep 3600; do :; done
+fi

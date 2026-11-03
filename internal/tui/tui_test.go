@@ -74,3 +74,50 @@ func TestScreensFit80x24(t *testing.T) {
 		}
 	}
 }
+
+// The review of every kind of transaction fits 80x24 and escapes text chosen by others.
+func TestReviewScreensFit80x24(t *testing.T) {
+	w := wallet.New(config.Default(), config.Profile{Name: "local", Address: "127.0.0.1:1", Network: config.Mainnet}, t.TempDir())
+	m := newModel(w)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	f := &keys.File{Name: "main", Public: "u6PJ8DtQuPFnfmwHbGFULQ4u4EgjDiyYKjVEsynXq2w"}
+	pub, _ := keys.ParseAddress(f.Public)
+	amt, _ := amount.Parse("1234.5")
+	fee, _ := amount.Parse("0.00874")
+	base := wallet.SendPlan{Account: "main", From: pub, To: pub, Amount: amt, Fee: fee, Balance: amt, InnerID: 7, Network: config.Mainnet}
+	for _, p := range []wallet.SendPlan{
+		func() wallet.SendPlan { p := base; p.Kind, p.Data = wallet.KindTransfer, "invoice\x1b[2J 42"; return p }(),
+		func() wallet.SendPlan {
+			p := base
+			p.Kind, p.Until = wallet.KindDelegate, time.Now().Add(time.Hour)
+			return p
+		}(),
+		func() wallet.SendPlan { p := base; p.Kind, p.Delegated = wallet.KindUndelegate, amt; return p }(),
+		func() wallet.SendPlan {
+			p := base
+			p.Kind, p.Token = wallet.KindToken, &wallet.TokenPlan{Contract: pub, Code: "CTT\x1b]0;x\a", Decimals: 2, Amount: "250.5", Balance: "998900.50"}
+			return p
+		}(),
+	} {
+		s := newSendScreen(f)
+		s.kind, s.plan, s.step = p.Kind, &p, sendReview
+		s.confirm = newForm("Confirm", "Password").secret(1)
+		m.screen = s
+		view := m.View()
+		lines := strings.Split(view, "\n")
+		if len(lines) > 24 {
+			t.Errorf("%s: %d lines", p.Kind, len(lines))
+		}
+		for i, l := range lines {
+			if w := lipgloss.Width(l); w > 80 {
+				t.Errorf("%s line %d: %d columns: %q", p.Kind, i, w, l)
+			}
+		}
+		if strings.Contains(view, "\x1b[2J") || strings.Contains(view, "\x1b]0;") || !strings.Contains(view, "MAINNET") {
+			t.Errorf("%s:\n%s", p.Kind, view)
+		}
+		if testing.Verbose() {
+			t.Logf("%s:\n%s", p.Kind, view)
+		}
+	}
+}

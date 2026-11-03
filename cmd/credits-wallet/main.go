@@ -23,7 +23,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 
 	"github.com/CreditsCommunity/wallet/internal/config"
@@ -302,10 +301,5 @@ func plural(n int, word string) string {
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-// printable keeps text that a contract or another sender chose (token names, user data) from
-// carrying terminal escape sequences: control characters are shown escaped.
-func printable(s string) string {
-	q := strconv.Quote(s)
-	q = q[1 : len(q)-1]
-	return strings.ReplaceAll(q, `\"`, `"`)
-}
+// printable: see echo.Printable.
+func printable(s string) string { return echo.Printable(s) }

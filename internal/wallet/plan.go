@@ -293,7 +293,7 @@ func (w *Wallet) TokenMethods(ctx context.Context, caller, token ed25519.PublicK
 		return nil, nil, fmt.Errorf("getDecimal: %w", err)
 	}
 	if tp.Decimals, err = strconv.Atoi(tx.Show(dec)); err != nil || tp.Decimals < 0 || tp.Decimals > amount.MaxTokenDecimals {
-		return nil, nil, fmt.Errorf("getDecimal returned %s: not a number of decimals", tx.Show(dec))
+		return nil, nil, fmt.Errorf("getDecimal returned %s: not a number of decimals", echo.Printable(tx.Show(dec)))
 	}
 	if info, err := w.Node.TokenInfo(ctx, token); err == nil {
 		tp.Code, tp.Name = info.Code, info.Name
@@ -351,7 +351,7 @@ func (w *Wallet) PrepareTokenSend(ctx context.Context, account, tokenText, to, a
 		return nil, err
 	}
 	if c, ok := amount.CompareDecimal(tp.Balance, tp.Amount); !ok || c < 0 {
-		return nil, fmt.Errorf("not enough tokens: the balance is %s %s, less than %s", tp.Balance, tp.Code, tp.Amount)
+		return nil, fmt.Errorf("not enough tokens: the balance is %s %s, less than %s", echo.Printable(tp.Balance), echo.Printable(tp.Code), tp.Amount)
 	}
 	argTypes := strings.Split(strings.TrimSuffix(strings.TrimPrefix(tp.Method, "transfer("), ")"), ",")
 	pTo, err := tx.Variant(argTypes[0], keys.Address(p.To))

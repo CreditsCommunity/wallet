@@ -491,7 +491,7 @@ func (a *app) confirmAndSend(ctx context.Context, plan *wallet.SendPlan, yes boo
 	case wallet.KindUndelegate:
 		fmt.Fprintf(a.out, "withdrew %s from the delegation to %s", what, keys.Address(plan.To))
 	case wallet.KindToken:
-		fmt.Fprintf(a.out, "sent %s %s to %s (transfer returned %s)", plan.Token.Amount, tokenLabel(plan.Token), keys.Address(plan.To), res.Returned)
+		fmt.Fprintf(a.out, "sent %s %s to %s (transfer returned %s)", plan.Token.Amount, tokenLabel(plan.Token), keys.Address(plan.To), printable(res.Returned))
 	}
 	fmt.Fprintf(a.out, ": %s, inner id %d, fee %s CS\n", where, res.InnerID, res.Fee.String())
 	return nil
@@ -506,7 +506,7 @@ func untilText(t time.Time) string {
 
 func tokenLabel(t *wallet.TokenPlan) string {
 	if t.Code != "" {
-		return t.Code
+		return printable(t.Code)
 	}
 	return "tokens of " + keys.Short(keys.Address(t.Contract))
 }
@@ -532,9 +532,9 @@ func printPlan(p *wallet.SendPlan) {
 		fmt.Fprintf(e, "  Amount   %s CS back, of the %s CS delegated without a time limit\n", p.Amount.Grouped(), p.Delegated.Grouped())
 	case wallet.KindToken:
 		t := p.Token
-		fmt.Fprintf(e, "  Token    %s %s (%d decimals)  %s\n", t.Code, t.Name, t.Decimals, keys.Address(t.Contract))
+		fmt.Fprintf(e, "  Token    %s %s (%d decimals)  %s\n", printable(t.Code), printable(t.Name), t.Decimals, keys.Address(t.Contract))
 		fmt.Fprintf(e, "  To       %s\n", keys.Address(p.To))
-		fmt.Fprintf(e, "  Amount   %s %s (token balance %s)\n", t.Amount, t.Code, t.Balance)
+		fmt.Fprintf(e, "  Amount   %s %s (token balance %s)\n", t.Amount, printable(t.Code), printable(t.Balance))
 	}
 	if p.Kind == wallet.KindToken {
 		fmt.Fprintf(e, "  Fee      about %s CS plus the execution (the node's current fees)\n", p.Fee.Fixed(6))
@@ -644,7 +644,7 @@ func (a *app) cmdHistory(ctx context.Context, args []string) error {
 		for _, e := range list {
 			arrow := map[string]string{"out": "→", "in": "←", "self": "↺"}[e.Direction]
 			fmt.Fprintf(a.out, "%s  #%-11d %s %s  %s %s  %s\n", e.Time.Format("2006-01-02 15:04:05"), e.Block, arrow,
-				e.Counterparty, signed(e.TokenAmount), printable(e.TokenCode), keys.Short(e.Token))
+				e.Counterparty, signed(printable(e.TokenAmount)), printable(e.TokenCode), keys.Short(e.Token))
 		}
 		return nil
 	}
@@ -683,7 +683,7 @@ func (a *app) cmdHistory(ctx context.Context, args []string) error {
 			fmt.Fprintf(a.out, " until %s", e.Until.Format("2006-01-02 15:04 UTC"))
 		}
 		if e.TokenAmount != "" {
-			fmt.Fprintf(a.out, " %s %s", e.TokenAmount, printable(e.TokenCode))
+			fmt.Fprintf(a.out, " %s %s", printable(e.TokenAmount), printable(e.TokenCode))
 		}
 		if e.Data != "" {
 			fmt.Fprintf(a.out, "  data %s", strconv.Quote(e.Data))

@@ -20,3 +20,16 @@ func TestQuote(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintable(t *testing.T) {
+	for in, want := range map[string]string{
+		"CTT": "CTT", "Grüße — ok": "Grüße — ok", "a\x1b[2Jb": `a\x1b[2Jb`, "x\ay": `x\ay`, "\xff": `\xff`, `say "hi"`: `say "hi"`, "line\nnext": `line\nnext`,
+	} {
+		if got := Printable(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+	if got := Printable(strings.Repeat("a", MaxPrintable+5)); len(got) != MaxPrintable+len("…") {
+		t.Errorf("not cut: %d", len(got))
+	}
+}

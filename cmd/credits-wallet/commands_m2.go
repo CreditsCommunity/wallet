@@ -145,7 +145,7 @@ func (a *app) cmdTokens(ctx context.Context, args []string) error {
 		fmt.Fprintf(a.out, "%s holds no tokens\n", keys.Address(pub))
 	}
 	for _, r := range rows {
-		fmt.Fprintf(a.out, "%-8s %24s  %s  %s\n", printable(r.Code), r.Balance, r.Token, printable(r.Name))
+		fmt.Fprintf(a.out, "%-8s %24s  %s  %s\n", printable(r.Code), printable(r.Balance), r.Token, printable(r.Name))
 	}
 	return nil
 }
