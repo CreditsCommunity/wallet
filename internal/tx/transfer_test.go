@@ -76,3 +76,17 @@ func TestSignRefusals(t *testing.T) {
 		}
 	}
 }
+
+func TestMaxInnerIDIs46Bits(t *testing.T) {
+	key := ed25519.NewKeyFromSeed(make([]byte, 32))
+	other := ed25519.NewKeyFromSeed(append(make([]byte, 31), 1))
+	amt, _ := amount.ParsePositive("1")
+	tr := Transfer{Source: key.Public().(ed25519.PublicKey), Target: other.Public().(ed25519.PublicKey), Amount: amt, InnerID: 1<<46 - 1, MaxFee: MaxFee}
+	if _, _, err := tr.Sign(key); err != nil {
+		t.Errorf("2^46-1: %v", err)
+	}
+	tr.InnerID = 1 << 46
+	if _, _, err := tr.Sign(key); err == nil {
+		t.Error("2^46 signed: bits 46 and 47 are wallet-id flags")
+	}
+}

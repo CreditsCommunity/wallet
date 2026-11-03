@@ -20,6 +20,7 @@ import (
 // Status codes of general.APIResponse (the node's APIRequestStatusType).
 const (
 	codeSuccess    = 0
+	codeNotFound   = 3
 	codeInProgress = 4
 )
 
@@ -87,8 +88,13 @@ type APIError struct {
 
 func (e *APIError) Error() string { return fmt.Sprintf("%s: %s (code %d)", e.Call, e.Message, e.Code) }
 
+// check turns a non-success status into an error. A missing status is an error too: every call
+// that has one always sets it.
 func check(call string, s *general.APIResponse) error {
-	if s != nil && s.Code != codeSuccess {
+	if s == nil {
+		return &APIError{Call: call, Code: -1, Message: "no status in the answer"}
+	}
+	if s.Code != codeSuccess {
 		return &APIError{Call: call, Code: s.Code, Message: s.Message}
 	}
 	return nil
@@ -251,7 +257,8 @@ func (c *Client) Balance(ctx context.Context, address ed25519.PublicKey) (Balanc
 }
 
 // NextInnerID is the sender's last inner id + 1 (replay protection). A wallet the node has never
-// seen answers "not found": its first transaction has inner id 1.
+// seen answers "not found" (code 3): its first transaction has inner id 1. Any other failure is an
+// error: guessing an inner id would get the transfer rejected, or worse, collide with a pending one.
 func (c *Client) NextInnerID(ctx context.Context, address ed25519.PublicKey) (int64, error) {
 	var next int64
 	err := c.do(func(a *api.APIClient) error {
@@ -259,14 +266,32 @@ func (c *Client) NextInnerID(ctx context.Context, address ed25519.PublicKey) (in
 		if err != nil {
 			return err
 		}
-		next = 1
-		if r.Status != nil && r.Status.Code == codeSuccess {
-			next = int64(r.LastTransactionInnerId) + 1
-		}
-		return nil
+		next, err = nextInnerID(r)
+		return err
 	})
 	return next, err
 }
+
+func nextInnerID(r *api.WalletTransactionsCountGetResult_) (int64, error) {
+	if r == nil || r.Status == nil {
+		return 0, &APIError{Call: "WalletTransactionsCountGet", Code: -1, Message: "no status in the answer"}
+	}
+	switch r.Status.Code {
+	case codeSuccess:
+		last := int64(r.LastTransactionInnerId)
+		if last < 0 || last >= MaxInnerID {
+			return 0, fmt.Errorf("WalletTransactionsCountGet: last inner id %d out of range", last)
+		}
+		return last + 1, nil
+	case codeNotFound:
+		return 1, nil
+	}
+	return 0, check("WalletTransactionsCountGet", r.Status)
+}
+
+// MaxInnerID is the largest inner id: the node keeps 46 bits of the API's id (bits 46 and 47 of
+// the 6-byte field are flags of the wallet-id encoding).
+const MaxInnerID = 1<<46 - 1
 
 // LastInnerID is the inner id of the wallet's last transaction in a block (0: none).
 func (c *Client) LastInnerID(ctx context.Context, address ed25519.PublicKey) (int64, error) {
@@ -331,17 +356,29 @@ func (c *Client) Send(ctx context.Context, t *api.Transaction) (Sent, error) {
 	return s, err
 }
 
-// WaitInBlock polls the sender's last inner id until it reaches innerID (the transaction is in
-// a block) or the context ends. The node's TransactionsStateGet is not implemented, so this is how
-// a transaction is followed.
+// WaitInBlock follows a transaction the node stopped waiting for, until it is in a block or the
+// context ends. The node's TransactionsStateGet is not implemented, so it polls the sender's last
+// inner id: equal to ours means ours is recorded; beyond ours means another transaction of the
+// account was recorded after, so ours is confirmed only if the account's latest transactions
+// (TransactionsGet) hold it.
 func (c *Client) WaitInBlock(ctx context.Context, source ed25519.PublicKey, innerID int64, every time.Duration) error {
 	for {
 		last, err := c.LastInnerID(ctx, source)
 		if err != nil {
 			return err
 		}
-		if last >= innerID {
+		if last == innerID {
 			return nil
+		}
+		if last > innerID {
+			list, _, err := c.Transactions(ctx, source, 0, 100)
+			if err != nil {
+				return err
+			}
+			if HasTransaction(list, source, innerID) {
+				return nil
+			}
+			return fmt.Errorf("the account's last recorded inner id is %d, past this transfer's %d, and the transfer is not among its last 100 transactions: its outcome is unknown, check the history", last, innerID)
 		}
 		select {
 		case <-ctx.Done():
@@ -349,6 +386,16 @@ func (c *Client) WaitInBlock(ctx context.Context, source ed25519.PublicKey, inne
 		case <-time.After(every):
 		}
 	}
+}
+
+// HasTransaction tells whether list holds the transaction of source with that inner id.
+func HasTransaction(list []*api.SealedTransaction, source ed25519.PublicKey, innerID int64) bool {
+	for _, s := range list {
+		if s != nil && s.Trxn != nil && int64(s.Trxn.ID) == innerID && ed25519.PublicKey(s.Trxn.Source).Equal(source) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- history -----------------------------------------------------------------------------------

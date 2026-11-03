@@ -23,8 +23,9 @@ const currencyCS = 1
 // (about 0.0087 CS on mainnet) and returns it.
 var MaxFee = amount.EncodeCommission(1.0)
 
-// MaxInnerID is the largest inner id the 6-byte field holds.
-const MaxInnerID = 1<<48 - 1
+// MaxInnerID is the largest inner id: the signed field has 6 bytes, but the node keeps 46 bits
+// of the API's id (bits 46 and 47 are flags of the wallet-id encoding in the signed bytes).
+const MaxInnerID = 1<<46 - 1
 
 // Transfer is a CS transfer before signing.
 type Transfer struct {
