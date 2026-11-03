@@ -88,10 +88,12 @@ The binaries are reproducible: the same tag built again gives the same files (se
    The top line shows the network (MAINNET in red) and the node. `?` shows the keys, `q` quits.
    Every function also exists as a command (`credits-wallet help`).
 
-In Docker the wallet runs inside the node's container, with its data on the `/data` volume:
+In Docker the wallet runs inside the node's container, with its data on the `/data` volume
+(`/data/wallet`); set `CREDITS_API=on` in `.env` (the wallet talks to the node's API). With the
+project's `docker-compose.yml` (service `node`, container `credits-node`):
 
 ```sh
-docker exec -it credits-node credits-wallet
+docker compose exec node credits-wallet       # or: docker exec -it credits-node credits-wallet
 ```
 
 ---
@@ -144,11 +146,20 @@ new password (`account import main2`).
 
 `account import NAME FILE`, or `i` in the interface, also accepts:
 
-- the node's own key, `NodePrivate.txt` (base58), or the node's 24-word phrase;
 - a base58 private key;
-- the official wallets' keys JSON (next section).
+- the official wallets' keys JSON (next section);
+- the node's own key, `NodePrivate.txt` (base58), or the node's 24-word phrase.
 
-Delete the plain file after the import: the key is then in the encrypted key store.
+After importing a keys JSON or a base58 key from a file, delete the plain file: the key is then in
+the encrypted key store.
+
+**The node's key is different. Never delete `csnode/NodePrivate.txt`: the node needs it to run.**
+Importing it makes the node's key a spending key as well, and that key stays in clear on the
+server for the node: anyone who gets into the server can take the CS of that account. The node's
+rewards and delegations go to that address, so you may want to see it in the wallet, but **keep
+funds in a separate account** (`account new`) and move them out of the node's account. The node's
+set-up creates a separate account by default; importing the node's key is an explicit second
+choice.
 
 ---
 
@@ -230,9 +241,11 @@ the configuration decides and the review says "not confirmed by the node". To re
 confirmation, add `require_network_uuid = true` to the profile; `network_uuid = "…"` pins a
 network (the uuid `status` shows).
 
-**The diag port and your firewall.** The diagnostic API also has commands that change the node's
-behaviour. The node listens on it on every interface, like the main API: **never open 9088 (nor
-9090) to the Internet**; the wallet needs it on `127.0.0.1` only. If you set `diag_port=0`, the
+**The diag port and your firewall.** The packages ship the diag port **on** (`diag_port=9088`), and
+the node listens on it on **every interface**, like the main API, not only on `127.0.0.1`. The
+diagnostic API also has commands that change the node's behaviour: **firewall 9088 (and 9090) so
+that no other host reaches them**; the wallet needs them on `127.0.0.1` only. The node's set-up
+never turns the diag port on for you. If you set `diag_port=0`, the
 wallet still works, without the network confirmation.
 
 ---
@@ -279,7 +292,8 @@ token that calls itself "CS" or copies another token's name.
 selected token its **full contract address**, decimals and balance, with warnings when its code or
 name looks like CS or like another token you hold. `y` copies the address (in terminals that
 support OSC 52; otherwise hold Shift and drag to select it), `s` sends the token, `a` adds a token
-by its address. The main screen shows the balances and the number of tokens, with `[t]`.
+by its address, `x` takes a token off your list. The main screen shows the balances and the number
+of tokens, with `[t]`.
 
 ```sh
 ./credits-wallet tokens main                           # every token, with its address
@@ -291,14 +305,15 @@ by its address. The main screen shows the balances and the number of tokens, wit
 
 **Where the list comes from.** The node keeps a token cache only with `[api] tokens_cache=true`
 in its `config.ini` (off by default; the set-up offers to turn it on). Then the list comes from
-the cache, plus the tokens of the account's local list (tokens you added or sent, or a cache
-showed) that the cache does not name. Without the cache, the wallet:
+the cache, plus the tokens of the account's local list (tokens you added, or sent with the
+wallet) that the cache does not name. Without the cache, the wallet:
 
 - uses the token cache of the profile's `history_node`, if it has one (the balances are still read
   from your node);
 - otherwise looks through the account's history (the latest 1000 transactions: the tokens it sent,
-  called or bought) and its local list (tokens you added or sent, or a cache showed), and reads
-  each balance from the contract. Such a list is labelled **"found from history (may be incomplete
+  called or bought, and the ones it received) and its local list (tokens you added or sent), and
+  reads each balance from the contract. A token the account only received is marked "received
+  from ADDRESS: not added by you": anyone can send you a token, look-alikes included. Such a list is labelled **"found from history (may be incomplete
   on a pruned node)"**: tokens that others sent you are not in your own history, and a pruned node
   keeps only recent blocks. Add them with `a` or `token add`.
 

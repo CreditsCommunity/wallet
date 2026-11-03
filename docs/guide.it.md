@@ -88,10 +88,12 @@ I binari sono riproducibili: lo stesso tag compilato di nuovo dà gli stessi fil
    La riga in alto mostra la rete (MAINNET in rosso) e il nodo. `?` mostra i tasti, `q` esce.
    Ogni funzione esiste anche come comando (`credits-wallet help`).
 
-In Docker il wallet gira dentro il container del nodo, con i suoi dati nel volume `/data`:
+In Docker il wallet gira dentro il container del nodo, con i suoi dati nel volume `/data`
+(`/data/wallet`); imposta `CREDITS_API=on` in `.env` (il wallet parla con l'API del nodo). Con il
+`docker-compose.yml` del progetto (servizio `node`, container `credits-node`):
 
 ```sh
-docker exec -it credits-node credits-wallet
+docker compose exec node credits-wallet       # oppure: docker exec -it credits-node credits-wallet
 ```
 
 ---
@@ -145,11 +147,20 @@ con una nuova password (`account import main2`).
 
 `account import NAME FILE`, o `i` nell'interfaccia, accetta anche:
 
-- la chiave del nodo stesso, `NodePrivate.txt` (base58), o la frase di 24 parole del nodo;
 - una chiave privata in base58;
-- il JSON delle chiavi dei wallet ufficiali (sezione successiva).
+- il JSON delle chiavi dei wallet ufficiali (sezione successiva);
+- la chiave del nodo stesso, `NodePrivate.txt` (base58), o la frase di 24 parole del nodo.
 
-Cancella il file in chiaro dopo l'importazione: la chiave è ormai nell'archivio cifrato delle chiavi.
+Dopo aver importato da un file un JSON delle chiavi o una chiave base58, cancella il file in chiaro:
+la chiave è ormai nell'archivio cifrato delle chiavi.
+
+**La chiave del nodo è diversa. Non cancellare mai `csnode/NodePrivate.txt`: il nodo ne ha bisogno
+per funzionare.** Importarla rende la chiave del nodo anche una chiave di spesa, e quella chiave
+resta in chiaro sul server per il nodo: chi entra nel server può prendere i CS di quell'account. Le
+ricompense e le deleghe del nodo arrivano a quell'indirizzo, quindi può servirti vederlo nel wallet,
+ma **tieni i fondi in un account separato** (`account new`) e spostali fuori dall'account del nodo.
+La configurazione guidata del nodo crea per default un account separato; importare la chiave del
+nodo è una seconda scelta esplicita.
 
 ---
 
@@ -231,9 +242,11 @@ o chiusa), decide la configurazione e il riepilogo dice "not confirmed by the no
 richiedere la conferma, aggiungi `require_network_uuid = true` al profilo; `network_uuid = "…"`
 fissa una rete (l'uuid che mostra `status`).
 
-**La porta diag e il tuo firewall.** L'API diagnostica ha anche comandi che cambiano il
-comportamento del nodo. Il nodo vi ascolta su ogni interfaccia, come per l'API principale:
-**non aprire mai la 9088 (né la 9090) su Internet**; il wallet la usa solo su `127.0.0.1`. Se
+**La porta diag e il tuo firewall.** I pacchetti hanno la porta diag **attiva** (`diag_port=9088`),
+e il nodo vi ascolta su **ogni interfaccia**, come per l'API principale, non solo su `127.0.0.1`.
+L'API diagnostica ha anche comandi che cambiano il comportamento del nodo: **chiudi con il firewall
+la 9088 (e la 9090) a ogni altro host**; il wallet le usa solo su `127.0.0.1`. La configurazione
+guidata del nodo non attiva mai la porta diag al posto tuo. Se
 imposti `diag_port=0`, il wallet funziona comunque, senza la conferma della rete.
 
 ---
@@ -281,7 +294,7 @@ pubblicare un token che si chiama "CS" o copia il nome di un altro token.
 token selezionato il suo **indirizzo completo del contratto**, i decimali e il saldo, con avvisi
 quando il suo codice o nome assomiglia a CS o a un altro token che possiedi. `y` copia l'indirizzo
 (nei terminali che supportano OSC 52; altrimenti tieni premuto Shift e trascina per selezionarlo),
-`s` invia il token, `a` aggiunge un token tramite il suo indirizzo. La schermata principale mostra
+`s` invia il token, `a` aggiunge un token tramite il suo indirizzo, `x` lo toglie dal tuo elenco. La schermata principale mostra
 i saldi e il numero di token, con `[t]`.
 
 ```sh
@@ -295,13 +308,14 @@ i saldi e il numero di token, con `[t]`.
 **Da dove viene l'elenco.** Il nodo tiene una cache dei token solo con `[api] tokens_cache=true`
 nel suo `config.ini` (disattivata per default; la configurazione guidata propone di attivarla).
 In quel caso l'elenco viene dalla cache, più i token dell'elenco locale dell'account (quelli che hai
-aggiunto o inviato, o che una cache ha mostrato) che la cache non nomina. Senza la cache, il wallet:
+aggiunto, o inviato con il wallet) che la cache non nomina. Senza la cache, il wallet:
 
 - usa la cache dei token dell'`history_node` del profilo, se ne ha uno (i saldi vengono comunque
   letti dal tuo nodo);
 - altrimenti scorre la cronologia dell'account (le ultime 1000 transazioni: i token che ha inviato,
-  chiamato o comprato) e il suo elenco locale (i token che hai aggiunto o inviato, o che una cache
-  ha mostrato), e legge ogni saldo dal contratto. Un elenco così è etichettato **"found from
+  chiamato o comprato, e quelli che ha ricevuto) e il suo elenco locale (i token che hai aggiunto o
+  inviato), e legge ogni saldo dal contratto. Un token che l'account ha solo ricevuto è segnato
+  "received from INDIRIZZO: not added by you": chiunque può inviarti un token, anche un'imitazione. Un elenco così è etichettato **"found from
   history (may be incomplete on a pruned node)"**: i token che altri ti hanno inviato non sono
   nella tua cronologia, e un nodo pruned conserva solo i blocchi recenti. Aggiungili con `a` o
   `token add`.

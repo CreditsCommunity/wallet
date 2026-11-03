@@ -59,7 +59,7 @@ with the packages of `testdata/requirements.txt` (pinned with hashes:
 ./credits-wallet                       # the terminal interface
 ./credits-wallet status                # the node: last block, round, synced, network
 ./credits-wallet account new main      # a new account: write down its 24 words
-./credits-wallet account import old ~/NodePrivate.txt
+./credits-wallet account import old ~/keys.json    # then delete the plain file
 ./credits-wallet balance               # every account
 ./credits-wallet history main --csv main.csv
 ./credits-wallet send main u6PJ8DtQuPFnfmwHbGFULQ4u4EgjDiyYKjVEsynXq2w 12.5   # SPENDS REAL CS ON MAINNET
@@ -102,8 +102,10 @@ deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call),
    screen is cleared afterwards, but a terminal's scrollback, tmux/screen or a session log may keep
    them. Without a terminal (scripts) `account new` needs `--words-file FILE` (a new file, mode 600)
    or `--show-words` (the words in the output).
-   Or import an existing key: the node's `NodePrivate.txt` (base58), a 24-word phrase of the node, or
-   the keys JSON of the official web and desktop wallets. Delete the plain file afterwards.
+   Or import an existing key: a base58 key, the keys JSON of the official web and desktop wallets
+   (delete the plain file afterwards), or the node's `NodePrivate.txt` / 24-word phrase. **Never
+   delete the node's `NodePrivate.txt`** (the node needs it); importing it makes the node's key a
+   spending key kept in clear on the server, so keep funds in a separate account.
 4. Send: the wallet shows the recipient, the amount and the fee; on mainnet it asks you to type
    `send`, then the password.
 
@@ -186,11 +188,12 @@ node's oldest block. Without it the wallet uses the token cache of
 the profile's `history_node` (balances still from the local node), or else finds the tokens in the
 account's history (the latest 1000 transactions on the history node and the local node: the
 contracts it called, deployed, paid or sent tokens of) and in its local token list
-(`tokens/<address>.json` in the data folder: tokens added with `token add`, sent, or seen in a
-cache), and reads each balance from the contract (`balanceOf`, free). Such a list is labelled "found
+(`tokens/<address>.json` in the data folder: the tokens you added with `token add` or sent with the
+wallet, nothing else), and reads each balance from the contract (`balanceOf`, free). A token the
+account only received is marked "received from ADDRESS: not added by you". Such a list is labelled "found
 from history (may be incomplete on a pruned node)": tokens received from others are not in the
 account's own history. `token add ACCOUNT TOKEN` keeps a token listed (0 included), `token remove`
-takes it off. In the interface `y` copies the selected address (OSC 52), `a` adds a token. `token
+takes it off. In the interface `y` copies the selected address (OSC 52), `a` adds a token, `x` removes it. `token
 balance TOKEN ACCOUNT` reads one balance from the token contract. `token info TOKEN` shows code, name and
 decimals (and supply and holders with the cache). `token send ACCOUNT TOKEN TO AMOUNT` signs a call of
 the token's `transfer(to, amount)`: the amount may have at most the token's decimals and must be
@@ -288,7 +291,9 @@ receives the account's public address only; every history output names the sourc
 A tag `wallet-vX.Y.Z` (on main) publishes a release; `wallet-vX.Y.Z-rcN` a pre-release, from any
 branch. `.github/workflows/release.yml` cross-compiles linux-amd64, windows-amd64 and darwin-arm64
 on one Linux runner with CGO off (`ci/release/build.sh`), runs each binary on its own system
-(`version` must print the tag's version), then publishes the archives and `SHA256SUMS`. Each archive
+(`version` must print the tag's version), builds the tag again on a second runner (the same
+`SHA256SUMS` or nothing is published), then publishes the archives and `SHA256SUMS`. Only the push
+of a tag publishes. Each archive
 holds `credits-wallet-X.Y.Z/` with the binary, README.md, LICENSE, guide.md and guide.it.md.
 
 The build is reproducible: `-trimpath -buildvcs=true` (the commit is recorded, `go version -m
@@ -302,8 +307,19 @@ ci/release/build.sh 0.1.0 dist         # Go 1.27.3 (go.mod's toolchain)
 diff dist/SHA256SUMS <(curl -sSL https://github.com/CreditsCommunity/wallet/releases/download/wallet-v0.1.0/SHA256SUMS)
 ```
 
-The community node pins the release it ships in `packaging/wallet-tag`: release a wallet tag
-first, then bump that file, then release the node.
+The community node pins the release it ships in `packaging/wallet-tag` and the archives' hashes in
+`packaging/wallet-sha256`: release a wallet tag first, then bump both files, then release the node.
+
+**Right after the repository goes public**, protect the release tags with a ruleset (no deletion, no
+update; rulesets are not available on this private repository):
+
+```sh
+gh api -X POST repos/CreditsCommunity/wallet/rulesets --input - <<'EOF'
+{"name": "release tags", "target": "tag", "enforcement": "active",
+ "conditions": {"ref_name": {"include": ["refs/tags/wallet-v*"], "exclude": []}},
+ "rules": [{"type": "deletion"}, {"type": "update"}, {"type": "non_fast_forward"}]}
+EOF
+```
 
 ## Licence
 

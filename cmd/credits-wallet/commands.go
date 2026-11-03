@@ -322,7 +322,7 @@ func (a *app) accountImport(name, file string) error {
 	}
 	fmt.Fprintf(a.out, "imported %s: account %s, address %s\n", kind, f.Name, f.Public)
 	if file != "" {
-		fmt.Fprintf(os.Stderr, "%s holds the key in clear: now that it is in the encrypted key store, delete it (or keep it offline).\n", file)
+		fmt.Fprintln(os.Stderr, wallet.PlainKeyAdvice(file))
 	}
 	return nil
 }
