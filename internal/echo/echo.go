@@ -69,3 +69,25 @@ func JSON(b []byte) []byte {
 }
 
 func unsafeRune(r rune) bool { return (r >= 0x80 && r <= 0x9f) || unicode.Is(unicode.Cf, r) }
+
+// Terminal makes text safe to print on a terminal and keeps it readable: control characters
+// (C0, C1), Unicode format characters (such as U+202E) and invalid UTF-8 are escaped, everything else
+// (backslashes in Windows paths included) is kept. It is for the output points (error lines),
+// where the text is the wallet's own with parts already passed through Printable.
+func Terminal(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		switch {
+		case r == utf8.RuneError && !strings.HasPrefix(s[i:], "\uFFFD"):
+			fmt.Fprintf(&b, "\\x%02x", s[i])
+		case r == '\n' || r == '\t':
+			b.WriteRune(r)
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
+			q := strconv.QuoteRune(r)
+			b.WriteString(q[1 : len(q)-1])
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}

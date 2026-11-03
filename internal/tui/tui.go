@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/CreditsCommunity/wallet/internal/config"
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/history"
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/internal/node"
@@ -460,7 +461,9 @@ func groupInt(n int64) string {
 	return b.String()
 }
 
-func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+// oneLine puts a message (an error, which may carry text from the node) on one line, with what
+// could drive the terminal escaped.
+func oneLine(s string) string { return echo.Terminal(strings.Join(strings.Fields(s), " ")) }
 
 // ---- status and help ---------------------------------------------------------------------------
 

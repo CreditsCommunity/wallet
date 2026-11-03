@@ -51,3 +51,17 @@ func TestJSONEscapesC1AndFormatCharacters(t *testing.T) {
 		t.Errorf("escapes: %s", out)
 	}
 }
+
+func TestTerminalKeepsTextAndEscapesControls(t *testing.T) {
+	for in, want := range map[string]string{
+		`open C:\Users\me\x.csv: denied`: `open C:\Users\me\x.csv: denied`,
+		"a\x1b[2Jb":                      `a\x1b[2Jb`,
+		"r\u202eight \u009b":             `r\u202eight \u009b`,
+		"line\nnext\ttab é \ufffd":       "line\nnext\ttab é \ufffd",
+		"bad \xff utf8":                  `bad \xff utf8`,
+	} {
+		if got := Terminal(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+}

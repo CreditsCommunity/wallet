@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/CreditsCommunity/wallet/internal/amount"
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/thrift/api"
 	"github.com/CreditsCommunity/wallet/thrift/general"
 )
@@ -224,7 +225,7 @@ func (c *Client) ContractMethods(ctx context.Context, contract ed25519.PublicKey
 			return err
 		}
 		if r.Code != 0 {
-			return fmt.Errorf("ContractAllMethodsGet: %s", r.Message)
+			return fmt.Errorf("ContractAllMethodsGet: %s", echo.Printable(r.Message))
 		}
 		methods = r.Methods
 		return nil

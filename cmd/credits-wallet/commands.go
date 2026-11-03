@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/history"
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/internal/wallet"
@@ -620,7 +621,7 @@ func (a *app) cmdHistory(ctx context.Context, args []string) error {
 		}
 		fmt.Fprintf(os.Stderr, "%s written to %s (source: %s)\n", plural(len(all), "transaction"), *csvFile, src.Describe())
 		if tokenErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: without token transfers: %v\n", tokenErr)
+			fmt.Fprintf(os.Stderr, "warning: without token transfers: %s\n", echo.Terminal(tokenErr.Error()))
 		}
 		return nil
 	}

@@ -182,3 +182,12 @@ func TestTokenCallingItselfCSIsWarned(t *testing.T) {
 		t.Fatalf("token send of a token calling itself CS: %d\n%s", code, stderr)
 	}
 }
+
+// Errors reach the terminal with control characters escaped, whatever text they carry.
+func TestErrorOutputEscapesControls(t *testing.T) {
+	t.Setenv("CREDITS_WALLET_HOME", t.TempDir())
+	_, stderr, code := runWallet2(t, "status", "--config", "missing\x1b]0;owned\a\u202e.toml")
+	if code == 0 || strings.ContainsAny(stderr, "\x1b\a\u202e") || !strings.Contains(stderr, `missing\x1b]0;owned\a\u202e.toml`) {
+		t.Fatalf("%d %q", code, stderr)
+	}
+}

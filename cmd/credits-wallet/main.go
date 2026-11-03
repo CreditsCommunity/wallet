@@ -204,13 +204,13 @@ func run(args []string) int {
 	if err != nil {
 		var u usageError
 		if errors.As(err, &u) {
-			fmt.Fprintf(os.Stderr, "credits-wallet: %v\n\n%s", err, usageText)
+			fmt.Fprintf(os.Stderr, "credits-wallet: %s\n\n%s", echo.Terminal(err.Error()), usageText)
 			return 2
 		}
 		if a.json {
 			_ = writeJSON(os.Stdout, map[string]string{"error": err.Error()}, "")
 		}
-		fmt.Fprintln(os.Stderr, "credits-wallet:", err)
+		fmt.Fprintln(os.Stderr, "credits-wallet:", echo.Terminal(err.Error()))
 		return 1
 	}
 	return 0
