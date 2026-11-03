@@ -61,6 +61,7 @@ import nacl.signing
 import thriftpy2
 from thriftpy2.protocol import TBinaryProtocolFactory
 from thriftpy2.rpc import make_server
+from thriftpy2.thrift import TApplicationException
 from thriftpy2.transport import TBufferedTransportFactory
 from thriftpy2.utils import serialize
 
@@ -123,6 +124,9 @@ def main():
 
     deployed = {}  # wallet: address -> (deployer, time in ms, class name)
     payments = {}  # wallet: payer (base58) -> Decimal paid to FakeContract
+    # wallet: the node's list of "deploys" by deployer; like the node it also records a payment to a
+    # contract there (APIHandler: is_smart_deploy is method.empty()) and fails a page holding one
+    by_deployer = {}
     contract_note = [""]
     counter = [0]
     last_inner = [LAST_INNER_ID]  # wallet: the last inner id moves on with the accepted transactions
@@ -216,6 +220,7 @@ def main():
                 return refuse(f"deploy to {base58.b58encode(t.target).decode()}, the contract address is "
                               f"{base58.b58encode(expected).decode()}")
             deployed[t.target] = (t.source, int(time.time() * 1000), d.byteCodeObjects[0].name)  # wallet
+            by_deployer.setdefault(t.source, []).append(t.target)
             last_inner[0] = t.id  # wallet: in a block
             head[0] += 1
             print(f"ACCEPTED: deploy of {base58.b58encode(t.target).decode()} by {base58.b58encode(t.source).decode()}",
@@ -296,6 +301,9 @@ def main():
             if "class" not in source:
                 return api.SmartContractCompileResult(status=general.APIResponse(code=1, message="not a Java class"))
             name = (re.search(r"class\s+(\w+)", source) or [None, "FakeContract"])[1]  # wallet
+            if "EXECUTOR_BUG" in source:  # wallet: what nodes answer today (the executor loses the errors)
+                return api.SmartContractCompileResult(status=general.APIResponse(
+                    code=1, message="Internal error processing compileSourceCode"))
             if "COMPILE_ERROR" in source:  # wallet: as the executor reports a compile error
                 line = source[:source.index("COMPILE_ERROR")].count("\n") + 1
                 return api.SmartContractCompileResult(status=general.APIResponse(code=1, message=(
@@ -308,9 +316,13 @@ def main():
 
         # wallet: the contracts of a deployer, and FakeContract's state
         def SmartContractsListGet(self, deployer, offset, limit):
-            mine = [deployed_contract(a) for a, d in deployed.items() if d[0] == deployer]
-            mine.reverse()
-            return api.SmartContractsListGetResult(status=ok(), count=len(mine), smartContractsList=mine[offset:offset + limit])
+            mine = by_deployer.get(deployer, [])
+            page = mine[offset:offset + (limit or len(mine))]
+            if None in page:
+                # what the node answers: an application exception
+                raise TApplicationException(TApplicationException.INTERNAL_ERROR, "No more data to read.")
+            return api.SmartContractsListGetResult(status=ok() if page else general.APIResponse(code=3, message="not found"),
+                                                   count=len(mine), smartContractsList=[deployed_contract(a) for a in page])
 
         def SmartContractDataGet(self, address):
             if address not in deployed:
@@ -406,6 +418,7 @@ def main():
                 value = Decimal(t.amount.integral) + Decimal(t.amount.fraction) / 10**18
                 payer = base58.b58encode(t.source).decode()
                 payments[payer] = payments.get(payer, Decimal(0)) + value
+                by_deployer.setdefault(t.source, []).append(None)  # the node's bug: a payment listed as a deploy
                 result = general.Variant(v_string="thank you, " + payer)
                 note += ", payable()"
             print(f"ACCEPTED: {base58.b58encode(t.source).decode()} -> {base58.b58encode(t.target).decode()} "

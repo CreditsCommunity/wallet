@@ -180,15 +180,16 @@ in a block the wallet waits until the node lists the contract and saves it in th
 contract list (`contracts/` in the data folder: public data only). Sources up to 48 KiB, deploys
 below 50 KiB (larger ones cost 17.87 CS).
 
-`contract methods CONTRACT` lists the methods with their types; methods annotated `@Getter` are
-marked "getter". `contract get CONTRACT METHOD ARGS…` runs a method without a transaction: free,
+`contract methods CONTRACT` lists the methods with their types (the node does not tell which ones
+only read: its API drops the contracts' `@Getter` annotations; methods are marked "getter" only by
+a node that passes them on). `contract get CONTRACT METHOD ARGS…` runs a method without a transaction: free,
 nothing is kept (`--from ACCOUNT` sets the caller the contract sees). `contract call ACCOUNT
 CONTRACT METHOD ARGS…` signs a call, about 0.0175 CS plus the execution; the arguments are converted
 to the types the method declares (put `--` before an argument that starts with `-`), and the result
 and the contract's state are shown. A method that throws is refused by the node; the fee is paid.
 `contract pay ACCOUNT CONTRACT AMOUNT [--data TEXT]` sends CS to a contract: the node runs its
 `payable()`, which may refuse them (they come back, the fee is paid). `contract info CONTRACT` shows
-the deployer and the state; `contract list ACCOUNT` the contracts the account deployed (the node's
+the deployer and the state (the public fields: the node shows no others); `contract list ACCOUNT` the contracts the account deployed (the node's
 list and the local one). Everything a contract says about itself (names, results, state) is shown
 escaped.
 

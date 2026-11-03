@@ -36,6 +36,14 @@ func TestParseCompileErrors(t *testing.T) {
 	}
 }
 
+func TestExecutorCompileBugMessage(t *testing.T) {
+	// what a node answers today for a source with errors (seen on a private network with the
+	// executor of release community.16): no error list
+	if e := ParseCompileErrors(ExecutorCompileBug); len(e) != 0 {
+		t.Errorf("%+v", e)
+	}
+}
+
 func TestReadNodeInfo(t *testing.T) {
 	ok := &general.APIResponse{Code: 0}
 	wire := int64(-7421784488367613980) // mainnet's uuid as the i64 carries it

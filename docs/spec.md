@@ -206,8 +206,12 @@ transactions. Running the wallet next to the user's own node is what the design 
 - **Compile** through the node (`SmartContractCompile`, done by its executor). A source is UTF-8, at
   most 48 KiB. Errors are listed with their line (`FILE:LINE: message`, the TUI marks the lines):
   the executor reports `LINE:message` per error in its `CompilationException`, without a column (a
-  column is shown when a message carries one). A source naming a library the node forbids gets an
-  empty answer, reported as such. The compiled byte code's methods come from `ContractAllMethodsGet`
+  column is shown when a message carries one). **The executors released so far lose that list**:
+  `ContractExecutorHandler.compileSourceCode` builds its failure answer without the byte-code list
+  and then reads that list's size for its log, so the node answers "Internal error processing
+  compileSourceCode" (seen on a private network with the community.16 executor); the wallet then
+  says the source does not compile and that the executor lost the errors (an executor fix restores
+  the lines). A source naming a library the node forbids gets an empty answer, reported as such. The compiled byte code's methods come from `ContractAllMethodsGet`
   (classes and methods counted). Messages, class and method names are the executor's or the
   author's text: escaped.
 - **Deploy**: compiled again at the deploy, signed as the node's sample clients do (`samples/clients`
@@ -230,12 +234,15 @@ transactions. Running the wallet next to the user's own node is what the design 
   renamed), public data only: address, class name, source file path, network and node, time, block,
   inner id, token standard.
 - **Methods** (`SmartContractGet` + `ContractAllMethodsGet`, as the samples; `ContractMethodsGet`
-  is not needed): name, argument types and names, return type. **Getters**: the contract API's
-  `@Getter` (`com.credits.scapi.annotations.Getter`, kept at run time; the executor lists it by
-  that name in `MethodDescription.annotations`) marks a method meant to be read without a
-  transaction. It only documents the author's intent, so the wallet lets the user choose: `contract
-  get` (and the TUI's `g`, `ctrl+g`) runs any method as a getter; `contract call` (`c`, `ctrl+t`)
-  signs any method; the TUI's Enter reads a `@Getter` method and signs a call of the others.
+  is not needed): name, argument types and names, return type. **Getters** cannot be told apart
+  through the node's API today: the contract API's `@Getter` (`com.credits.scapi.annotations.Getter`,
+  kept at run time; the executor lists it by that name in its method annotations) only documents
+  the author's intent, and the node's `ContractAllMethodsGet` drops the annotations anyway (it copies
+  names and types only, `api/src/apihandler.cpp`). So the user chooses: `contract get` (and the
+  TUI's `g`, `ctrl+g`) runs any method as a getter, free; `contract call` (`c`, `ctrl+t`, Enter)
+  signs a call of any method, through the review and its confirmation. A method is marked "getter"
+  (and Enter reads it) only when the node passes the annotation on (a node that keeps them; the
+  fake node does).
 - **Get**: `TransactionFlow` with `forgetNewState`, a zero signature, nothing paid or kept; the
   caller the contract sees is `--from ACCOUNT` (or the selected account in the TUI), a zero address
   otherwise. **Call**: a signed `TT_ContractCall` (as token transfers, 5.3), arguments converted to
@@ -243,8 +250,9 @@ transactions. Running the wallet next to the user's own node is what the design 
   hex; overloads by number of arguments; arguments starting with `-` after `--`); the fee shown is
   twice `ActualFeeGet` of the call's size plus the execution, the max fee 1 CS. A method that throws
   is answered with an error by the node (the fee is paid). The result (the method's return value)
-  and then the contract's state (`SmartContractDataGet`: its fields) are shown, escaped; collections
-  are shown to a bounded size and depth.
+  and then the contract's state (`SmartContractDataGet`: its **public** fields, all the executor
+  exposes, `getClass().getFields()`; the samples keep theirs private and offer getters) are shown,
+  escaped; collections are shown to a bounded size and depth.
 - **Payments** (`contract pay ACCOUNT CONTRACT AMOUNT [--data TEXT]`, the TUI's `payable` entry):
   the executor never runs `payable()` as a call ("payable method cannot be called"); the node runs it
   when **CS are transferred to the contract** (`samples/contracts` README, TipJar): a plain
@@ -253,7 +261,11 @@ transactions. Running the wallet next to the user's own node is what the design 
   contract with a `payable` method is deployed there; the fee is twice the transfer's (the transfer
   and the new state) plus the execution; the balance must cover the amount and the max fee.
 - **Contract list** (`contract list ACCOUNT`, the TUI's `[c]` screen): `SmartContractsListGet` by
-  deployer (pages of 100, at most 1000) merged with the local list, one row per address, newest
+  deployer (pages of 100, at most 1000) merged with the local list. The node records a payment to a
+  contract (a transfer that runs `payable()`: no invocation, an empty method) as a deploy of the
+  payer (`APIHandler`: `is_smart_deploy` is `method.empty()`) and then fails every page holding it
+  ("No more data to read"); the wallet reads such a page again one entry at a time and reports the
+  entries it had to skip. The list is one row per address, newest
   first; a contract only in the local list is shown with the network it was deployed on ("local
   only: not on this node"); a node error still shows the local rows.
 - **TUI** (`[c]`): the list; `o` open a `.java`, `n` new from a template, `a` a contract by address;

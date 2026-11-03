@@ -176,9 +176,13 @@ func MergeContracts(onNode []node.ContractInfo, local []LocalContract) []Contrac
 }
 
 // Contracts lists a deployer's contracts: the node's list merged with the local one. A node error
-// is returned next to the local rows (nodeErr), so that they are still shown.
+// is returned next to the local rows (nodeErr), so that they are still shown; so are entries of the
+// node's list it could not read (a known node bug: see node.ContractsBy).
 func (w *Wallet) Contracts(ctx context.Context, deployer ed25519.PublicKey) (rows []ContractRow, nodeErr, localErr error) {
-	onNode, nodeErr := w.Node.ContractsBy(ctx, deployer)
+	onNode, skipped, nodeErr := w.Node.ContractsBy(ctx, deployer)
+	if nodeErr == nil && skipped > 0 {
+		nodeErr = fmt.Errorf("%d entries of the node's list could not be read (the node lists payments to contracts as deploys and fails on them)", skipped)
+	}
 	local, localErr := w.LocalContracts(deployer)
 	return MergeContracts(onNode, local), nodeErr, localErr
 }

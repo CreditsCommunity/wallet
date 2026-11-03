@@ -734,7 +734,7 @@ func (s *contractScreen) view(m *model) string {
 		} else if node.IsGetter(md) {
 			right.WriteString(stDim.Render("@Getter: Enter reads it, free") + "\n")
 		} else {
-			right.WriteString(stDim.Render("Enter signs a call; ctrl+g reads it free") + "\n")
+			right.WriteString(stDim.Render("g/ctrl+g reads it free; Enter/c signs a call") + "\n")
 		}
 		if s.form != nil {
 			fv := s.form.view()
@@ -757,7 +757,7 @@ func (s *contractScreen) view(m *model) string {
 	case s.stateErr != nil:
 		right.WriteString(stDim.Render(ansi.Truncate("not available: "+oneLine(s.stateErr.Error()), rightW, "…")) + "\n")
 	case len(s.state) == 0 && s.loaded:
-		right.WriteString(stDim.Render("(empty)") + "\n")
+		right.WriteString(stDim.Render("no public fields (read the state with getters)") + "\n")
 	}
 	names := make([]string, 0, len(s.state))
 	for k := range s.state {

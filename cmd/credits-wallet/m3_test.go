@@ -98,6 +98,9 @@ func TestM3ContractsAgainstFakeNode(t *testing.T) {
 	if code == 0 || json.Unmarshal([]byte(out), &ce) != nil || ce.Compiled || len(ce.Errors) != 2 || ce.Errors[1].Line != 3 {
 		t.Errorf("compile errors --json (one JSON document): %d %s", code, out)
 	}
+	bug := filepath.Join(home, "Bug.java")
+	os.WriteFile(bug, []byte("public class Bug { EXECUTOR_BUG }\n"), 0o644)
+	mustFail("the node's contract executor failed instead of listing the errors", "contract", "compile", bug, node)
 	mustFail("no such file", append([]string{"contract", "deploy", "test", strings.Replace(bad, "Bad", "bad", 1)}, pw...)...)
 	must("isOpen() : boolean  getter", "contract", "compile", src, node)
 
@@ -157,9 +160,14 @@ func TestM3ContractsAgainstFakeNode(t *testing.T) {
 		t.Errorf("pay: %s\n%s", out, fake.Log())
 	}
 	must("3", "contract", "get", c, "paidBy", testAddr, node)
+	// the node now lists the payment as a deploy and fails on it: the list still has the contract
+	out, stderr, code = run("contract", "list", "test", node, "--json")
+	if code != 0 || !strings.Contains(out, `"on_node": true`) || !strings.Contains(stderr, "1 entries of the node's list could not be read") {
+		t.Errorf("contract list after a payment: %d %s %s\n%s", code, out, stderr, fake.Log())
+	}
 	mustFail("no contract is deployed", append([]string{"contract", "pay", "test", toAddr, "3"}, pw...)...)
 	must("paid", "contract", "info", c, node)
-	if strings.Contains(fake.Log(), "REFUSED") {
+	if strings.Contains(fake.Log(), "REFUSED: ") && !strings.Contains(fake.Log(), "REFUSED: payable method cannot be called") {
 		t.Errorf("the fake node refused something:\n%s", fake.Log())
 	}
 }

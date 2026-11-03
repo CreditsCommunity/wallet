@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/apache/thrift/lib/go/thrift"
+
 	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/thrift/api"
 	"github.com/CreditsCommunity/wallet/thrift/general"
@@ -50,6 +52,17 @@ func (c *CompileFailure) Error() string {
 	return fmt.Sprintf("the source does not compile: %d errors, the first on line %d: %s", len(c.Errors), c.Errors[0].Line,
 		echo.Printable(c.Errors[0].Text))
 }
+
+// ExecutorCompileBug is what the node answers when its contract executor fails on a source that
+// does not compile: the executor builds its answer without the byte code list, then reads that
+// list's size for its own log (ContractExecutorHandler.compileSourceCode), and Thrift turns the
+// NullPointerException into this message. The compile errors are lost on the way: the executor
+// releases so far (community.16, executor-community-2-rc1) have the bug.
+const ExecutorCompileBug = "Internal error processing compileSourceCode"
+
+// ExecutorCompileBugText is what the wallet says instead.
+const ExecutorCompileBugText = "the source does not compile, but the node's contract executor failed instead of listing the errors " +
+	"(an executor bug: it loses them); compile it with javac and the contract API (com.credits.scapi) to see them"
 
 // "12:';' expected" (the executor's CompilationException: line, colon, message), and
 // "12:5: message" when a column is there.
@@ -104,6 +117,9 @@ func (c *Client) Compile(ctx context.Context, source string) (Compiled, error) {
 			return &APIError{Call: "SmartContractCompile", Code: -1, Message: "no status in the answer"}
 		}
 		if r.Status.Code != codeSuccess {
+			if strings.Contains(r.Status.Message, ExecutorCompileBug) {
+				return &CompileFailure{Message: ExecutorCompileBugText}
+			}
 			f := &CompileFailure{Errors: ParseCompileErrors(r.Status.Message)}
 			msg := r.Status.Message
 			if len(f.Errors) > 0 {
@@ -211,42 +227,87 @@ func (c *Client) Contract(ctx context.Context, address ed25519.PublicKey) (Contr
 // MaxListed is the most contracts of one deployer the wallet reads (SmartContractsListGet pages).
 const MaxListed = 1000
 
-// ContractsBy lists the contracts a wallet deployed, newest first (SmartContractsListGet).
-func (c *Client) ContractsBy(ctx context.Context, deployer ed25519.PublicKey) ([]ContractInfo, error) {
-	var out []ContractInfo
+// ContractsBy lists the contracts a wallet deployed, newest first (SmartContractsListGet), and how
+// many entries of the node's list could not be read.
+//
+// The node records a payment to a contract (a CS transfer that runs payable(): no invocation, so
+// an empty method) in its list of the payer's deploys (APIHandler: is_smart_deploy is
+// method.empty()), and then fails a whole page that holds such an entry while reading its missing
+// invocation ("No more data to read"). A page that fails is read again one entry at a time, and the
+// entries that still fail are skipped (counted in skipped).
+func (c *Client) ContractsBy(ctx context.Context, deployer ed25519.PublicKey) (list []ContractInfo, skipped int, err error) {
 	seen := map[string]bool{}
-	for offset := int64(0); offset < MaxListed; offset += 100 {
-		var page []*api.SmartContract
-		var count int32
-		err := c.do(func(a *api.APIClient) error {
-			r, err := a.SmartContractsListGet(ctx, general.Address(deployer), offset, 100)
-			if err != nil {
-				return err
-			}
-			if r.Status != nil && r.Status.Code == codeNotFound {
-				return nil
-			}
-			if err := check("SmartContractsListGet", r.Status); err != nil {
-				return err
-			}
-			page, count = r.SmartContractsList, r.Count
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
+	add := func(page []*api.SmartContract) {
 		for _, sc := range page {
 			if ci, ok := contractInfo(sc); ok && !seen[string(ci.Address)] {
 				seen[string(ci.Address)] = true
-				out = append(out, ci)
+				list = append(list, ci)
 			}
 		}
-		if len(page) < 100 || int64(count) <= offset+100 {
+	}
+	total := int64(-1) // the node's count, once a page answered
+	for offset := int64(0); offset < MaxListed && (total < 0 || offset < total); offset += 100 {
+		page, count, err := c.contractsPage(ctx, deployer, offset, 100)
+		var app thrift.TApplicationException
+		if errors.As(err, &app) {
+			// one entry at a time: only the unreadable entries fail
+			for i := offset; i < offset+100 && (total < 0 || i < total); i++ {
+				one, count, err := c.contractsPage(ctx, deployer, i, 1)
+				if errors.As(err, &app) {
+					skipped++
+					if total < 0 && skipped >= 100 {
+						break
+					}
+					continue
+				}
+				if err != nil {
+					return nil, 0, err
+				}
+				if count == 0 {
+					total = i
+					break
+				}
+				total = int64(count)
+				add(one)
+			}
+			if total < 0 {
+				break
+			}
+			continue
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		total = int64(count)
+		add(page)
+		if len(page) == 0 {
 			break
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Created.After(out[j].Created) })
-	return out, nil
+	sort.SliceStable(list, func(i, j int) bool { return list[i].Created.After(list[j].Created) })
+	return list, skipped, nil
+}
+
+// contractsPage is one SmartContractsListGet; a deployer without contracts is an empty page.
+func (c *Client) contractsPage(ctx context.Context, deployer ed25519.PublicKey, offset, limit int64) ([]*api.SmartContract, int32, error) {
+	var page []*api.SmartContract
+	var count int32
+	err := c.do(func(a *api.APIClient) error {
+		r, err := a.SmartContractsListGet(ctx, general.Address(deployer), offset, limit)
+		if err != nil {
+			return err
+		}
+		if r.Status != nil && r.Status.Code == codeNotFound {
+			count = r.Count
+			return nil
+		}
+		if err := check("SmartContractsListGet", r.Status); err != nil {
+			return err
+		}
+		page, count = r.SmartContractsList, r.Count
+		return nil
+	})
+	return page, count, err
 }
 
 // ContractState reads a contract's state: its fields and their values (SmartContractDataGet).
@@ -290,7 +351,9 @@ func (c *Client) WaitContract(ctx context.Context, address ed25519.PublicKey, ev
 // GetterAnnotation is the annotation that marks a method meant to be read without a transaction
 // (com.credits.scapi.annotations.Getter, kept at run time; the executor lists it by its full name).
 // It only documents the author's intent: running any method as a getter is free and changes
-// nothing, and a method without it may still only read.
+// nothing, and a method without it may still only read. The node's ContractAllMethodsGet drops the
+// executor's annotations (it copies names and types only), so today no method is marked; the user
+// chooses get or call.
 const GetterAnnotation = "com.credits.scapi.annotations.Getter"
 
 // IsGetter tells whether the method is annotated @Getter.

@@ -280,7 +280,7 @@ func (a *app) contractMethods(ctx context.Context, text string) error {
 	if a.json {
 		return a.printJSON(map[string]any{"contract": text, "methods": methodRows(methods)})
 	}
-	fmt.Fprintf(a.out, "%s: %s (getter: annotated @Getter, read for free with 'contract get'; any method can be read that way)\n",
+	fmt.Fprintf(a.out, "%s: %s ('contract get' reads any of them for free; 'contract call' signs a call; getter: annotated @Getter, when the node tells)\n",
 		text, plural(len(methods), "method"))
 	printMethods(a, methods)
 	return nil
@@ -305,7 +305,7 @@ func printState(a *app, vars map[string]*general.Variant, err error) {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	fmt.Fprintf(a.out, "state: %s\n", plural(len(names), "field"))
+	fmt.Fprintf(a.out, "state: %s (the node shows a contract's public fields only; read the others with getters)\n", plural(len(names), "public field"))
 	for _, k := range names {
 		fmt.Fprintf(a.out, "  %-20s %s\n", printable(k), printable(tx.Show(vars[k])))
 	}
