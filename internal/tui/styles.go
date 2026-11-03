@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -112,4 +113,12 @@ func (f *form) wipe() {
 	for i := range f.inputs {
 		f.inputs[i].SetValue("")
 	}
+}
+
+// printable keeps text that a contract or another sender chose (token names, user data) from
+// carrying terminal escape sequences: control characters are shown escaped.
+func printable(s string) string {
+	q := strconv.Quote(s)
+	q = q[1 : len(q)-1]
+	return strings.ReplaceAll(q, `\"`, `"`)
 }

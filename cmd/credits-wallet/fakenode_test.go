@@ -54,7 +54,7 @@ func (f *fakeNode) waitLog(want string) bool {
 	return false
 }
 
-func startFakeNode(t *testing.T) *fakeNode {
+func startFakeNode(t *testing.T, extra ...string) *fakeNode {
 	t.Helper()
 	if err := exec.Command("python3", "-c", "import thriftpy2, nacl, base58").Run(); err != nil {
 		if os.Getenv("CREDITS_WALLET_FAKE_NODE") == "1" {
@@ -68,7 +68,7 @@ func startFakeNode(t *testing.T) *fakeNode {
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
-	cmd := exec.Command("python3", "../../testdata/fake_node.py", "--port", fmt.Sprint(port))
+	cmd := exec.Command("python3", append([]string{"../../testdata/fake_node.py", "--port", fmt.Sprint(port)}, extra...)...)
 	out, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
