@@ -156,8 +156,11 @@ transactions. Running the wallet next to the user's own node is what the design 
   (the call and the new state it makes, 0.0175 CS on the private network) plus the execution, which
   the node charges later. A token is identified only by its contract address: its code and name are what the contract
   says of itself. The review shows the full address, labels code and name as self-declared, and
-  warns when the code or name is "CS" or "Credits", or when another token the account holds has the
-  same code. A `transfer` that returns `false` is reported as a failure (no tokens moved,
+  warns when the code or name looks like "CS" or "Credits", or another held token's code looks the
+  same: compared by a skeleton (confusable Cyrillic and Greek letters mapped to Latin ones, NFKD
+  compatibility folding such as fullwidth letters, combining marks and zero-width or bidi format
+  characters dropped, upper case); and whenever a code or name has any character outside printable
+  ASCII. A `transfer` that returns `false` is reported as a failure (no tokens moved,
   the fee paid).
 
 ### 5.4 Delegations
@@ -219,6 +222,8 @@ A pruned node keeps only recent blocks, so the history of an account may not be 
   in front when it starts like a spreadsheet formula (`= + - @`, tab, CR). A merged row keeps the
   call's own kind, direction and counterparty; the token transfer fills only the token columns.
   Without the token cache the file has the CS transactions and the command warns.
+- Messages of the node in errors are escaped when the error is built, and every error line is
+  escaped again where it is printed (stderr, the TUI).
 - Text chosen by others (user data, token names and codes) is shown with control characters and
   backslashes escaped, on screen and in the commands' output; `--json` also escapes the C1 controls
   (U+0080-U+009F) and the Unicode format characters (such as U+202E) as `\uXXXX`.

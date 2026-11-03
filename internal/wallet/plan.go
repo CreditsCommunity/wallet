@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/CreditsCommunity/wallet/internal/amount"
 	"github.com/CreditsCommunity/wallet/internal/config"
@@ -49,22 +52,90 @@ type TokenPlan struct {
 	Warnings []string
 }
 
+// confusables maps letters that look like Latin capitals (Cyrillic, Greek, and the like) to them,
+// for the letters of "CS" and "CREDITS" and the usual look-alikes; a skeleton in the spirit of
+// Unicode TR 39, small and explicit.
+var confusables = map[rune]rune{
+	'С': 'C', 'с': 'C', 'Ϲ': 'C', 'ϲ': 'C', 'Ⅽ': 'C', 'ⅽ': 'C', 'Ꮯ': 'C',
+	'Ѕ': 'S', 'ѕ': 'S', 'Ꮪ': 'S',
+	'Е': 'E', 'е': 'E', 'Ε': 'E', 'ε': 'E', 'Ꭼ': 'E',
+	'Т': 'T', 'т': 'T', 'Τ': 'T', 'τ': 'T', 'Ꭲ': 'T',
+	'І': 'I', 'і': 'I', 'Ι': 'I', 'ι': 'I', 'Ӏ': 'I', 'Ⅰ': 'I', 'ⅰ': 'I', 'ı': 'I', 'l': 'I', '|': 'I', '1': 'I',
+	'Р': 'P', 'р': 'P', 'Ρ': 'P', 'ρ': 'P',
+	'О': 'O', 'о': 'O', 'Ο': 'O', 'ο': 'O', '0': 'O',
+	'А': 'A', 'а': 'A', 'Α': 'A', 'α': 'A',
+	'В': 'B', 'в': 'B', 'Β': 'B', 'β': 'B',
+	'Н': 'H', 'н': 'H', 'Η': 'H',
+	'К': 'K', 'к': 'K', 'Κ': 'K', 'κ': 'K',
+	'М': 'M', 'м': 'M', 'Μ': 'M',
+	'Х': 'X', 'х': 'X', 'Χ': 'X', 'χ': 'X',
+	'Ү': 'Y', 'у': 'Y', 'Υ': 'Y',
+	'Ζ': 'Z', 'Ν': 'N', 'ԁ': 'D', 'Ꭰ': 'D', 'Ꭱ': 'R', 'ʀ': 'R', 'Ꮢ': 'R',
+}
+
+// Skeleton is what a token code or name looks like, for comparing look-alikes: confusable letters
+// mapped to Latin ones, compatibility forms folded (NFKD: fullwidth "ＣＳ" is "CS"), combining marks,
+// format and space characters dropped (accents, zero-width joiners, U+202E), upper case.
+func Skeleton(s string) string {
+	// confusables first (NFKD would turn some of them, such as the lunate sigma, into other
+	// letters), then compatibility decomposition, which also separates the combining marks
+	s = strings.Map(func(r rune) rune {
+		if c, ok := confusables[r]; ok {
+			return c
+		}
+		return r
+	}, s)
+	var b strings.Builder
+	for _, r := range norm.NFKD.String(s) {
+		if unicode.Is(unicode.Cf, r) || unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		if c, ok := confusables[r]; ok {
+			r = c
+		}
+		b.WriteRune(unicode.ToUpper(r))
+	}
+	return b.String()
+}
+
+// plainASCII: only printable ASCII.
+func plainASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 // TokenWarnings tells when a token's self-declared code or name could be mistaken for another
-// asset: CS itself, or another token the account holds under the same code.
+// asset: CS itself, or another token the account holds under a code that looks the same; and when
+// the code or name has characters outside printable ASCII, which can imitate others.
 func TokenWarnings(contract ed25519.PublicKey, code, name string, held []node.TokenBalance) []string {
 	var out []string
-	norm := func(s string) string { return strings.ToUpper(strings.TrimSpace(s)) }
-	for _, x := range []string{norm(code), norm(name)} {
-		if x == "CS" || x == "CREDITS" {
-			out = append(out, fmt.Sprintf("this token calls itself %s: it is NOT CS, only a token of contract %s",
-				echo.Printable(x), keys.Address(contract)))
+	for _, x := range []string{code, name} {
+		if sk := Skeleton(x); sk == "CS" || sk == "CREDITS" || sk == "CREDITSCS" {
+			looks := ""
+			if strings.ToUpper(strings.TrimSpace(x)) != sk {
+				looks = ", which looks like " + sk
+			}
+			out = append(out, fmt.Sprintf("this token calls itself %s%s: it is NOT CS, only a token of contract %s",
+				echo.Printable(x), looks, keys.Address(contract)))
 			break
 		}
 	}
+	for _, x := range []string{code, name} {
+		if !plainASCII(x) {
+			out = append(out, fmt.Sprintf("the token's code or name %s has characters outside plain ASCII, which can imitate others: check the contract address",
+				echo.Printable(x)))
+			break
+		}
+	}
+	mine := Skeleton(code)
 	for _, h := range held {
-		if !h.Token.Equal(contract) && norm(h.Code) != "" && norm(h.Code) == norm(code) {
-			out = append(out, fmt.Sprintf("another token you hold, %s, also calls itself %s: check the contract address",
-				keys.Address(h.Token), echo.Printable(code)))
+		if !h.Token.Equal(contract) && mine != "" && Skeleton(h.Code) == mine {
+			out = append(out, fmt.Sprintf("another token you hold, %s, has a code that looks the same (%s): check the contract address",
+				keys.Address(h.Token), echo.Printable(h.Code)))
 		}
 	}
 	return out

@@ -45,3 +45,36 @@ func TestParseUntil(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenWarningsCatchLookAlikes(t *testing.T) {
+	token := ed25519.NewKeyFromSeed(make([]byte, 32)).Public().(ed25519.PublicKey)
+	other := ed25519.NewKeyFromSeed(append(make([]byte, 31), 1)).Public().(ed25519.PublicKey)
+	for _, code := range []string{
+		"\u0421\u0405",           // Cyrillic Es, Dze
+		"\uff23\uff33",           // fullwidth CS
+		"C\u200bS",               // zero-width space
+		"C\u202eS",               // right-to-left override
+		"\u03f9S",                // Greek lunate sigma
+		"cs\u0301",               // a combining accent
+		"\u0421R\u0415D\u0406TS", // CREDITS with Cyrillic letters
+	} {
+		w := TokenWarnings(token, code, "x", nil)
+		if len(w) == 0 || !strings.Contains(w[0], "NOT CS") {
+			t.Errorf("%q not taken for CS: %v", code, w)
+		}
+	}
+	// any character outside printable ASCII is warned about by itself
+	if w := TokenWarnings(token, "T\u00d6K", "ok", nil); len(w) != 1 || !strings.Contains(w[0], "outside plain ASCII") {
+		t.Errorf("non-ASCII code: %v", w)
+	}
+	if w := TokenWarnings(token, "TOK", "na\u200dme", nil); len(w) != 1 || !strings.Contains(w[0], "outside plain ASCII") {
+		t.Errorf("non-ASCII name: %v", w)
+	}
+	// a held token whose code only looks the same
+	if w := TokenWarnings(token, "CTT", "x", []node.TokenBalance{{Token: other, Code: "\u0421TT"}}); len(w) != 1 || !strings.Contains(w[0], keys.Address(other)) {
+		t.Errorf("look-alike held code: %v", w)
+	}
+	if got := Skeleton("\uff23\u200b\u0405"); got != "CS" {
+		t.Errorf("skeleton %q", got)
+	}
+}
