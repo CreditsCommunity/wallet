@@ -443,13 +443,16 @@ start_node_typed() {
     (cd "$WORK/n$1" && exec "$NODE_BIN" --db-path db --config-file config.ini ${3:-} < <(printf p; sleep 3; printf '%s' "$2") >> stdout.log 2>&1) &
     PIDS+=($!)
 }
-stop_last() {
+stop_last() {  # the last node, until it is gone (with its executor it may take a while)
     kill "${PIDS[-1]}"
-    for _ in $(seq 1 30); do kill -0 "${PIDS[-1]}" 2>/dev/null || break; sleep 1; done
+    for _ in $(seq 1 120); do kill -0 "${PIDS[-1]}" 2>/dev/null || break; sleep 1; done
+    kill -9 "${PIDS[-1]}" 2>/dev/null || true
+    wait "${PIDS[-1]}" 2>/dev/null || true
 }
 wait_api() {
     for _ in $(seq 1 60); do
         st=$("$WALLET" status --node "127.0.0.1:$(api_port "$NODES")" --json 2>/dev/null || true)
+        kill -0 "${PIDS[-1]}" 2>/dev/null || break   # the new node exited
         jq -e '.last_block' <<< "$st" >/dev/null 2>&1 && return 0
         sleep 2
     done
