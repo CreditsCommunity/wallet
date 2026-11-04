@@ -90,6 +90,14 @@ with the packages of `testdata/requirements.txt` (pinned with hashes:
 Global flags, anywhere on the line: `--node HOST:PORT`, `--profile NAME`, `--config FILE`, `--json`,
 `--password-file FILE`, `--history-node HOST:PORT`.
 
+The terminal interface opens **locked**: it lists the accounts' names and addresses only, and an
+account's password unlocks it for the session (nothing of an account is shown before). Signing in
+the session asks no password again (on mainnet you still type `send` on the full review); `[l]`
+locks, `[a]` switches account (locking first), and the wallet locks by itself after
+`lock_after_minutes` without a key press (top of `config.toml`, default 10; `0` never locks, so
+anyone at the terminal could sign). It also locks after an account is created or imported. The
+commands keep their behaviour: each one asks the password when it signs.
+
 In the terminal interface: `[s]` send (with an optional Data field), `[d]` delegations (`n` delegate,
 `w` withdraw the selected one), `[t]` tokens (`s` send the selected token, `a` a token by its
 address), `[h]` history (`t` token transfers, `e` CSV export), `[c]` contracts (`o` open a `.java`,
@@ -121,7 +129,8 @@ deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call),
 4. Send: paste the recipient with the terminal's paste (Ctrl+Shift+V, right click): it is trimmed,
    a leading `credits:` is dropped, anything but an address is refused, and the address is shown
    with its first and last 6 characters highlighted to compare with the source. The review shows
-   the recipient, the amount and the fee; on mainnet it asks you to type `send`, then the password.
+   the recipient, the amount and the fee; on mainnet it asks you to type `send` (the commands then
+   ask the password; the interface asked it when you unlocked the account).
 
 ### Accounts and files
 
@@ -146,8 +155,18 @@ else, and the wallet says the account's address and file the first time it reads
 and operators usually keep their stake there.
 
 - `NodePrivate.txt` is read where the node reads it: never copied into the key store, never
-  encrypted (the node needs the plain file), no password asked to sign. `node_key = "off"` turns
-  it off.
+  encrypted by the wallet (the node needs its file), no password asked to sign with a plain key.
+  `node_key = "off"` turns it off.
+- **A key the node encrypted** (`--encryptkey`, or "[1] Encrypt with password" at the node's first
+  start) is opened with the node's password: on the interface's unlock screen, or when a command
+  signs. The wallet implements the node's format (Argon2id 1 GiB with the node's fixed salt,
+  original ChaCha20-Poly1305; docs/spec.md 4.3), checks the key against `NodePublic.txt`, and never
+  writes the opened key anywhere or exports it in clear.
+- **A key in the current folder** is never used by itself. The interface, started in a folder with
+  `NodePrivate.txt` and no node's key configured, shows its address and path and offers: use it for
+  this session, use it and remember it (`node_key` written into the active profile of
+  `config.toml`, comments and other settings kept), ignore it, or ignore it for good. The commands
+  print a one-line hint (`--node-key NodePrivate.txt`) and never use it.
 - **The node's key is kept in clear on the server**, because the node needs it: CS on it are as
   exposed as the server. Keep on it only what the node needs, and savings in a separate account
   (`account new`).
@@ -299,13 +318,15 @@ receives the account's public address only; every history output names the sourc
 
 - **What the wallet protects:** keys at rest (encrypted key files, mode 600 in a folder of mode
   700; the wallet warns when the data folder or `accounts/` is open to other users), keys in use
-  (decrypted only to sign, then overwritten), and the user against mistakes (mainnet assumed,
+  (decrypted only to sign, then overwritten; in the interface, held locked for the unlocked
+  session only), and the user against mistakes (mainnet assumed,
   explicit confirmation, the signed max fee shown, refusal while the node is not synced).
 - **What it cannot protect against:** malware or another user with access to your account on this
   machine (they can read the terminal, replace the binary, or swap a key file for one of their
   own, so that what you receive goes to them); a forgotten password (keep the 24 words).
 - **Memory:** Go cannot guarantee that secrets are wiped. The wallet zeroes the byte slices it
-  controls, but copies may remain: the TUI's text inputs hold passwords and pasted keys as
+  controls; the interface keeps the unlocked key in memory of its own, locked against swapping, out
+  of core dumps and inaccessible between signatures, zeroed on lock and exit. Copies may remain: the TUI's text inputs hold passwords and pasted keys as
   immutable strings, Argon2id's working memory is freed and not wiped, and a core dump or swap
   may hold any of them. Disable core dumps and use encrypted swap on machines holding funds.
 - **The node:** the wallet trusts the node it talks to for balances, fees, inner ids, sync state
@@ -318,7 +339,10 @@ receives the account's public address only; every history output names the sourc
 
 - `go test ./...`: the node's key files byte for byte as the node writes them (with
   `NODE_KEY_CHECK` set to `internal/keys/testdata/node-key-check.cpp` built against the node, read
-  by the node's own code), signing (byte-identical to the node's samples, and for user data, delegations,
+  by the node's own code), the node's encrypted key files (`testdata/node-encrypted-vectors.json`,
+  encrypted and opened by the node's code; with `NODE_KEY_CRYPT` set to
+  `internal/keys/testdata/node-key-crypt.cpp` built the same way, a round trip both ways), the
+  unlock screen, the session and its locks, the found-key prompt, signing (byte-identical to the node's samples, and for user data, delegations,
   token calls, deploys and contract addresses to `testdata/sign-vectors.txt`, made by
   `testdata/sign-vectors.py` the way the node's `ci/testnet/fund.py`, `samples/python/token_client.py`
   and `samples/clients/python/credits_client.py` build them), key store, amounts, the network-identity

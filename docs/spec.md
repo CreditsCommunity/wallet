@@ -74,7 +74,13 @@ ci/release/build.sh      the reproducible release archives
   per file**) → XChaCha20-Poly1305 with a random nonce. The file records the format version, the KDF
   parameters, the salt, the nonce, the ciphertext and the public key (to list accounts without the
   password).
-- The secret key is decrypted only to sign, held in memory as briefly as possible and zeroed after use.
+- The commands decrypt the secret key only to sign, hold it in memory as briefly as possible and
+  zero it after use. The terminal interface keeps the key of the account it unlocked for the
+  session (6, "Unlock"): in memory of its own outside Go's heap (`mmap`, `VirtualAlloc`), locked
+  against swapping (`mlock`, `VirtualLock`), left out of core dumps (Linux `MADV_DONTDUMP`) and
+  inaccessible (`PROT_NONE`, `PAGE_NOACCESS`) except to copy it out for one signature, the copy
+  zeroed after it (`keys.LockedKey`; every step best effort); the key is zeroed and the memory
+  freed on lock, on a switch of account, on the inactivity timer and at exit.
 - Key files are written whole to a temporary file (mode 0600), synced, then linked to their name:
   never half-written, never replacing an existing account. Files whose KDF parameters are outside
   time 1-16, memory 64 MiB-1 GiB, parallelism 1-32 are refused (more costs too much to open; less
@@ -123,8 +129,26 @@ folder (`--private-key-file`, `--public-key-file` name others; client/config/con
 
 | File | Content (exactly) | How the node reads it |
 |---|---|---|
-| `NodePrivate.txt` | base58 (Bitcoin alphabet) of the 64-byte ed25519 secret key, seed then public key, **no newline** | the first line (`std::getline`), `DecodeBase58` (spaces around it skipped): 64 bytes is a plain key; more is a key the node encrypted itself (`--encryptkey`, or "[1] Encrypt with password" at its first start), opened only with the node's password; fewer: "Bad private key file", the node stops |
+| `NodePrivate.txt` | base58 (Bitcoin alphabet) of the 64-byte ed25519 secret key, seed then public key, **no newline** | the first line (`std::getline`), `DecodeBase58` (spaces around it skipped): 64 bytes is a plain key; more is a key the node encrypted itself (`--encryptkey`, or "[1] Encrypt with password" at its first start), opened with the node's password (below); fewer: "Bad private key file", the node stops |
 | `NodePublic.txt` | base58 of the 32-byte public key, **no newline** | its first line must equal, as text, the base58 public key of `NodePrivate.txt`; otherwise the node stops and asks on its console whether to rewrite it (`f`) |
+
+**A key the node encrypted** (cscrypto `PrivateKey::getEncrypted` / `readFromEncrypted`,
+`cscrypto/src/privatekey.cpp`, libsodium 1.0.17 or later): `NodePrivate.txt` is base58 of 88 bytes,
+an 8-byte random nonce followed by `crypto_aead_chacha20poly1305_encrypt` (the original
+ChaCha20-Poly1305 with a 64-bit nonce, not the IETF one; no associated data) of the 64-byte secret
+key: 64 bytes of ciphertext and a 16-byte tag. The key is `crypto_pwhash` with `ALG_DEFAULT`
+(Argon2id v1.3), `OPSLIMIT_SENSITIVE` (4 passes), `MEMLIMIT_SENSITIVE` (1 GiB), parallelism 1, a
+32-byte output, and the **fixed** 16-byte salt `IDI NAHUY BLYAT'` that every node shares (so the
+derived key depends on the password only). The password is passed as its bytes up to the first NUL;
+the node reads only printable ASCII (32-126) from its console, 3 to 128 characters when it
+encrypts. The node can also use a file's content as the password ("f"); the wallet asks only for a
+typed password. `NodePublic.txt` stays plain. The wallet decrypts it in Go (`keys.DecryptNodeKey`:
+`golang.org/x/crypto/argon2`, `chacha20`, `poly1305`), never writes the decrypted key anywhere and
+never encrypts a node's key itself. Proven by `internal/keys/testdata/node-encrypted-vectors.json`,
+files encrypted and opened by the node's own code (`internal/keys/testdata/node-key-crypt.cpp`,
+built against the node), which the wallet opens and re-encrypts byte for byte with the same nonce;
+with `NODE_KEY_CRYPT` set, a round trip in both directions (the node opens what the wallet
+encrypts, the wallet opens what the node encrypts with a new nonce).
 
 Without `NodePrivate.txt` the node asks on its console to generate a key (`g`), shows its 24 words
 (the same derivation as the wallet's, 4.1) and offers to encrypt the file. `--seed` makes the node
@@ -168,13 +192,39 @@ receives go to that address. Next to its node the wallet therefore uses the node
   first, the default account (selected at start in the TUI; `account address` without a name), and
   marked everywhere: `NODE KEY` in `account list` (and `"node_key"`, `"default"` in its JSON), in
   the TUI's account list and details, in every review. `NodePrivate.txt` is read where the node
-  reads it: never copied into the key store, never encrypted, no password asked (the review asks
-  to type `send` on mainnet, as for any account). The key is read to find the address and again to
-  sign, then zeroed; a key that changed in between is refused. A key the node encrypted is reported
-  ("encrypted by the node: only the node can open it"), not used. `account export node --format
-  encrypted` is refused (`account import NAME NodePrivate.txt` makes an encrypted copy, which adds
-  no protection while the original stays in clear); `--format base58` and `official` need no
-  password.
+  reads it: never copied into the key store, never encrypted by the wallet. A plain key asks no
+  password (the user's choice; the review asks to type `send` on mainnet, as for any account): it
+  is read to find the address and again to sign, then zeroed; a key that changed in between is
+  refused. `account export node --format encrypted` is refused (`account import NAME
+  NodePrivate.txt` makes an encrypted copy, which adds no protection while the original stays in
+  clear); `--format base58` and `official` need no password.
+- **A key the node encrypted** (4.3; `--encryptkey`): the account's address is the
+  `NodePublic.txt` next to it (without a valid one the key is reported, not used: the node would
+  not start either), marked `encrypted by the node` (`"node_key_encrypted"` in JSON). The node's
+  password opens it: asked on the TUI's unlock screen like any account's, and by the commands when
+  they sign (the terminal or `--password-file`). Once opened, its public key must be the
+  `NodePublic.txt`'s, or it is refused. The TUI's session keeps the opened key in locked memory and
+  the file's SHA-256: a file changed since (the node re-encrypted it, say) is refused until the
+  account is unlocked again. Opening costs the node's Argon2id (1 GiB of memory, some seconds). It
+  is never exported in clear (`--format base58`, `official` and `node` refused) nor written
+  anywhere decrypted. A wrong password says only that the account could not be unlocked.
+- **Found in the current folder.** The key is never used because the wallet was started where a
+  `NodePrivate.txt` is (see above). When the terminal interface starts in such a folder and no
+  node's key is configured (neither `--node-key`, `node_key` nor `$CREDITS_WALLET_NODE_KEY`; and
+  not `off`), it says so on its first screen, with the key's address and full path, after the same
+  checks (refused when the file or its folder can be written by others, a warning when others can
+  read it), and offers: **use it for this session**; **use it and remember it** (`node_key` with the
+  absolute path written into the active profile of the configuration file in use, or of
+  `config.toml` in the data folder, created if missing: an existing `node_key` line of that
+  profile's `[nodes.NAME]` table is replaced, otherwise the line goes under the table's header;
+  comments and every other line are kept, the new text must parse to the same configuration but
+  for that value, written to a temporary file in the same folder, synced, renamed over it with the
+  file's mode; a profile written as an inline table, or `--node` without a profile, is refused with
+  the line to add by hand); **ignore it**; or **ignore it and do not ask again** for that path
+  (`node-keys-ignored.txt` in the data folder, one absolute path per line). A refused key can only
+  be ignored. The chosen key then goes to the unlock screen (its password for a key the node
+  encrypted). The commands only print, on stderr, `This folder holds a node key: to use it,
+  --node-key NodePrivate.txt (not used without it)`, and never use it.
 - **No key yet.** `account node-key new` (TUI: `g` on the main screen of a node's wallet whose node
   has no key) makes the key from a new 24-word phrase with the derivation of 4.1, shows and checks
   the words as `account new` does (three typed back; the recovery-file question; `--words-file` or
@@ -228,8 +278,9 @@ receives go to that address. Next to its node the wallet therefore uses the node
   - a **test or private network** is declared in the configuration (`network = testnet` or
     `network = private`, per node profile) and shown in another colour with a lighter confirmation;
     a `--node` address that no profile declares counts as mainnet;
-  - the confirmation on mainnet is typing `send` and the password (TUI and commands); on a test
-    network the password alone (TUI) or `y` (commands); the node's key (4.4) asks no password;
+  - the confirmation on mainnet is typing `send` (TUI and commands) and, for the commands, the
+    password; on a test network Enter (TUI) or `y` and the password (commands). The TUI asked the
+    password once, when the account was unlocked (6, "Unlock"); a plain node's key (4.4) asks none;
   - the **community node** (from CreditsCommunity/node#162, release community.17) tells its network in
     its diagnostic API: `API_DIAG.GetNodeInfo` returns `NodeInfo.networkUuid` (field 9, optional i64:
     the first 8 bytes of the hash of block 1 as a little-endian uint64, the same 64 bits in the
@@ -545,7 +596,7 @@ Mock-ups (80 columns):
 │ Data      (none)                                            │
 │                                                             │
 │ This sends real CS on MAINNET.        [Enter] sign and send │
-│ Password  ••••••••••                  [Esc]   cancel        │
+│ Confirm   send                        [Esc]   cancel        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -570,6 +621,25 @@ Mock-ups (80 columns):
 │   getName() : String     getter │ fee ≈ 0.0175 CS        [Enter] sign and call │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Unlock
+
+The interface opens on the **unlock screen**, which shows the accounts' names and addresses only
+(and whether one is the node's key). The user picks an account and types its password; nothing of
+an account (balance, delegations, history, tokens, contracts) is loaded or shown before. A plain
+node's key needs no password. A wrong password says only "could not unlock: wrong password, or a
+damaged key file"; there is no limit on tries, but each failure in a row adds a wait before the
+next one (2 s, doubling, at most 30 s) on top of Argon2id's own cost.
+
+Unlocked, signing asks no password again (the user's choice); on MAINNET the review still asks to
+type `send`, and shows everything as before. `l` locks; `a` switches account (it locks first);
+the session locks by itself after `lock_after_minutes` (top level of `config.toml`, default 10;
+`0` never locks: then anyone at the terminal can sign with the unlocked account) without a key
+press or click, but never while a transaction is on its way. After an account is created or
+imported (or the node's key made), the session that was open is locked and the unlock screen comes
+back on the new account. Locking zeroes the key (4.2) and forgets the account's data; the
+interface zeroes it at exit too. The commands are unchanged: each one asks the password when it
+signs.
 
 Editing contract sources happens in the user's editor (`$EDITOR`, Notepad on Windows); the wallet shows
 the file, compiles it and reports errors.
@@ -601,8 +671,9 @@ credits-wallet contract list <account|address>
 global: --node HOST:PORT  --history-node HOST:PORT  --json  --config FILE
 ```
 
-The password is asked on the terminal, or read from a file named by `--password-file` for unattended
-use (documented with its risks).
+The password is asked on the terminal when a command signs (each command on its own: there is no
+session outside the TUI), or read from a file named by `--password-file` for unattended use
+(documented with its risks). A node's key the node encrypted asks the node's password the same way.
 
 ## 8. Quality
 
