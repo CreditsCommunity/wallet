@@ -241,11 +241,11 @@ func (a *app) exportNodeFormat(name, out string, replace, yes bool) error {
 			return errors.New("cancelled: nothing was written")
 		}
 	}
-	pw, err := a.readPassword("Password of "+f.Name+": ", false)
+	pw, err := a.readPassword(passwordPrompt(f), false)
 	if err != nil {
 		return err
 	}
-	key, err := f.Decrypt(pw)
+	key, err := a.w.OpenKey(f, pw)
 	keys.Zero(pw)
 	if err != nil {
 		return err

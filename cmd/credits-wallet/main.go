@@ -109,16 +109,24 @@ usage: credits-wallet [global flags] [command] [arguments]
   contract pay <account> <contract> <amount> [--data TEXT] [--yes]
                                         send CS to a contract: its payable() runs
   contract list <account|address>       contracts deployed by the account (node and local list)
-  backup export <FILE.dat>              every account of the key store in one file, with its
-                                        token and contract lists, sealed under a backup password
-                                        typed twice (the key files stay encrypted under their
-                                        own passwords); never the node's key nor config.toml;
-                                        a new file, mode 600, outside the data folder
-  backup import <FILE.dat> [--rename-suffix S] [--yes]
-                                        asks the backup password, lists the accounts and restores
-                                        them once confirmed: an address already here is skipped,
-                                        a name taken by another address gets the suffix S (on a
-                                        terminal, or a name you type); each keeps its password
+  wallet                                the wallet password: set, accounts with an old password
+  wallet migrate                        move the accounts that still have a password each under
+                                        the wallet password (chosen now when there is none: it
+                                        may be one of theirs); each other password asked once
+  wallet password [--new-password-file FILE]
+                                        change the wallet password: every account re-encrypted
+                                        under a new wallet key (an interrupted change finishes
+                                        when the wallet is opened with the new password)
+  backup export <FILE.dat>              every account in one file, with the wallet key and the
+                                        token and contract lists, encrypted with the wallet
+                                        password; never the node's key nor config.toml; a new
+                                        file, mode 600, outside the data folder
+  backup import <FILE.dat> [--rename-suffix S] [--yes] [--wallet-password-file FILE]
+                                        asks the password of the wallet the backup comes from,
+                                        lists the accounts and restores them once confirmed,
+                                        under this wallet's password (asked if it differs): an
+                                        address already here is skipped, a name taken by another
+                                        address gets the suffix S (on a terminal, a typed name)
   config                                print an example configuration file
   version
 
@@ -307,7 +315,7 @@ func run(args []string) int {
 // valueFlags are the flags that take a value (the next argument, unless written --flag=value).
 var valueFlags = map[string]bool{"config": true, "profile": true, "node": true, "password-file": true,
 	"format": true, "out": true, "csv": true, "limit": true, "offset": true, "wait": true, "words-file": true,
-	"history-node": true, "node-key": true, "data": true, "until": true, "token": true, "from": true, "rename-suffix": true}
+	"history-node": true, "node-key": true, "data": true, "until": true, "token": true, "from": true, "rename-suffix": true, "new-password-file": true, "wallet-password-file": true}
 
 // findCommand returns the first argument that is neither a flag nor a flag's value.
 func findCommand(args []string) string {
@@ -385,6 +393,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.cmdContract(ctx, args)
 	case "backup":
 		return a.cmdBackup(ctx, args)
+	case "wallet":
+		return a.cmdWallet(ctx, args)
 	}
 	return usagef("unknown command %s", echo.Quote(cmd))
 }

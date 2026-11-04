@@ -80,6 +80,9 @@ func readPasswordFile(path string) ([]byte, error) {
 	return append([]byte(nil), line...), nil
 }
 
+// readSecret reads a secret line without echo (replaced in tests).
+var readSecret = readSecretLine
+
 // readSecretLine reads a secret (key or phrase) from the terminal without echo.
 func readSecretLine(prompt string) (string, error) {
 	if !stdinIsTerminal() {

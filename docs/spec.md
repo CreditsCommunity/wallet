@@ -70,10 +70,48 @@ ci/release/build.sh      the reproducible release archives
 
 - One file per account in the wallet's data folder (`~/.credits-wallet/` on Linux and macOS,
   `%APPDATA%\credits-wallet\` on Windows), readable by the user only.
-- Encrypted with a password: Argon2id (time 3, memory 256 MiB, parallelism 4, **random 16-byte salt
-  per file**) → XChaCha20-Poly1305 with a random nonce. The file records the format version, the KDF
-  parameters, the salt, the nonce, the ciphertext and the public key (to list accounts without the
-  password).
+- **One password for the whole wallet** (the wallet password), through a master key:
+  `accounts/wallet.key` (mode 0600) holds a random 32-byte master key sealed under the wallet
+  password: Argon2id (time 3, memory 256 MiB, parallelism 4, **random 16-byte salt**) →
+  XChaCha20-Poly1305 with a random nonce; the associated data binds the file's version, its id (16
+  random bytes, hex), the KDF parameters and the salt. Each account file (**version 2**) holds the
+  account's 32-byte seed sealed with XChaCha20-Poly1305 directly under the master key (a random
+  nonce per file; associated data: version, the wallet key's id, the public key), and records the
+  version, `key_id`, the nonce, the ciphertext and the public key (to list accounts without the
+  password). Why a master key rather than every file under the password with its own salt: one
+  Argon2id opens the wallet whatever the number of accounts (N accounts would cost N derivations
+  of 256 MiB at every start), the interface keeps one 32-byte secret for the session, and a change
+  of password is one new key file plus a re-encryption without key derivations. The cost:
+  `wallet.key` is needed by every account; it is in every backup (4.5), and the 24 words still
+  restore each account alone.
+- The wallet password is chosen with the first account (typed twice, a hint under 12 characters,
+  never refused); later accounts are encrypted under it without asking it again. The interface
+  asks it once to unlock the wallet; each command asks it once (`--password-file` reads it).
+- **Accounts with an old password** (version 1, from before the wallet password, and the
+  encrypted exports): the seed under the account's own password, Argon2id with the file's own salt
+  → XChaCha20-Poly1305, the associated data binding the version, the KDF parameters and the public
+  key. Still read: such an account opens with its own password, and is listed "old password".
+- **Migration.** A wallet whose accounts have passwords each and no `wallet.key` asks, at the
+  interface's first start (and `wallet migrate`), to choose the wallet password; it may be one of
+  the accounts' passwords. Every account that the wallet password opens is moved at once; each
+  other account's password is asked once (empty: it keeps its old password and is moved later with
+  `M` or `wallet migrate`). Moving an account: a copy of its old file goes to
+  `accounts/.migration/NAME.json` (mode 0600, written by `WriteSecretFile`, an older copy kept), the
+  new file replaces the old one atomically (a temporary file, synced, renamed), then is read back
+  and opened with the master key. At the end of a run, and whenever the wallet is opened, the copies
+  are checked and removed: an account file missing is put back from its copy, one under the wallet
+  key must open with it (otherwise the copy is put back), one still under its old password is left.
+  So a crash at any point leaves each account whole, under one password or the other, and the
+  migration goes on at the next start. Until the wallet password exists, new accounts, imports and
+  backups are refused with "choose the wallet password first".
+- **Change of the wallet password** (`wallet password`, `P` in the interface): the current
+  password, the new one twice. A new master key is drawn; `wallet.key.next` (exclusive, mode 0600)
+  holds the new master key and the previous one, sealed under the new password; every account
+  file under the previous key is re-encrypted under the new one, each replaced atomically; then
+  `wallet.key` is replaced (atomically) by the new key alone and `wallet.key.next` removed.
+  Interrupted anywhere, opening the wallet with the new password finishes it (`wallet.key.next`
+  holds both keys); the old password then says "a change of the wallet password was interrupted:
+  type the NEW password". Backups already made keep opening with the old password (4.5).
 - The commands decrypt the secret key only to sign, hold it in memory as briefly as possible and
   zero it after use. The terminal interface keeps the key of the account it unlocked for the
   session (6, "Unlock"): in memory of its own outside Go's heap (`mmap`, `VirtualAlloc`), locked
@@ -90,7 +128,8 @@ ci/release/build.sh      the reproducible release archives
   (256 MiB, 1 GiB for a node's key). All of them stay in the process's memory until it is reused
   (core dumps are off: 4.2 above).
 - Key files are written whole to a temporary file (mode 0600), synced, then linked to their name:
-  never half-written, never replacing an existing account. Files whose KDF parameters are outside
+  never half-written, never replacing an existing account (a migration or a change of password
+  replaces an account's file atomically, by rename). Files whose KDF parameters are outside
   time 1-16, memory 64 MiB-1 GiB, parallelism 1-32 are refused (more costs too much to open; less
   was not written by the wallet). Unreadable key files are reported, not skipped.
 - New keys come from `crypto/rand` (the operating system's CSPRNG); a new account shows its 24-word
@@ -128,6 +167,16 @@ ci/release/build.sh      the reproducible release archives
   (`prctl(PR_SET_DUMPABLE, 0)`, Linux) and sets `RLIMIT_CORE` to 0 (Linux, macOS), best effort. Afterwards the wallet prints the full
   path and "This file holds your account in clear: copy it to paper or an offline USB key, then
   delete it from this computer." (the TUI shows the same).
+
+- **One key from elsewhere.** `account import NAME FILE` (and `i`): an encrypted key file of
+  version 1 (another wallet's account file from before, or an encrypted export) asks that file's
+  password, then goes under the wallet password; a base58 key, the 24 words or the official
+  wallets' JSON are encrypted under it directly. An account file of version 2 belongs to another
+  wallet's `wallet.key` and is refused (export it from that wallet, or use the 24 words).
+  `account export NAME` (the encrypted format) asks the wallet password, then the exported file's
+  password: by default the wallet password (Enter or `w`), or another one typed twice (`o`); the
+  file is a key file of version 1 (its own salt), importable by any wallet. `base58`, `official` and
+  `node` ask the wallet password and are otherwise unchanged.
 
 ### 4.3 The node's key files
 
@@ -277,6 +326,9 @@ receives go to that address. Next to its node the wallet therefore uses the node
   detection of a running node is best effort. The wallet says that the node's identity follows its key:
   its address, the delegations it received, its history as a trusted node and its rewards; a node
   started with another key is another node.
+- **Not under the wallet password.** The node's key never is: a plain `NodePrivate.txt` needs no
+  password, and a key the node encrypted keeps **the node's own password** (asked when the account
+  is used, in the interface also while the wallet is open), which is the node's, not the wallet's.
 - **Warnings**, short, once per use (the TUI's start, `account list`, `account node-key`, the
   generation, the export): the node's key is kept in clear on the server because the node needs
   it, so CS on it are as exposed as the server; operators usually keep their stake there already:
@@ -285,12 +337,15 @@ receives go to that address. Next to its node the wallet therefore uses the node
 ### 4.5 The backup file
 
 `backup export FILE.dat` (and `b` then `e` in the TUI) writes every account of the key store into
-one file; `backup import FILE.dat` (`b` then `i`) restores them. The backup never decrypts an
-account: it carries the key files as stored, each still encrypted under its own password (4.2),
-and seals all of them under a **backup password** chosen at export.
+one file; `backup import FILE.dat` (`b` then `i`) restores them. The backup carries the account
+files as stored (under the wallet key, or an old password) and the wallet key itself, and is
+sealed under **the wallet password**: there is no password of its own. **It is only as strong as
+the wallet password**, and a change of the wallet password does not touch the backups already
+made: they keep opening with the old password.
 
 **Content** (the plaintext, JSON): `{"format": "credits-wallet backup", "version": 1, "created":
-UTC time, "accounts": [{"name", "address", "key_file", "tokens", "contracts"}]}`. `key_file` is the
+UTC time, "wallet_key", "accounts": [{"name", "address", "key_file", "tokens", "contracts"}]}`.
+`wallet_key` is `accounts/wallet.key` byte for byte (base64); `key_file` is the
 account's key file byte for byte (base64 in the JSON), `tokens` and `contracts` its local lists
 (`tokens/<address>.json`, `contracts/<address>.json`, public data), absent when it has none; the
 name is the key file's name in `accounts/`. **Not included:** the node's key (`NodePrivate.txt`
@@ -313,7 +368,7 @@ warning.
 | 35 | 24 | nonce, random (XChaCha20-Poly1305) |
 | 59 | rest | ciphertext and its 16-byte tag |
 
-The key is Argon2id of the backup password with the key files' parameters (time 3, 256 MiB, 4
+The key is Argon2id of the wallet password with the key files' parameters (time 3, 256 MiB, 4
 threads) and the file's salt; the cipher XChaCha20-Poly1305; the whole 59-byte header is the
 associated data, so no byte of it (version, parameters, salt, nonce) can change without the tag
 check failing. On reading, parameters outside the key files' bounds (4.2) are refused before any
@@ -322,32 +377,41 @@ supported: this wallet reads version 1"), a file without the magic is "not a cre
 file", and every other failure (a wrong password, a damaged or truncated file, a damaged header)
 says the same "could not open the backup: wrong backup password, or a damaged file". Files over
 64 MiB are not read; inside, at most 10,000 accounts, key files up to 16 KiB and lists up to 4 MiB,
-each name valid, each key file a wallet key file of its account's address, each list that
-account's, no name or address twice; otherwise the content is refused. The derived key and the
+each name valid, each key file a wallet key file (version 1 or 2) of its account's address, each
+account of version 2 under the backup's wallet key, each list that account's, no name or address
+twice; otherwise the content is refused. The derived key and the
 plaintext buffers (the JSON, the decoded key files and lists) are zeroed after use (4.2: the
 limits of what Go can wipe apply).
 
 **Export.** The path gets the recovery file's checks (4.2): a new file, in an existing folder,
 outside the data folder, the accounts folder and the node's folder (by identity), not in or below
 a folder holding key files; the CLI names it, the TUI proposes `~/credits-wallet-backup-DATE.dat`.
-The backup password is typed twice and must not be empty; under 12 characters the wallet adds a
-hint ("a short password…"; it never refuses). With `--password-file` the first line of the file is
-the backup password. The file is written by `WriteSecretFile` (4.2: mode 0600, never over a file,
+The wallet password is asked once and must open `wallet.key` (another password is refused); with
+`--password-file` the first line of the file is the wallet password. A wallet whose accounts still
+have passwords each is refused until the wallet password exists (4.2, migration). The file is written by `WriteSecretFile` (4.2: mode 0600, never over a file,
 never through a link, whole or not at all). The wallet prints the path and the number of accounts
-and says: "This file contains your accounts, each still protected by its own password and the
-whole file by the backup password; keep it off this computer, e.g. on a USB key.", and what is not
-in it (the node's key, `config.toml`).
+and says: "This file contains your accounts, protected by the wallet password (the whole file,
+and each account inside); it is only as strong as that password. Keep it off this computer, e.g.
+on a USB key.", what is not in it (the node's key, `config.toml`), and that backups made before a
+change of the wallet password keep opening with the old password.
 
-**Import.** The backup password is asked once; the wallet lists the backup's accounts (name and
+**Import.** The password of the wallet the backup comes from (the backup's password) is asked
+once: it opens the file and the backup's `wallet.key`. The accounts are re-encrypted under the
+importing wallet's key: when the importing wallet's password is the same, nothing more is asked;
+otherwise this wallet's password is asked once (CLI: on the terminal, or
+`--wallet-password-file FILE`; the interface uses the open wallet, or asks it); a wallet without a
+password yet takes the backup's as its wallet password. Accounts of the backup with an old password
+of their own (a wallet not migrated) are opened with the backup's password when it is theirs, else
+each password is asked once (empty: the account is restored with its old password, to migrate
+later). A wallet whose own accounts still have passwords each is refused until it is migrated. The
+wallet lists the backup's accounts (name and
 address) with what it will do, then asks "Restore N accounts? [y/N]" (CLI: `--yes` skips it, and
 without a terminal it is required). An account whose address is already in the wallet (the node's
 key included) is skipped and reported; its token and contract list entries the wallet lacks are
 merged. A name taken by another address needs a new name: `--rename-suffix S` (the name plus S),
 or on a terminal a name typed for each (Enter skips the account); the TUI asks it in a field;
 without either, the account is skipped. Each account is written by the key store's writer (4.2:
-whole, never over an account), then its lists merged (an entry already there is kept). Restored
-accounts keep their own passwords, those they had when the backup was made: the backup password
-opens the file, not the accounts.
+whole, never over an account), then its lists merged (an entry already there is kept).
 
 **`--json`** prints metadata only, never the content: export `{"file", "count", "accounts": [{"name",
 "address"}], "not_included", "problems"}`; import `{"file", "created", "accounts": [{"name",
@@ -716,24 +780,32 @@ Mock-ups (80 columns):
 ### Unlock
 
 The interface opens on the **unlock screen**, which shows the accounts' names and addresses only
-(and whether one is the node's key). The user picks an account and types its password; nothing of
-an account (balance, delegations, history, tokens, contracts) is loaded or shown before. A plain
-node's key needs no password. A wrong password says only "could not unlock: wrong password, or a
+(and whether one is the node's key, or has an old password). The user picks an account and types
+**the wallet password**: it opens the wallet (the master key, 4.2, kept in locked memory as the
+signing key is: `keys.LockedKey`) and that account; nothing of an account (balance, delegations,
+history, tokens, contracts) is loaded or shown before. While the wallet is open, `a` goes back to
+the list ("Choose an account") and any account under the wallet password opens without a
+password. Apart: an account with an old password asks it, the node's key encrypted by the node
+asks the node's password, a plain node's key needs none. At the first start of a wallet whose
+accounts have passwords each, the migration screen (4.2) comes first. The wallet password typed
+at unlock also moves the accounts with an old password that is the same. A wrong password says only "could not unlock: wrong password, or a
 damaged key file"; there is no limit on tries, but each failure in a row adds a wait before the
 next one (2 s, doubling, at most 30 s) on top of Argon2id's own cost.
 
 Unlocked, signing asks no password again (the user's choice); on MAINNET the review still asks to
-type `send`, and shows everything as before. `l` locks; `a` switches account (it locks first);
+type `send`, and shows everything as before. `l` locks the wallet (the master key and the account's
+key zeroed); `a` switches account (the account's key zeroed, the wallet stays open);
 the session locks by itself after `lock_after_minutes` (top level of `config.toml`, default 10;
 `0` never locks: then anyone at the terminal can sign with the unlocked account) without a key
 press or click, but never while a transaction is on its way. After an account is created or
-imported (or the node's key made), the session that was open is locked and the unlock screen comes
-back on the new account. Locking zeroes the key (4.2) and forgets the account's data; the
+imported (or the node's key made), the account that was open is locked and the unlock screen comes
+back on the new account (with the wallet open, Enter opens it). Locking zeroes the key (4.2) and forgets the account's data; the
 interface zeroes it at exit too. The commands are unchanged: each one asks the password when it
 signs.
 
-The unlock screen and the main screen offer `b`, the backup (4.5): `e` export, `i` import. It
-asks no account's password: the key files go in and come back encrypted.
+The unlock screen and the main screen offer `b`, the backup (4.5): `e` export, `i` import; `M`
+moves the accounts with an old password under the wallet password (4.2), and the main screen's `P`
+changes the wallet password.
 
 Editing contract sources happens in the user's editor (`$EDITOR`, Notepad on Windows); the wallet shows
 the file, compiles it and reports errors.
@@ -746,7 +818,8 @@ credits-wallet status
 credits-wallet account new|import|export|list|address
 credits-wallet account node-key | node-key new [--out FOLDER]       # the node's key (4.4)
 credits-wallet account export <account> --format node --out FOLDER [--replace]
-credits-wallet backup export <FILE.dat> | import <FILE.dat> [--rename-suffix S] [--yes]   # 4.5
+credits-wallet wallet | wallet migrate | wallet password [--new-password-file FILE]      # 4.2
+credits-wallet backup export <FILE.dat> | import <FILE.dat> [--rename-suffix S] [--yes] [--wallet-password-file FILE]   # 4.5
 credits-wallet balance [account]
 credits-wallet send <account> <to> <amount> [--data TEXT] [--yes]
 credits-wallet delegate <account> <node> <amount> [--until DATE] | undelegate <account> <node> <amount>
@@ -766,9 +839,10 @@ credits-wallet contract list <account|address>
 global: --node HOST:PORT  --history-node HOST:PORT  --json  --config FILE
 ```
 
-The password is asked on the terminal when a command signs (each command on its own: there is no
-session outside the TUI), or read from a file named by `--password-file` for unattended use
-(documented with its risks). A node's key the node encrypted asks the node's password the same way.
+The wallet password is asked on the terminal, once, when a command signs or adds an account (each
+command on its own: there is no session outside the TUI), or read from a file named by
+`--password-file` for unattended use (documented with its risks). An account with an old password
+asks that password; a node's key the node encrypted asks the node's password the same way.
 
 ## 8. Quality
 

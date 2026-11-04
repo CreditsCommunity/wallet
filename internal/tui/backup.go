@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bytes"
 	"fmt"
 	"runtime/debug"
 	"strings"
@@ -21,10 +20,12 @@ type backupStep int
 
 const (
 	bkChoose     backupStep = iota
-	bkExportForm            // File, Password, Repeat
-	bkImportForm            // File, Password
+	bkExportForm            // File, Wallet pw
+	bkImportForm            // File, the backup's password
 	bkWorking               // Argon2id, writing or opening
 	bkRename                // a name of the backup is another account's here: a new name
+	bkOldPw                 // an account of the backup with a password of its own
+	bkWalletPw              // this wallet's password, when it is not the backup's
 	bkConfirm               // the accounts of the backup, and what the restore does
 	bkDone
 )
@@ -40,13 +41,18 @@ type backupScreen struct {
 	problems []error
 
 	// import
-	backup  *wallet.Backup
-	plans   []wallet.RestorePlan
-	names   []string
-	taken   map[string]bool
-	renameI int // the plan being renamed
-	results []wallet.RestoreResult
-	note    string
+	backup   *wallet.Backup
+	src      *wallet.Session // the backup's wallet key
+	dst      *wallet.Session // this wallet's
+	dstOwned bool            // opened here (locked at the end); otherwise the model's
+	pw       []byte          // the backup's password, kept when it becomes this wallet's
+	plans    []wallet.RestorePlan
+	names    []string
+	taken    map[string]bool
+	renameI  int // the plan being renamed
+	oldI     int // the plan whose own password is asked
+	needDst  bool
+	results  []wallet.RestoreResult
 }
 
 type backupWrittenMsg struct {
@@ -57,9 +63,17 @@ type backupWrittenMsg struct {
 }
 
 type backupOpenedMsg struct {
-	b     *wallet.Backup
-	plans []wallet.RestorePlan
-	err   error
+	b        *wallet.Backup
+	src, dst *wallet.Session
+	needDst  bool   // this wallet has another password
+	pw       []byte // no wallet password here: the backup's becomes it
+	plans    []wallet.RestorePlan
+	err      error
+}
+
+type backupDstMsg struct {
+	dst *wallet.Session
+	err error
 }
 
 type backupRestoredMsg struct {
@@ -70,12 +84,20 @@ func newBackupScreen() *backupScreen { return &backupScreen{} }
 
 func (s *backupScreen) title() string { return "Backup" }
 
-func (s *backupScreen) forget() {
+func (s *backupScreen) forget(m *model) {
 	if s.form != nil {
 		s.form.wipe()
 	}
 	s.backup.Wipe()
 	s.backup = nil
+	wallet.WipePlans(s.plans)
+	s.src.Lock()
+	if s.dstOwned {
+		s.dst.Lock()
+	}
+	s.src, s.dst = nil, nil
+	keys.Zero(s.pw)
+	s.pw = nil
 }
 
 func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
@@ -92,7 +114,11 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			s.step, s.err = bkImportForm, msg.err
 			return nil
 		}
-		s.backup, s.plans, s.err = msg.b, msg.plans, nil
+		s.backup, s.src, s.plans, s.err = msg.b, msg.src, msg.plans, nil
+		s.needDst, s.pw = msg.needDst, msg.pw
+		if msg.dst != nil {
+			s.dst, s.dstOwned = msg.dst, msg.dst != m.session
+		}
 		s.names = make([]string, len(s.plans))
 		s.taken = map[string]bool{}
 		for i, p := range s.plans {
@@ -101,18 +127,25 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 				s.taken[p.Account.Name] = true
 			}
 		}
-		s.renameI = -1
-		s.nextRename()
+		s.renameI, s.oldI = -1, -1
+		s.next()
+		return nil
+	case backupDstMsg:
+		if msg.err != nil {
+			s.step, s.err = bkWalletPw, msg.err
+			return nil
+		}
+		s.dst, s.dstOwned, s.needDst, s.err = msg.dst, true, false, nil
+		s.next()
 		return nil
 	case backupRestoredMsg:
 		s.results = msg.results
-		s.backup.Wipe()
-		s.backup = nil
+		s.forget(m)
 		s.step = bkDone
 		return m.loadAccounts()
 	case tea.KeyMsg:
 		if msg.String() == "esc" && s.step != bkWorking {
-			s.forget()
+			s.forget(m)
 			return m.back()
 		}
 	}
@@ -124,7 +157,7 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		}
 		switch k.String() {
 		case "e":
-			s.form = newForm("File", "Password", "Repeat").secret(1).secret(2)
+			s.form = newForm("File", "Wallet pw").secret(1)
 			if def, err := wallet.DefaultBackupPath(time.Now()); err == nil {
 				s.form.inputs[0].SetValue(def)
 				s.form.inputs[0].CursorEnd()
@@ -145,14 +178,12 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			s.err = err
 			return nil
 		}
-		pw, again := []byte(s.form.inputs[1].Value()), []byte(s.form.inputs[2].Value())
-		defer keys.Zero(again)
-		if len(pw) == 0 || !bytes.Equal(pw, again) {
-			keys.Zero(pw)
-			s.err = fmt.Errorf("the passwords are empty or differ")
+		pw := []byte(s.form.inputs[1].Value())
+		s.form.inputs[1].SetValue("")
+		if len(pw) == 0 {
+			s.err = fmt.Errorf("type the wallet password")
 			return nil
 		}
-		s.form.wipe()
 		s.err, s.step = nil, bkWorking
 		w := m.w
 		return func() tea.Msg {
@@ -163,6 +194,9 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 				return backupWrittenMsg{problems: problems, err: err}
 			}
 			defer b.Wipe()
+			if err := w.CheckWalletPassword(pw); err != nil {
+				return backupWrittenMsg{problems: problems, err: err}
+			}
 			if err := wallet.WriteBackup(path, b, pw); err != nil {
 				return backupWrittenMsg{problems: problems, err: err}
 			}
@@ -178,11 +212,16 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		s.form.inputs[1].SetValue("")
 		if path == "" || len(pw) == 0 {
 			keys.Zero(pw)
-			s.err = fmt.Errorf("the file and the backup password, please")
+			s.err = fmt.Errorf("the file and the password of the wallet it comes from, please")
+			return nil
+		}
+		if m.w.NeedsMigration() {
+			keys.Zero(pw)
+			s.err = wallet.ErrMigrateFirst
 			return nil
 		}
 		s.err, s.step = nil, bkWorking
-		w := m.w
+		w, session := m.w, m.session
 		return func() tea.Msg {
 			defer keys.Zero(pw)
 			defer debug.FreeOSMemory()
@@ -194,12 +233,36 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			if err != nil {
 				return backupOpenedMsg{err: err}
 			}
-			plans, err := w.PlanRestore(b)
+			src, err := b.SourceKey(pw)
 			if err != nil {
 				b.Wipe()
 				return backupOpenedMsg{err: err}
 			}
-			return backupOpenedMsg{b: b, plans: plans}
+			plans, err := w.PlanRestore(b)
+			if err != nil {
+				b.Wipe()
+				src.Lock()
+				return backupOpenedMsg{err: err}
+			}
+			for i := range plans {
+				if plans[i].Old && plans[i].State != wallet.RestoreExists {
+					plans[i].TryOldPassword(pw)
+				}
+			}
+			msg := backupOpenedMsg{b: b, src: src, plans: plans, dst: session}
+			switch {
+			case session != nil:
+			case w.HasWalletPassword():
+				dst, err := w.OpenWallet(pw)
+				if err == nil {
+					msg.dst = dst
+				} else {
+					msg.needDst = true
+				}
+			default:
+				msg.pw = append([]byte(nil), pw...)
+			}
+			return msg
 		}
 	case bkRename:
 		cmd, done := s.form.update(msg)
@@ -215,17 +278,60 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			s.names[s.renameI], s.taken[name] = name, true
 		}
 		s.err = nil
-		s.nextRename()
+		s.next()
 		return nil
+	case bkOldPw:
+		cmd, done := s.form.update(msg)
+		if !done {
+			return cmd
+		}
+		pw := []byte(s.form.inputs[0].Value())
+		s.form.wipe()
+		if len(pw) > 0 {
+			ok := s.plans[s.oldI].TryOldPassword(pw)
+			keys.Zero(pw)
+			if !ok {
+				s.err = fmt.Errorf("not that password: again, or Enter with nothing to keep it")
+				return nil
+			}
+		}
+		s.err = nil
+		s.next()
+		return nil
+	case bkWalletPw:
+		cmd, done := s.form.update(msg)
+		if !done {
+			return cmd
+		}
+		pw := []byte(s.form.inputs[0].Value())
+		s.form.wipe()
+		s.step = bkWorking
+		w := m.w
+		return func() tea.Msg {
+			defer keys.Zero(pw)
+			dst, err := w.OpenWallet(pw)
+			return backupDstMsg{dst, err}
+		}
 	case bkConfirm:
 		k, ok := msg.(tea.KeyMsg)
 		if !ok || k.String() != "enter" {
 			return nil
 		}
 		s.step = bkWorking
-		w, plans, names := m.w, s.plans, s.names
+		w, plans, names, src, dst, pw := m.w, s.plans, s.names, s.src, s.dst, s.pw
+		created := false
 		return func() tea.Msg {
-			results, _, _ := w.Restore(plans, names)
+			if dst == nil && pw != nil {
+				var err error
+				if dst, err = w.CreateWalletPassword(pw); err != nil {
+					return backupRestoredMsg{[]wallet.RestoreResult{{Result: "failed", Reason: err.Error()}}}
+				}
+				created = true
+			}
+			results, _, _ := w.Restore(plans, names, src, dst)
+			if created {
+				dst.Lock()
+			}
 			return backupRestoredMsg{results}
 		}
 	case bkDone:
@@ -236,9 +342,9 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-// nextRename asks a new name for the next account whose name is taken, or goes on to the
-// confirmation.
-func (s *backupScreen) nextRename() {
+// next asks what is still needed: a new name for each account whose name is taken, the password
+// of each account with one of its own, this wallet's password; then the confirmation.
+func (s *backupScreen) next() {
 	for i := s.renameI + 1; i < len(s.plans); i++ {
 		if s.plans[i].State == wallet.RestoreNameTaken {
 			s.renameI = i
@@ -247,6 +353,21 @@ func (s *backupScreen) nextRename() {
 			return
 		}
 	}
+	s.renameI = len(s.plans)
+	for i := s.oldI + 1; i < len(s.plans); i++ {
+		if s.names[i] != "" && s.plans[i].Old && !s.plans[i].OldPasswordFound() {
+			s.oldI = i
+			s.form = newForm("Password").secret(0)
+			s.step = bkOldPw
+			return
+		}
+	}
+	s.oldI = len(s.plans)
+	if s.needDst {
+		s.form = newForm("Wallet pw").secret(0)
+		s.step = bkWalletPw
+		return
+	}
 	s.step = bkConfirm
 }
 
@@ -254,23 +375,18 @@ func (s *backupScreen) view(m *model) string {
 	var b strings.Builder
 	switch s.step {
 	case bkChoose:
-		b.WriteString("Every account of the key store in one file, sealed under a backup password.\n\n")
+		b.WriteString("Every account of the wallet in one file, encrypted with the wallet password.\n\n")
 		b.WriteString(keyHelp("e", "export a backup", "i", "import a backup", "Esc", "back") + "\n")
-		b.WriteString("\n" + stDim.Render("The key files go in as they are, each encrypted under its own password, with the") + "\n")
-		b.WriteString(stDim.Render("token and contract lists. Not the node's key, not config.toml.") + "\n")
+		b.WriteString("\n" + stDim.Render("The accounts go in encrypted, with the token and contract lists. Not the node's") + "\n")
+		b.WriteString(stDim.Render("key, not config.toml. The backup is only as strong as the wallet password.") + "\n")
 	case bkExportForm:
 		b.WriteString("Export a backup: a new file, outside the wallet's folder.\n\n")
 		b.WriteString(s.form.view())
-		if pw := s.form.inputs[1].Value(); pw != "" {
-			if hint := wallet.PasswordHint([]byte(pw)); hint != "" {
-				b.WriteString(stWarn.Render(hint) + "\n")
-			}
-		}
-		b.WriteString("\n" + stDim.Render("The backup password protects the whole file; each account keeps its own inside.") + "\n")
+		b.WriteString("\n" + stDim.Render("The wallet password encrypts the file: it opens it on import.") + "\n")
 		b.WriteString(stDim.Render(wallet.BackupNotIncluded) + "\n")
 		b.WriteString("\n" + keyHelp("Enter", "next / write", "Esc", "cancel") + "\n")
 	case bkImportForm:
-		b.WriteString("Import a backup (.dat).\n\n")
+		b.WriteString("Import a backup (.dat): the password of the wallet it comes from.\n\n")
 		b.WriteString(s.form.view())
 		b.WriteString("\n" + keyHelp("Enter", "next / open", "Esc", "cancel") + "\n")
 	case bkWorking:
@@ -281,6 +397,16 @@ func (s *backupScreen) view(m *model) string {
 		b.WriteString("is another account's here. A new name for it, or Enter to skip it.\n\n")
 		b.WriteString(s.form.view())
 		b.WriteString("\n" + keyHelp("Enter", "this name (empty: skip)", "Esc", "cancel") + "\n")
+	case bkOldPw:
+		p := s.plans[s.oldI]
+		fmt.Fprintf(&b, "%s (%s) has a password of its own in the backup (an older wallet).\n", printable(p.Account.Name), keys.Short(p.Account.Address))
+		b.WriteString("Type it once to put it under this wallet's password, or Enter to keep it.\n\n")
+		b.WriteString(s.form.view())
+		b.WriteString("\n" + keyHelp("Enter", "next", "Esc", "cancel") + "\n")
+	case bkWalletPw:
+		b.WriteString("This wallet has another password: the accounts are re-encrypted under it.\n\n")
+		b.WriteString(s.form.view())
+		b.WriteString("\n" + keyHelp("Enter", "next", "Esc", "cancel") + "\n")
 	case bkConfirm:
 		fmt.Fprintf(&b, "The backup of %s holds %d accounts:\n\n", s.backup.Created.Format("2006-01-02 15:04 UTC"), len(s.plans))
 		count := 0
@@ -291,6 +417,9 @@ func (s *backupScreen) view(m *model) string {
 				what = stDim.Render("here as " + printable(p.Existing) + ": skipped")
 			case s.names[i] == "":
 				what = stWarn.Render("name taken: skipped")
+			case p.Old && !p.OldPasswordFound():
+				what = "restore (old password kept)"
+				count++
 			case s.names[i] != p.Account.Name:
 				what = "restore as " + printable(s.names[i])
 				count++
@@ -299,7 +428,11 @@ func (s *backupScreen) view(m *model) string {
 			}
 			fmt.Fprintf(&b, "%-18s %s  %s\n", printable(truncName(p.Account.Name)), keys.Short(p.Account.Address), what)
 		}
-		b.WriteString("\n" + stDim.Render(wallet.BackupPasswordsNote) + "\n")
+		if s.dst == nil && s.pw != nil {
+			b.WriteString("\n" + stWarn.Render("This wallet has no password yet: the backup's becomes its wallet password.") + "\n")
+		} else {
+			b.WriteString("\n" + stDim.Render(wallet.BackupPasswordsNote) + "\n")
+		}
 		b.WriteString("\n" + keyHelp("Enter", fmt.Sprintf("restore %d", count), "Esc", "cancel") + "\n")
 	case bkDone:
 		if s.results == nil {

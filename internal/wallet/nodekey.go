@@ -312,13 +312,21 @@ func (w *Wallet) NodeAccount() (*keys.File, error) {
 	return f, nil
 }
 
-// OpenKey returns an account's key: the node's key read again with ReadNodeKeySafe's checks (no
-// password; a key the node encrypted with the node's password), or the key file decrypted with
-// the password. The key must still be the account's. The caller
+// OpenKey returns an account's key: under the wallet password (password: the wallet's), with its
+// old password (an account not migrated yet), or the node's key read again with ReadNodeKeySafe's
+// checks (no password; a key the node encrypted with the node's password). The key must still be the account's. The caller
 // zeroes it.
 func (w *Wallet) OpenKey(f *keys.File, password []byte) (ed25519.PrivateKey, error) {
+	if f.UnderWalletKey() {
+		s, err := w.OpenWallet(password)
+		if err != nil {
+			return nil, err
+		}
+		defer s.Lock()
+		return s.Open(f)
+	}
 	if !f.IsNodeKey() {
-		return f.Decrypt(password)
+		return f.Decrypt(password) // an account with its old password
 	}
 	if !f.NodeKeyEncrypted {
 		password = nil // a plain node key needs none

@@ -27,7 +27,8 @@ import (
 // Argon2id. The associated data binds the format version, the KDF parameters and the public key
 // to the ciphertext, so none of them can be changed without the password check failing.
 
-// FileVersion is the version of the key file format.
+// FileVersion is the version of the key files with a password of their own: the account files
+// written before the wallet password (version 2, walletkey.go), and the encrypted exports.
 const FileVersion = 1
 
 // KDFParams are the Argon2id parameters of a key file.
@@ -50,10 +51,12 @@ var (
 
 // File is the JSON of a key file.
 type File struct {
-	Version    int       `json:"version"`
-	Name       string    `json:"name"`
-	Public     string    `json:"public"` // base58 address, to list accounts without the password
-	KDF        KDFParams `json:"kdf"`
+	Version int       `json:"version"`
+	Name    string    `json:"name"`
+	Public  string    `json:"public"`       // base58 address, to list accounts without the password
+	KDF     KDFParams `json:"kdf,omitzero"` // version 1 only: the account's own password
+	// KeyID: version 2 only, the wallet key (wallet.key) the account is encrypted under
+	KeyID      string    `json:"key_id,omitempty"`
 	Cipher     string    `json:"cipher"` // "xchacha20-poly1305"
 	Nonce      string    `json:"nonce"`  // base64, 24 random bytes
 	Ciphertext string    `json:"ciphertext"`
@@ -170,8 +173,11 @@ func (f *File) Decrypt(password []byte) (ed25519.PrivateKey, error) {
 		}
 		return key, nil
 	}
+	if f.Version == AccountFileVersion {
+		return nil, errors.New("this account is encrypted under the wallet password: open the wallet")
+	}
 	if f.Version != FileVersion {
-		return nil, fmt.Errorf("key file version %d is not supported (this wallet reads version %d)", f.Version, FileVersion)
+		return nil, fmt.Errorf("key file version %d is not supported (this wallet reads versions 1 and 2)", f.Version)
 	}
 	if f.Cipher != "xchacha20-poly1305" {
 		return nil, fmt.Errorf("unknown cipher %q", f.Cipher)

@@ -66,7 +66,7 @@ func (k *LockedKey) Use(fn func(ed25519.PrivateKey) error) error {
 	if k.mem == nil {
 		return ErrLocked
 	}
-	key := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
+	key := make(ed25519.PrivateKey, len(k.mem.b))
 	defer Zero(key)
 	k.mem.unprotect()
 	copy(key, k.mem.b)

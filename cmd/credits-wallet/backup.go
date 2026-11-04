@@ -20,6 +20,7 @@ func (a *app) cmdBackup(_ context.Context, args []string) error {
 	fs := newFlagSet(a, "backup")
 	suffix := fs.String("rename-suffix", "", "import: a name already taken gets this suffix")
 	yes := fs.Bool("yes", false, "import: no confirmation")
+	walletPwFile := fs.String("wallet-password-file", "", "import: this wallet's password, when it is not the backup's")
 	pos, err := a.commandArgs(fs, args, 1)
 	if err != nil {
 		return err
@@ -29,12 +30,12 @@ func (a *app) cmdBackup(_ context.Context, args []string) error {
 	}
 	switch pos[0] {
 	case "export":
-		if *suffix != "" || *yes {
-			return usagef("--rename-suffix and --yes go with backup import")
+		if *suffix != "" || *yes || *walletPwFile != "" {
+			return usagef("--rename-suffix, --yes and --wallet-password-file go with backup import")
 		}
 		return a.backupExport(pos[1])
 	case "import":
-		return a.backupImport(pos[1], *suffix, *yes)
+		return a.backupImport(pos[1], *suffix, *yes, *walletPwFile)
 	}
 	return usagef("backup: export or import")
 }
@@ -52,9 +53,8 @@ func errorTexts(errs []error) []string {
 	return out
 }
 
-// backupExport writes every account of the key store, with its local lists, into one file sealed
-// under a backup password typed twice. The key files go in as they are (encrypted under their own
-// passwords); the node's key and the configuration stay out.
+// backupExport writes every account of the key store, with the wallet key and the local lists,
+// into one file sealed under the wallet password. The node's key and the configuration stay out.
 func (a *app) backupExport(path string) error {
 	abs, err := a.w.CheckBackupPath(path)
 	if err != nil {
@@ -72,18 +72,15 @@ func (a *app) backupExport(path string) error {
 		for _, acc := range b.Accounts {
 			names = append(names, acc.Name)
 		}
-		fmt.Fprintf(os.Stderr, "The backup will hold %s: %s.\n", plural(len(b.Accounts), "account"), strings.Join(names, ", "))
-		if a.passwordFile == "" {
-			fmt.Fprintln(os.Stderr, "Choose a backup password: it protects the whole file (each account keeps its own password inside).")
-		}
+		fmt.Fprintf(os.Stderr, "The backup will hold %s: %s. It is encrypted with the wallet password.\n", plural(len(b.Accounts), "account"), strings.Join(names, ", "))
 	}
-	pw, err := a.readPassword("Backup password: ", true)
+	pw, err := a.readPassword("Wallet password: ", false)
 	if err != nil {
 		return err
 	}
 	defer keys.Zero(pw)
-	if hint := wallet.PasswordHint(pw); hint != "" {
-		fmt.Fprintln(os.Stderr, hint)
+	if err := a.w.CheckWalletPassword(pw); err != nil {
+		return err
 	}
 	err = wallet.WriteBackup(abs, b, pw)
 	debug.FreeOSMemory() // Argon2id's 256 MiB go back now
@@ -101,6 +98,7 @@ func (a *app) backupExport(path string) error {
 	fmt.Fprintf(a.out, "backup written: %s (mode 600)\naccounts: %d\n", echo.Terminal(abs), len(b.Accounts))
 	fmt.Fprintln(os.Stderr, wallet.BackupAdvice)
 	fmt.Fprintln(os.Stderr, wallet.BackupNotIncluded)
+	fmt.Fprintln(os.Stderr, wallet.BackupOldPasswordNote)
 	return nil
 }
 
@@ -110,38 +108,58 @@ func reportBackupProblems(problems []error) {
 	}
 }
 
-// backupImport opens a backup with its password, lists its accounts and, once confirmed, writes
-// those whose address the wallet does not have. A name taken by another address gets
-// --rename-suffix, or a name asked on the terminal, or is skipped.
-func (a *app) backupImport(path, suffix string, yes bool) error {
+// backupImport opens a backup with the password of the wallet it comes from, lists its accounts
+// and, once confirmed, writes those whose address the wallet does not have, re-encrypted under
+// this wallet's password (the same password: nothing more is asked; another one: this wallet's
+// password is asked once; no wallet password yet: the backup's becomes it). A name taken by
+// another address gets --rename-suffix, a name asked on the terminal, or is skipped. Accounts of
+// the backup with an old password of their own are opened with the backup's password, or their
+// own, asked once each.
+func (a *app) backupImport(path, suffix string, yes bool, walletPwFile string) error {
 	data, err := wallet.ReadBackupFile(path)
 	if err != nil {
 		return err
 	}
-	pw, err := a.readPassword("Backup password: ", false)
+	if a.w.NeedsMigration() {
+		return wallet.ErrMigrateFirst
+	}
+	pw, err := a.readPassword("Password of the wallet the backup comes from: ", false)
 	if err != nil {
 		return err
 	}
+	defer keys.Zero(pw)
 	b, err := wallet.OpenBackup(data, pw)
-	keys.Zero(pw)
 	debug.FreeOSMemory()
 	if err != nil {
 		return err
 	}
 	defer b.Wipe()
+	src, err := b.SourceKey(pw)
+	if err != nil {
+		return err
+	}
+	defer src.Lock()
 	plans, err := a.w.PlanRestore(b)
 	if err != nil {
 		return err
+	}
+	defer wallet.WipePlans(plans)
+	for i := range plans {
+		if plans[i].Old && plans[i].State != wallet.RestoreExists {
+			plans[i].TryOldPassword(pw)
+		}
 	}
 	terminal := stdinIsTerminal()
 	fmt.Fprintf(os.Stderr, "The backup of %s holds %s:\n", b.Created.Format("2006-01-02 15:04 UTC"), plural(len(plans), "account"))
 	for _, p := range plans {
 		note := ""
-		switch p.State {
-		case wallet.RestoreExists:
+		switch {
+		case p.State == wallet.RestoreExists:
 			note = "  already here as " + p.Existing + ": skipped"
-		case wallet.RestoreNameTaken:
+		case p.State == wallet.RestoreNameTaken:
 			note = "  the name is another account's here"
+		case p.Old && !p.OldPasswordFound():
+			note = "  a password of its own"
 		}
 		fmt.Fprintf(os.Stderr, "  %-20s %s%s\n", p.Account.Name, p.Account.Address, note)
 	}
@@ -162,11 +180,55 @@ func (a *app) backupImport(path, suffix string, yes bool) error {
 			}
 		}
 	}
+	// an old wallet's accounts with passwords of their own: each asked once
+	for i := range plans {
+		if names[i] == "" || !plans[i].Old || plans[i].OldPasswordFound() || !terminal {
+			continue
+		}
+		for tries := 0; tries < 3; tries++ {
+			own, err := readSecret(fmt.Sprintf("Password of %s in the backup (Enter: keep its old password): ", plans[i].Account.Name))
+			if err != nil || own == "" {
+				break
+			}
+			ok := plans[i].TryOldPassword([]byte(own))
+			if ok {
+				break
+			}
+			fmt.Fprintln(os.Stderr, "not that password")
+		}
+	}
 	count := 0
 	for _, n := range names {
 		if n != "" {
 			count++
 		}
+	}
+	// this wallet: the backup's password, or its own
+	var dst *wallet.Session
+	if a.w.HasWalletPassword() {
+		dst, err = a.w.OpenWallet(pw)
+		if wallet.IsWrongPassword(err) {
+			var own []byte
+			if walletPwFile != "" {
+				own, err = readPasswordFile(walletPwFile)
+			} else if terminal && a.passwordFile == "" {
+				fmt.Fprintln(os.Stderr, "This wallet has another password: the accounts are re-encrypted under it.")
+				own, err = a.readPassword("Password of this wallet: ", false)
+			} else {
+				err = errors.New("this wallet's password is not the backup's: give it with --wallet-password-file FILE")
+			}
+			if err != nil {
+				return err
+			}
+			dst, err = a.w.OpenWallet(own)
+			keys.Zero(own)
+		}
+		if err != nil {
+			return err
+		}
+		defer dst.Lock()
+	} else if count > 0 {
+		fmt.Fprintln(os.Stderr, "This wallet has no password yet: the backup's password becomes its wallet password.")
 	}
 	if !yes {
 		if !terminal {
@@ -180,7 +242,13 @@ func (a *app) backupImport(path, suffix string, yes bool) error {
 			return errors.New("cancelled: nothing was restored")
 		}
 	}
-	rows, restored, failed := a.w.Restore(plans, names)
+	if dst == nil && count > 0 {
+		if dst, err = a.w.CreateWalletPassword(pw); err != nil {
+			return err
+		}
+		defer dst.Lock()
+	}
+	rows, restored, failed := a.w.Restore(plans, names, src, dst)
 	var result error
 	if failed > 0 {
 		result = fmt.Errorf("%s could not be restored", plural(failed, "account"))

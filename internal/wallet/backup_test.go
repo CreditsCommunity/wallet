@@ -42,11 +42,11 @@ func randomAddress(t *testing.T) ed25519.PublicKey {
 func TestBackupRoundTrip(t *testing.T) {
 	lightBackupKDF(t)
 	src, home := testWallet(t)
-	pws := map[string]string{"main": "pw-main", "savings": "pw-savings", "test.1": "pw-test"}
+	const walletPw = "the wallet password"
 	addr := map[string]ed25519.PublicKey{}
-	for name, pw := range pws {
+	for _, name := range []string{"main", "savings", "test.1"} {
 		k := newKey(t)
-		if _, err := src.CreateAccount(name, k, []byte(pw)); err != nil {
+		if _, err := src.CreateAccount(name, k, []byte(walletPw)); err != nil {
 			t.Fatal(err)
 		}
 		addr[name] = k.Public().(ed25519.PublicKey)
@@ -61,10 +61,13 @@ func TestBackupRoundTrip(t *testing.T) {
 
 	path := filepath.Join(home, "wallet.dat")
 	b, problems, err := src.CollectBackup(time.Now())
-	if err != nil || len(problems) != 0 || len(b.Accounts) != 3 {
+	if err != nil || len(problems) != 0 || len(b.Accounts) != 3 || b.WalletKey == nil {
 		t.Fatalf("collect: %v %v", err, problems)
 	}
-	if err := WriteBackup(path, b, []byte("the backup password")); err != nil {
+	if err := src.CheckWalletPassword([]byte("not it")); err == nil {
+		t.Fatal("another password passed for the wallet's")
+	}
+	if err := WriteBackup(path, b, []byte(walletPw)); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
@@ -76,7 +79,7 @@ func TestBackupRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name := range pws { // nothing of the accounts in clear, not even the names
+	for name := range addr { // nothing of the accounts in clear, not even the names
 		if bytes.Contains(data, []byte(name)) || bytes.Contains(data, []byte(keys.Address(addr[name]))) {
 			t.Fatalf("%s is in clear in the backup", name)
 		}
@@ -85,45 +88,54 @@ func TestBackupRoundTrip(t *testing.T) {
 		t.Fatalf("wrong password: %v", err)
 	}
 
-	// into another wallet
+	// into another wallet, with another wallet password
 	dst, _ := testWallet(t)
-	opened, err := OpenBackup(data, []byte("the backup password"))
+	dst.CreateAccount("mine", newKey(t), []byte("dst password"))
+	opened, err := OpenBackup(data, []byte(walletPw))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer opened.Wipe()
+	srcKey, err := opened.SourceKey([]byte(walletPw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srcKey.Lock()
+	if _, err := dst.OpenWallet([]byte(walletPw)); !IsWrongPassword(err) {
+		t.Fatalf("the backup's password opened this wallet: %v", err)
+	}
+	dstKey, err := dst.OpenWallet([]byte("dst password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstKey.Lock()
 	plans, err := dst.PlanRestore(opened)
 	if err != nil {
 		t.Fatal(err)
 	}
 	names := make([]string, len(plans))
 	for i, p := range plans {
-		if p.State != RestoreNew {
-			t.Fatalf("%s: state %d", p.Account.Name, p.State)
+		if p.State != RestoreNew || p.Old {
+			t.Fatalf("%s: state %d old %v", p.Account.Name, p.State, p.Old)
 		}
 		names[i] = p.Account.Name
 	}
-	results, restored, failed := dst.Restore(plans, names)
+	results, restored, failed := dst.Restore(plans, names, srcKey, dstKey)
 	if restored != 3 || failed != 0 {
 		t.Fatalf("restore: %+v", results)
 	}
-	for name, pw := range pws {
-		// the key file exactly as stored, and it opens with its own password
-		orig, _ := os.ReadFile(src.Store.FilePath(name))
-		got, _ := os.ReadFile(dst.Store.FilePath(name))
-		if !bytes.Equal(orig, got) {
-			t.Errorf("%s: the key file differs\n%s\n%s", name, orig, got)
-		}
+	for name := range addr {
+		// re-encrypted under this wallet's key: its password opens it, the backup's does not
 		f, err := dst.Store.Load(name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		k, err := f.Decrypt([]byte(pw))
+		k, err := dst.OpenKey(f, []byte("dst password"))
 		if err != nil || !bytes.Equal(k.Public().(ed25519.PublicKey), addr[name]) {
-			t.Fatalf("%s does not open with its password: %v", name, err)
+			t.Fatalf("%s does not open with this wallet's password: %v", name, err)
 		}
-		if _, err := f.Decrypt([]byte("the backup password")); err == nil {
-			t.Fatalf("%s opens with the backup password", name)
+		if _, err := dst.OpenKey(f, []byte(walletPw)); err == nil {
+			t.Fatalf("%s opens with the backup's password", name)
 		}
 	}
 	if l, err := dst.localTokensAll(addr["main"]); err != nil || len(l) != 1 || l[0].Address != keys.Address(token) {
@@ -137,12 +149,75 @@ func TestBackupRoundTrip(t *testing.T) {
 	}
 }
 
+// An old wallet's backup: no wallet key, accounts with a password each. The backup's password
+// opens those that have it; another one is opened with its own; one left keeps its password.
+func TestBackupOfOldWallet(t *testing.T) {
+	lightBackupKDF(t)
+	dst, home := testWallet(t)
+	mk := func(name, pw string) BackupAccount {
+		k := newKey(t)
+		f, _ := keys.Encrypt(name, k, []byte(pw), testKDF)
+		data, _ := marshalKeyFile(f)
+		return BackupAccount{Name: name, Address: f.Public, KeyFile: data}
+	}
+	b := &Backup{Format: BackupFormat, Version: 1, Created: time.Now().UTC(),
+		Accounts: []BackupAccount{mk("a", "bk"), mk("b", "own-b"), mk("c", "own-c")}}
+	path := filepath.Join(home, "old.dat")
+	if err := WriteBackup(path, b, []byte("bk")); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := ReadBackupFile(path)
+	opened, err := OpenBackup(data, []byte("bk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := opened.SourceKey([]byte("bk"))
+	if src != nil || err != nil {
+		t.Fatalf("a wallet key in an old backup: %v", err)
+	}
+	plans, _ := dst.PlanRestore(opened)
+	names := []string{}
+	for i := range plans {
+		names = append(names, plans[i].Account.Name)
+		plans[i].TryOldPassword([]byte("bk"))
+	}
+	if !plans[0].OldPasswordFound() || plans[1].OldPasswordFound() {
+		t.Fatal("the backup's password")
+	}
+	if plans[1].TryOldPassword([]byte("wrong")) || !plans[1].TryOldPassword([]byte("own-b")) {
+		t.Fatal("b's own password")
+	}
+	dstKey, err := dst.CreateWalletPassword([]byte("bk")) // an empty wallet: the backup's password
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstKey.Lock()
+	results, restored, _ := dst.Restore(plans, names, src, dstKey)
+	WipePlans(plans)
+	if restored != 3 || !strings.Contains(results[2].Reason, "old password is kept") {
+		t.Fatalf("%+v", results)
+	}
+	for _, n := range []string{"a", "b"} {
+		f, _ := dst.Store.Load(n)
+		if !f.UnderWalletKey() {
+			t.Fatalf("%s is not under the wallet password", n)
+		}
+	}
+	if f, _ := dst.Store.Load("c"); !f.OldPassword() {
+		t.Fatal("c lost its password")
+	} else if k, err := f.Decrypt([]byte("own-c")); err != nil {
+		t.Fatal(err)
+	} else {
+		keys.Zero(k)
+	}
+}
+
 func TestBackupExistingAndNameClash(t *testing.T) {
 	lightBackupKDF(t)
 	src, home := testWallet(t)
 	kMain, kOther := newKey(t), newKey(t)
-	src.CreateAccount("main", kMain, []byte("a"))
-	src.CreateAccount("other", kOther, []byte("b"))
+	src.CreateAccount("main", kMain, []byte("x"))
+	src.CreateAccount("other", kOther, []byte("x"))
 	token := randomAddress(t)
 	src.addLocalTokens(kMain.Public().(ed25519.PublicKey), []ed25519.PublicKey{token}, "added")
 	b, _, _ := src.CollectBackup(time.Now())
@@ -152,10 +227,15 @@ func TestBackupExistingAndNameClash(t *testing.T) {
 	}
 
 	dst, _ := testWallet(t)
-	dst.CreateAccount("old-main", kMain, []byte("c"))  // the same address, another name
-	dst.CreateAccount("other", newKey(t), []byte("d")) // the same name, another address
+	dst.CreateAccount("old-main", kMain, []byte("x"))  // the same address, another name
+	dst.CreateAccount("other", newKey(t), []byte("x")) // the same name, another address
 	data, _ := ReadBackupFile(path)
 	opened, err := OpenBackup(data, []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcKey, _ := opened.SourceKey([]byte("x"))
+	dstKey, err := dst.OpenWallet([]byte("x")) // the same password: nothing more to ask
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +262,7 @@ func TestBackupExistingAndNameClash(t *testing.T) {
 			names[i] = "other-restored"
 		}
 	}
-	results, restored, failed := dst.Restore(plans, names)
+	results, restored, failed := dst.Restore(plans, names, srcKey, dstKey)
 	if restored != 1 || failed != 0 {
 		t.Fatalf("%+v", results)
 	}
@@ -190,8 +270,8 @@ func TestBackupExistingAndNameClash(t *testing.T) {
 	if err != nil || f.Public != keys.Address(kOther.Public().(ed25519.PublicKey)) {
 		t.Fatalf("renamed: %v %v", f, err)
 	}
-	if k, err := f.Decrypt([]byte("b")); err != nil {
-		t.Fatalf("the renamed account does not open with its password: %v", err)
+	if k, err := dst.OpenKey(f, []byte("x")); err != nil {
+		t.Fatalf("the renamed account does not open: %v", err)
 	} else {
 		keys.Zero(k)
 	}
@@ -208,7 +288,7 @@ func TestBackupExistingAndNameClash(t *testing.T) {
 	// skipped without a name
 	opened2, _ := OpenBackup(data, []byte("x"))
 	plans2, _ := dst.PlanRestore(opened2)
-	results, restored, _ = dst.Restore(plans2, make([]string, len(plans2)))
+	results, restored, _ = dst.Restore(plans2, make([]string, len(plans2)), srcKey, dstKey)
 	if restored != 0 {
 		t.Fatalf("restored without a name: %+v", results)
 	}
@@ -278,6 +358,7 @@ func TestBackupContentChecked(t *testing.T) {
 		func(b *Backup) { b.Accounts[0].Name = "../x" },
 		func(b *Backup) { b.Accounts[0].Tokens = []byte(`{"version":1,"account":"someone else"}`) },
 		func(b *Backup) { b.Version = 2 },
+		func(b *Backup) { b.WalletKey = nil }, // an account under a wallet key the backup lacks
 	}
 	for i, change := range bad {
 		c := *b

@@ -84,35 +84,47 @@ with the packages of `testdata/requirements.txt` (pinned with hashes:
 ./credits-wallet contract call main CONTRACT add 4                     # a signed call
 ./credits-wallet contract pay main CONTRACT 3 --data "thanks"          # CS to its payable()
 ./credits-wallet contract list main
-./credits-wallet backup export /media/usb/wallet.dat      # every account in one encrypted file
-./credits-wallet backup import /media/usb/wallet.dat      # asks its password, lists, restores
+./credits-wallet backup export /media/usb/wallet.dat      # every account, under the wallet password
+./credits-wallet backup import /media/usb/wallet.dat      # its wallet's password, lists, restores
+./credits-wallet wallet migrate                           # a wallet from before: one password
+./credits-wallet wallet password                          # change the wallet password
 ./credits-wallet help
 ```
 
 Global flags, anywhere on the line: `--node HOST:PORT`, `--profile NAME`, `--config FILE`, `--json`,
 `--password-file FILE`, `--history-node HOST:PORT`.
 
-The terminal interface opens **locked**: it lists the accounts' names and addresses only, and an
-account's password unlocks it for the session (nothing of an account is shown before). Signing in
-the session asks no password again (on mainnet you still type `send` on the full review); `[l]`
-locks, `[a]` switches account (locking first), and the wallet locks by itself after
-`lock_after_minutes` without a key press (top of `config.toml`, default 10; `0` never locks, so
-anyone at the terminal could sign). It also locks after an account is created or imported. The
-commands keep their behaviour: each one asks the password when it signs.
+**One password for the whole wallet.** The wallet password, chosen with the first account, opens
+every account: the interface asks it once, each command once. The node's key is the exception: a
+plain `NodePrivate.txt` needs no password, and a key the node encrypted keeps the node's own
+password. A wallet from before (a password per account) asks at its first start to choose the
+wallet password, which may be one of the accounts' passwords, and each other account's password
+once (`wallet migrate` on the command line); an account whose password you do not have stays as it
+is ("old password") and can be moved later (`M`). `wallet password` (or `P`) changes it.
+
+The terminal interface opens **locked**: it lists the accounts' names and addresses only, and the
+wallet password unlocks the wallet and the chosen account (nothing of an account is shown before).
+Signing in the session asks no password again (on mainnet you still type `send` on the full
+review); `[l]` locks the wallet, `[a]` switches account (no password while the wallet is open), and
+the wallet locks by itself after `lock_after_minutes` without a key press (top of `config.toml`,
+default 10; `0` never locks, so anyone at the terminal could sign). The account locks after another
+is created or imported. The commands ask the wallet password once, when they sign.
 
 In the terminal interface: `[s]` send (with an optional Data field), `[d]` delegations (`n` delegate,
 `w` withdraw the selected one), `[t]` tokens (`s` send the selected token, `a` a token by its
 address), `[h]` history (`t` token transfers, `e` CSV export), `[c]` contracts (`o` open a `.java`,
 `n` new from a template, `a` a contract by address; on a source `e` edits it in your editor, `d`
 deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call), `[S]` node status,
-`[b]` backup (also on the unlock screen: `e` export, `i` import).
+`[b]` backup (also on the unlock screen: `e` export, `i` import), `[P]` change the wallet password,
+`[M]` move the accounts with an old password under the wallet password.
 
 ### First steps
 
 1. Run a node with its API on (`[api] port=9090` in its `config.ini`, the default); the wallet talks
    to `127.0.0.1:9090`.
 2. `credits-wallet status` must say `synced: yes`; the wallet refuses to send otherwise.
-3. Create an account (`account new NAME`, or `[n]` in the interface) and write its 24 words on
+3. Create an account (`account new NAME`, or `[n]` in the interface: the first one also chooses
+   the wallet password, typed twice) and write its 24 words on
    paper: they are shown once on the terminal (never in the output, `--json` included), you type
    three of them back, and they restore the account (`account import NAME` and type them). The
    screen is cleared afterwards, but a terminal's scrollback, tmux/screen or a session log may keep
@@ -139,22 +151,28 @@ deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call),
 
 - Data folder: `~/.credits-wallet` (Linux, macOS), `%APPDATA%\credits-wallet` (Windows), or
   `$CREDITS_WALLET_HOME`. Key files are in `accounts/`, one per account, mode 600.
-- Key files are encrypted with your password: Argon2id (3 passes, 256 MiB, 4 threads, a random
-  salt per file) and XChaCha20-Poly1305. There is no way to recover a forgotten password: keep the
-  24 words.
-- `account export NAME` copies the encrypted file; `--format base58` prints the secret key after the
-  password; `--format official` writes the official wallets' **unencrypted** keys JSON, with a
+- The wallet password opens `accounts/wallet.key`, a random master key sealed with Argon2id (3
+  passes, 256 MiB, 4 threads, a random salt) and XChaCha20-Poly1305; the master key encrypts each
+  account file (XChaCha20-Poly1305, a random nonce each). One derivation opens the whole wallet.
+  `wallet.key` is needed by every account: it is in every backup. There is no way to recover a
+  forgotten password: keep the 24 words. Format, migration and change of password: docs/spec.md 4.2.
+- `account import NAME FILE` also takes an encrypted key file (another wallet's export): its own
+  password opens it, then it goes under the wallet password. `account export NAME` writes the key
+  as an encrypted file of its own, under the wallet password by default or another one you type
+  (`--out FILE`); `--format base58` prints the secret key after the wallet password; `--format official` writes the official wallets' **unencrypted** keys JSON, with a
   warning.
 - `backup export FILE.dat` (`b` then `e` in the interface) writes **every account** into one file:
-  the key files as stored (each still encrypted with its own password), their names and their
-  local token and contract lists, all sealed under a backup password typed twice (Argon2id with the
-  key files' parameters and its own salt, XChaCha20-Poly1305, the versioned header as associated
-  data). Never the node's key (`NodePrivate.txt` stays in the node's folder) nor `config.toml`. A
-  new file, mode 600, never in the data folder or next to key files: keep it off the computer, on
-  a USB key. `backup import FILE.dat` (`b` then `i`) asks the backup password, lists the accounts
-  and restores them once confirmed: an address already in the wallet is skipped, a name taken by
-  another address gets a new name (asked, or `--rename-suffix S`). Restored accounts keep their
-  own passwords. Format: docs/spec.md 4.5.
+  the account files and `wallet.key`, the names and the local token and contract lists, all
+  encrypted with **the wallet password** (Argon2id with the key files' parameters and its own salt,
+  XChaCha20-Poly1305, the versioned header as associated data). The backup is only as strong as
+  the wallet password, and a change of the wallet password does not re-encrypt backups already
+  made: they keep opening with the old password. Never the node's key (`NodePrivate.txt` stays in
+  the node's folder) nor `config.toml`. A new file, mode 600, never in the data folder or next to
+  key files: keep it off the computer, on a USB key. `backup import FILE.dat` (`b` then `i`) asks
+  the password of the wallet the backup comes from, lists the accounts and restores them once
+  confirmed, under this wallet's password (asked once if it differs; `--wallet-password-file` for
+  scripts): an address already in the wallet is skipped, a name taken by another address gets a
+  new name (asked, or `--rename-suffix S`). Format: docs/spec.md 4.5.
 
 ### The node's key
 
@@ -357,7 +375,9 @@ receives the account's public address only; every history output names the sourc
   by the node's own code), the node's encrypted key files (`testdata/node-encrypted-vectors.json`,
   encrypted and opened by the node's code; with `NODE_KEY_CRYPT` set to
   `internal/keys/testdata/node-key-crypt.cpp` built the same way, a round trip both ways), the
-  unlock screen, the session and its locks, the found-key prompt, the backup file (round trip,
+  unlock screen, the session and its locks, the wallet password (one password, the migration and
+  the change of password, each interrupted at every step and resumed, the import and export of a
+  single key, the node key's exception), the found-key prompt, the backup file (round trip,
   wrong password, damaged and truncated files, refused places, existing addresses and name
   clashes, the interface's flow), signing (byte-identical to the node's samples, and for user data, delegations,
   token calls, deploys and contract addresses to `testdata/sign-vectors.txt`, made by

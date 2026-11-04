@@ -142,7 +142,8 @@ func (w *Wallet) Account(nameOrAddress string) (name string, pub ed25519.PublicK
 	return "", nil, fmt.Errorf("%s is neither an account (see 'account list') nor an address", echo.Quote(nameOrAddress))
 }
 
-// CreateAccount encrypts and saves a key under name.
+// CreateAccount encrypts and saves a key under name with the wallet password (password); for the
+// first account, password becomes the wallet password.
 func (w *Wallet) CreateAccount(name string, key ed25519.PrivateKey, password []byte) (*keys.File, error) {
 	if w.Store.Exists(name) {
 		return nil, fmt.Errorf("an account named %q already exists", name)
@@ -150,9 +151,10 @@ func (w *Wallet) CreateAccount(name string, key ed25519.PrivateKey, password []b
 	if w.NodeKey != nil && name == w.NodeAccountName() {
 		return nil, fmt.Errorf("%q is the name of the node's key account here: choose another name", name)
 	}
-	f, err := keys.Encrypt(name, key, password, w.KDF)
+	s, err := w.OpenForNewAccount(password)
 	if err != nil {
 		return nil, err
 	}
-	return f, w.Store.Save(f)
+	defer s.Lock()
+	return w.CreateAccountIn(s, name, key)
 }
