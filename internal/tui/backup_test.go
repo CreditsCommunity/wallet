@@ -96,6 +96,10 @@ func TestTUIBackupExportImport(t *testing.T) {
 	if _, err := os.Stat(want); err == nil {
 		t.Fatal("written with a wrong password")
 	}
+	if m.lock.failed != 1 {
+		t.Fatalf("the wrong wallet password did not count: %d", m.lock.failed)
+	}
+	m.lock.retryAt = time.Time{} // the delay is over
 	s.form.inputs[1].SetValue("pw-a")
 	run(t, m, press(m, tea.KeyEnter))
 	v := m.View()
@@ -137,6 +141,10 @@ func TestTUIBackupExportImport(t *testing.T) {
 	if s2.step != bkWalletPw || !strings.Contains(m2.View(), "This wallet has another password") {
 		t.Fatalf("this wallet's password not asked: %d\n%s", s2.step, m2.View())
 	}
+	if m2.lock.failed != 1 { // the backup's password, tried as this wallet's, was wrong
+		t.Fatalf("the try with the backup's password did not count: %d", m2.lock.failed)
+	}
+	m2.lock.retryAt = time.Time{}
 	typeText(m2, "pw-b")
 	run(t, m2, press(m2, tea.KeyEnter))
 	v = m2.View()

@@ -102,8 +102,11 @@ func (s *migrateScreen) finish(m *model) tea.Cmd {
 func (s *migrateScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case migratedMsg:
+		if !s.choose {
+			m.pwTried(msg.err)
+		}
 		if msg.err != nil {
-			s.step, s.err = migPassword, msg.err
+			s.step, s.err = migPassword, wrongPassword(msg.err)
 			return nil
 		}
 		s.session, s.moved, s.left, s.err = msg.session, msg.moved, msg.left, nil
@@ -144,6 +147,10 @@ func (s *migrateScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			}
 		} else if len(pw) == 0 {
 			s.err = errors.New("type the wallet password")
+			return nil
+		} else if err := m.pwThrottle(); err != nil {
+			keys.Zero(pw)
+			s.err = err
 			return nil
 		}
 		s.form.wipe()
@@ -265,8 +272,9 @@ func (s *passwordScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case passwordChangedMsg:
 		s.busy = false
+		m.pwTried(msg.err)
 		if msg.err != nil {
-			s.err = msg.err
+			s.err = wrongPassword(msg.err)
 			return nil
 		}
 		// the wallet's key changed: the session goes on with the new one
@@ -287,6 +295,10 @@ func (s *passwordScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	cmd, done := s.form.update(msg)
 	if !done {
 		return cmd
+	}
+	if err := m.pwThrottle(); err != nil {
+		s.err = err
+		return nil
 	}
 	old, pw, again := []byte(s.form.inputs[0].Value()), []byte(s.form.inputs[1].Value()), []byte(s.form.inputs[2].Value())
 	s.form.wipe()
@@ -336,4 +348,39 @@ func (s *passwordScreen) view(m *model) string {
 		b.WriteString("\n" + stBad.Render(oneLine(s.err.Error())) + "\n")
 	}
 	return stBox.Width(min(m.width-2, 82)).Render(strings.TrimRight(b.String(), "\n"))
+}
+
+// ---- the delay after a wrong wallet password ----------------------------------------------------------
+
+// Every screen that checks the wallet password (the unlock screen, the migration, the backup's
+// export and import, the change of password, a new account while the wallet is closed) shares
+// the unlock screen's counter of wrong passwords and its delay before the next try (unlockDelay:
+// 2 s, doubling, at most 30 s): no screen is a faster way to guess the password.
+
+// pwThrottle refuses a try of the wallet password while the delay runs.
+func (m *model) pwThrottle() error {
+	if wait := m.lock.retryAt.Sub(m.now()); wait > 0 {
+		return fmt.Errorf("wait %d s before the next try", int(wait.Seconds()+0.99))
+	}
+	return nil
+}
+
+// pwTried records the result of a try of the wallet password: a wrong one adds to the counter
+// and starts the delay, a right one resets the counter; other errors leave it as it is.
+func (m *model) pwTried(err error) {
+	switch {
+	case err == nil:
+		m.lock.failed = 0
+	case wallet.IsWrongPassword(err):
+		m.lock.failed++
+		m.lock.retryAt = m.now().Add(unlockDelay(m.lock.failed))
+	}
+}
+
+// wrongPassword is what a wrong wallet password says on every screen (as on the unlock screen).
+func wrongPassword(err error) error {
+	if wallet.IsWrongPassword(err) {
+		return wallet.ErrUnlock
+	}
+	return err
 }

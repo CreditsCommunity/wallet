@@ -56,6 +56,7 @@ type backupScreen struct {
 }
 
 type backupWrittenMsg struct {
+	tried    bool // the wallet password was checked
 	path     string
 	count    int
 	problems []error
@@ -63,6 +64,8 @@ type backupWrittenMsg struct {
 }
 
 type backupOpenedMsg struct {
+	dstTried bool  // the backup's password was tried as this wallet's
+	dstErr   error // and failed
 	b        *wallet.Backup
 	src, dst *wallet.Session
 	needDst  bool   // this wallet has another password
@@ -103,13 +106,19 @@ func (s *backupScreen) forget(m *model) {
 func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case backupWrittenMsg:
-		s.step, s.err = bkDone, msg.err
+		if msg.tried {
+			m.pwTried(msg.err)
+		}
+		s.step, s.err = bkDone, wrongPassword(msg.err)
 		s.written, s.count, s.problems = msg.path, msg.count, msg.problems
 		if msg.err != nil {
 			s.step = bkExportForm
 		}
 		return nil
 	case backupOpenedMsg:
+		if msg.dstTried {
+			m.pwTried(msg.dstErr)
+		}
 		if msg.err != nil {
 			s.step, s.err = bkImportForm, msg.err
 			return nil
@@ -131,8 +140,9 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		s.next()
 		return nil
 	case backupDstMsg:
+		m.pwTried(msg.err)
 		if msg.err != nil {
-			s.step, s.err = bkWalletPw, msg.err
+			s.step, s.err = bkWalletPw, wrongPassword(msg.err)
 			return nil
 		}
 		s.dst, s.dstOwned, s.needDst, s.err = msg.dst, true, false, nil
@@ -178,6 +188,10 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			s.err = err
 			return nil
 		}
+		if err := m.pwThrottle(); err != nil {
+			s.err = err
+			return nil
+		}
 		pw := []byte(s.form.inputs[1].Value())
 		s.form.inputs[1].SetValue("")
 		if len(pw) == 0 {
@@ -195,12 +209,12 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			}
 			defer b.Wipe()
 			if err := w.CheckWalletPassword(pw); err != nil {
-				return backupWrittenMsg{problems: problems, err: err}
+				return backupWrittenMsg{tried: true, problems: problems, err: err}
 			}
 			if err := wallet.WriteBackup(path, b, pw); err != nil {
-				return backupWrittenMsg{problems: problems, err: err}
+				return backupWrittenMsg{tried: true, problems: problems, err: err}
 			}
-			return backupWrittenMsg{path: path, count: len(b.Accounts), problems: problems}
+			return backupWrittenMsg{tried: true, path: path, count: len(b.Accounts), problems: problems}
 		}
 	case bkImportForm:
 		cmd, done := s.form.update(msg)
@@ -219,6 +233,15 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			keys.Zero(pw)
 			s.err = wallet.ErrMigrateFirst
 			return nil
+		}
+		// the backup's password is tried as this wallet's (when it is closed): a try of the wallet
+		// password like any other, so not while the delay runs
+		if m.session == nil && m.w.HasWalletPassword() {
+			if err := m.pwThrottle(); err != nil {
+				keys.Zero(pw)
+				s.err = err
+				return nil
+			}
 		}
 		s.err, s.step = nil, bkWorking
 		w, session := m.w, m.session
@@ -254,6 +277,7 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			case session != nil:
 			case w.HasWalletPassword():
 				dst, err := w.OpenWallet(pw)
+				msg.dstTried, msg.dstErr = true, err
 				if err == nil {
 					msg.dst = dst
 				} else {
@@ -302,6 +326,10 @@ func (s *backupScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		cmd, done := s.form.update(msg)
 		if !done {
 			return cmd
+		}
+		if err := m.pwThrottle(); err != nil {
+			s.err = err
+			return nil
 		}
 		pw := []byte(s.form.inputs[0].Value())
 		s.form.wipe()

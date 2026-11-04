@@ -790,7 +790,12 @@ asks the node's password, a plain node's key needs none. At the first start of a
 accounts have passwords each, the migration screen (4.2) comes first. The wallet password typed
 at unlock also moves the accounts with an old password that is the same. A wrong password says only "could not unlock: wrong password, or a
 damaged key file"; there is no limit on tries, but each failure in a row adds a wait before the
-next one (2 s, doubling, at most 30 s) on top of Argon2id's own cost.
+next one (2 s, doubling, at most 30 s) on top of Argon2id's own cost. Every screen that checks the
+wallet password shares that counter and that delay: the unlock screen, the migration (an existing
+wallet password), the backup's export, the backup's import (the backup's password tried as this
+wallet's, and this wallet's password asked), the change of password and a new account while the
+wallet is closed. A wrong password on any of them delays the next try on all of them, and none
+tries while the delay runs ("wait N s before the next try").
 
 Unlocked, signing asks no password again (the user's choice); on MAINNET the review still asks to
 type `send`, and shows everything as before. `l` locks the wallet (the master key and the account's

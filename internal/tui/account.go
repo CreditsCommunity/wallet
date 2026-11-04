@@ -64,6 +64,7 @@ type accountScreen struct {
 }
 
 type savedMsg struct {
+	tried    bool // the wallet password was checked (a new account while the wallet is closed)
 	address  string
 	recovery string // the recovery file written, if any
 	err      error
@@ -159,6 +160,10 @@ func (s *accountScreen) forget() {
 func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case savedMsg:
+		if msg.tried {
+			m.pwTried(msg.err)
+			msg.err = wrongPassword(msg.err)
+		}
 		name := s.savedName
 		s.address, s.recovery, s.err = msg.address, msg.recovery, msg.err
 		s.forget()
@@ -229,6 +234,10 @@ func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		case pwOpen:
 			if s.form.inputs[n-1].Value() == "" {
 				s.err = fmt.Errorf("type the wallet password")
+				return nil
+			}
+			if err := m.pwThrottle(); err != nil {
+				s.err = err
 				return nil
 			}
 		}
@@ -369,8 +378,16 @@ func (s *accountScreen) save(m *model) tea.Cmd {
 	if s.nodeDir != "" {
 		return s.saveNodeKey()
 	}
-	name, pw, key := s.form.value(0), s.password(), s.key
 	session := m.session
+	tried := session == nil && s.mode == pwOpen
+	if err := m.pwThrottle(); tried && err != nil {
+		s.step, s.err = accForm, err // the words are drawn again: nothing was saved
+		keys.Zero(s.key)
+		clear(s.words)
+		s.key, s.words = nil, nil
+		return nil
+	}
+	name, pw, key := s.form.value(0), s.password(), s.key
 	s.savedName = name
 	recovery, words := s.recovery, s.words
 	s.form.wipe()
@@ -398,9 +415,9 @@ func (s *accountScreen) save(m *model) tea.Cmd {
 			if recovery != "" {
 				os.Remove(recovery)
 			}
-			return savedMsg{err: err}
+			return savedMsg{tried: tried, err: err}
 		}
-		return savedMsg{address: f.Public, recovery: recovery}
+		return savedMsg{tried: tried, address: f.Public, recovery: recovery}
 	}
 }
 
