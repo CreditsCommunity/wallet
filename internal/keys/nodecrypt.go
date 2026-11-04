@@ -47,6 +47,23 @@ const (
 	NodeEncryptedSize = nodeNonceSize + ed25519.PrivateKeySize + poly1305.TagSize
 )
 
+// ErrNodeKeyMemory: the machine has not the memory the node's Argon2id needs (opening it anyway
+// would end the process when the allocation fails).
+var ErrNodeKeyMemory = errors.New("the node's key needs 1 GiB of free memory to open (as the node does)")
+
+// memoryAvailable tells how much memory can be allocated now (false: unknown); tests replace it.
+var memoryAvailable = availableMemory
+
+// checkNodeKDFMemory refuses before the derivation when the free memory is short of what Argon2id
+// takes (the KDF's memory plus a fifth for the process).
+func checkNodeKDFMemory() error {
+	need := uint64(NodeKDF.MemoryKiB) * 1024
+	if avail, ok := memoryAvailable(); ok && avail < need+need/5 {
+		return ErrNodeKeyMemory
+	}
+	return nil
+}
+
 // ErrNodeKeyPassword is the only answer to a node-encrypted key that does not open: no detail.
 var ErrNodeKeyPassword = errors.New("wrong password (or the node's key file was changed)")
 
@@ -86,10 +103,14 @@ func nodeTag(polyKey, ciphertext []byte) [poly1305.TagSize]byte {
 // DecryptNodeKey opens the decoded content of a node-encrypted NodePrivate.txt with the node's
 // password, as the node's PrivateKey::readFromEncrypted does. Any failure is ErrNodeKeyPassword.
 // The caller zeroes the key after use. It costs what the node's opening costs: 1 GiB of memory and
-// a few seconds.
+// a few seconds; with less memory free it is refused (ErrNodeKeyMemory). golang.org/x/crypto/argon2
+// does not zero its 1 GiB of working memory: it is left to the garbage collector.
 func DecryptNodeKey(encrypted, password []byte) (ed25519.PrivateKey, error) {
 	if len(encrypted) != NodeEncryptedSize {
 		return nil, ErrNodeKeyPassword
+	}
+	if err := checkNodeKDFMemory(); err != nil {
+		return nil, err
 	}
 	fileKey := nodeFileKey(password)
 	defer Zero(fileKey)
@@ -135,6 +156,9 @@ func EncryptNodeKey(key ed25519.PrivateKey, password, nonce []byte) ([]byte, err
 	}
 	if len(nonce) != nodeNonceSize {
 		return nil, errors.New("the node's nonce is 8 bytes")
+	}
+	if err := checkNodeKDFMemory(); err != nil {
+		return nil, err
 	}
 	fileKey := nodeFileKey(password)
 	defer Zero(fileKey)
