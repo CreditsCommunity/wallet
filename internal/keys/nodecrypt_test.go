@@ -12,12 +12,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/CreditsCommunity/wallet/internal/keys/keystest"
 	"github.com/mr-tron/base58"
 )
 
 // node-encrypted-vectors.json: NodePrivate.txt files encrypted by the node's own code
 // (testdata/node-key-crypt.cpp encrypt, i.e. cscrypto's PrivateKey::getEncrypted with the node's
-// libsodium) and opened by it (node-key-crypt open) before they were recorded.
+// libsodium) and opened by it (node-key-crypt open) before they were recorded. keystest (the
+// tests' writer of the node's format) must give their bytes exactly.
 type nodeEncVector struct {
 	Secret, Public, Password, Encrypted string
 }
@@ -35,7 +37,7 @@ func loadNodeEncVectors(t *testing.T) []nodeEncVector {
 	return v
 }
 
-// The node's encrypted files open with the node's password, and only with it; the wallet's
+// The node's encrypted files open with the node's password, and only with it; keystest's
 // encryption with the same nonce gives the node's bytes exactly.
 func TestNodeEncryptedVectors(t *testing.T) {
 	if testing.Short() {
@@ -56,7 +58,7 @@ func TestNodeEncryptedVectors(t *testing.T) {
 		if Base58(key) != v.Secret || Address(key.Public().(ed25519.PublicKey)) != v.Public {
 			t.Errorf("vector %d: another key", i)
 		}
-		again, err := encryptNodeKey(key, fk, raw[:8])
+		again, err := keystest.Seal(key, fk, raw[:8])
 		if err != nil || !bytes.Equal(again, raw) {
 			t.Errorf("vector %d: the wallet's encryption differs from the node's", i)
 		}
@@ -87,7 +89,7 @@ func TestNodeEncryptedRoundTripWithTheNode(t *testing.T) {
 	pw := "round trip ~ 42"
 	// wallet -> node
 	dir := t.TempDir()
-	enc, err := EncryptNodeKey(key, []byte(pw), nil)
+	enc, err := keystest.EncryptNodeKey(key, []byte(pw), NodeKDF.Time, NodeKDF.MemoryKiB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +121,7 @@ func TestNodeEncryptedFormat(t *testing.T) {
 	defer func() { NodeKDF = old }()
 	NodeKDF.Time, NodeKDF.MemoryKiB = 1, 64
 	key, _ := FromBase58(testSecret)
-	enc, err := EncryptNodeKey(key, []byte("pw"), nil)
+	enc, err := keystest.EncryptNodeKey(key, []byte("pw"), NodeKDF.Time, NodeKDF.MemoryKiB)
 	if err != nil || len(enc) != NodeEncryptedSize || NodeEncryptedSize != 88 {
 		t.Fatalf("%d bytes, %v", len(enc), err)
 	}
@@ -145,7 +147,7 @@ func TestNodeKeyMemoryCheck(t *testing.T) {
 	defer func() { memoryAvailable, NodeKDF = oldMem, oldKDF }()
 	NodeKDF.Time, NodeKDF.MemoryKiB = 1, 64
 	key, _ := FromBase58(testSecret)
-	enc, err := EncryptNodeKey(key, []byte("pw"), nil)
+	enc, err := keystest.EncryptNodeKey(key, []byte("pw"), NodeKDF.Time, NodeKDF.MemoryKiB)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/CreditsCommunity/wallet/internal/config"
 	"github.com/CreditsCommunity/wallet/internal/keys"
+	"github.com/CreditsCommunity/wallet/internal/keys/keystest"
 	"github.com/CreditsCommunity/wallet/internal/tx"
 )
 
@@ -32,7 +33,7 @@ func writeEncryptedNodeKey(t *testing.T, dir, secret, password string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc, err := keys.EncryptNodeKey(key, []byte(password), nil)
+	enc, err := keystest.EncryptNodeKey(key, []byte(password), keys.NodeKDF.Time, keys.NodeKDF.MemoryKiB)
 	if err != nil {
 		t.Fatal(err)
 	}
