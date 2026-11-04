@@ -4,6 +4,8 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"runtime"
+	"runtime/debug"
 
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/thrift/api"
@@ -35,6 +37,9 @@ func NeedsPassword(f *keys.File) bool { return !f.IsNodeKey() || f.NodeKeyEncryp
 // the node encrypted opened with the node's password (its address must be its NodePublic.txt's),
 // or a plain node's key checked (no password). A wrong password is ErrUnlock.
 func (w *Wallet) Unlock(f *keys.File, password []byte) (*Unlocked, error) {
+	// the derivation's working memory (Argon2id: 256 MiB, 1 GiB for a node's key) goes back now;
+	// x/crypto/argon2 does not zero it
+	defer debug.FreeOSMemory()
 	switch {
 	case !f.IsNodeKey():
 		key, err := f.Decrypt(password)
@@ -87,11 +92,23 @@ func lockedSession(f *keys.File, key ed25519.PrivateKey) (*Unlocked, error) {
 	return &Unlocked{Account: f, key: lk}, nil
 }
 
-// Lock zeroes the session's key. Safe on nil and twice.
+// Lock zeroes the session's key. Safe on nil and twice. A collection follows, so that the heap
+// copies made to sign (zeroed) and the expanded keys of crypto/ed25519 (not zeroed by it) are freed
+// and their memory reused sooner.
 func (u *Unlocked) Lock() {
-	if u != nil {
+	if u != nil && u.key != nil && !u.key.Destroyed() {
 		u.key.Destroy()
+		runtime.GC()
 	}
+}
+
+// Warning is keys.NotLockedWarning when the key could not be kept in locked memory ("" otherwise,
+// and for a plain node's key, which is not kept).
+func (u *Unlocked) Warning() string {
+	if u == nil || u.key == nil {
+		return ""
+	}
+	return u.key.Warning()
 }
 
 // Locked tells whether Lock was called (a plain node's key, which holds nothing, never is).

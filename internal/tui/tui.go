@@ -75,6 +75,7 @@ type model struct {
 	flash  string // a one-line message on the main screen
 
 	nodeWarned bool // the node key's warning was shown (once)
+	memWarned  bool // the key could not be locked in memory: said once
 }
 
 func newModel(w *wallet.Wallet) *model {
@@ -449,10 +450,10 @@ func (m *model) mainView() string {
 		right.WriteString(f.Public + "\n") // whole, alone on its line: it can also be selected
 		if f.NodeKeyEncrypted {
 			right.WriteString(stWarn.Render(truncate("NODE KEY, encrypted by the node: unlocked", rightW)) + "\n")
-			right.WriteString(stDim.Render(truncate("read from "+f.NodeKey, rightW)) + "\n")
+			right.WriteString(stDim.Render(truncate("read from "+echo.Terminal(f.NodeKey), rightW)) + "\n")
 		} else if f.IsNodeKey() {
 			right.WriteString(stWarn.Render(truncate("NODE KEY: the node's own key, in clear in its folder (no password)", rightW)) + "\n")
-			right.WriteString(stDim.Render(truncate("read from "+f.NodeKey, rightW)) + "\n")
+			right.WriteString(stDim.Render(truncate("read from "+echo.Terminal(f.NodeKey), rightW)) + "\n")
 		}
 		if err := m.balErr[f.Name]; err != nil {
 			right.WriteString(stBad.Render(oneLine(err.Error())) + "\n")
@@ -482,10 +483,10 @@ func (m *model) mainView() string {
 		}
 	} else {
 		right.WriteString("Welcome. Create an account with " + stKey.Render("[n]") + " or import one with " + stKey.Render("[i]") + ".\n")
-		right.WriteString(stDim.Render("Keys are stored encrypted in "+m.w.Store.Dir) + "\n")
+		right.WriteString(stDim.Render("Keys are stored encrypted in "+echo.Terminal(m.w.Store.Dir)) + "\n")
 	}
 	if m.w.NodeKeyMissing() {
-		right.WriteString("\n" + stWarn.Render("The node in "+m.w.NodeKey.Dir+" has no key yet.") + "\n")
+		right.WriteString("\n" + stWarn.Render("The node in "+echo.Terminal(m.w.NodeKey.Dir)+" has no key yet.") + "\n")
 		right.WriteString(stKey.Render("[g]") + " make the node's key from a 24-word phrase: the node uses it at its first start.\n")
 	}
 	if m.statusErr != nil {

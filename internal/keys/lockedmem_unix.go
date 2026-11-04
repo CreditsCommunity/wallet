@@ -10,14 +10,18 @@ type lockedMem struct {
 	page []byte // the mapping (nil: Go's heap, when mmap failed)
 }
 
-func newLockedMem(n int) (*lockedMem, error) {
+// newLockedMem: locked is false when the key could not be kept out of swap (mmap or mlock failed).
+func newLockedMem(n int) (mem *lockedMem, locked bool) {
+	if heapOnly {
+		return &lockedMem{b: make([]byte, n)}, false
+	}
 	page, err := unix.Mmap(-1, 0, unix.Getpagesize(), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
 	if err != nil || len(page) < n {
-		return &lockedMem{b: make([]byte, n)}, nil // best effort
+		return &lockedMem{b: make([]byte, n)}, false
 	}
-	_ = unix.Mlock(page) // best effort (RLIMIT_MEMLOCK)
+	locked = unix.Mlock(page) == nil // RLIMIT_MEMLOCK may refuse it
 	dontDump(page)
-	return &lockedMem{b: page[:n:n], page: page}, nil
+	return &lockedMem{b: page[:n:n], page: page}, locked
 }
 
 func (m *lockedMem) protect() {

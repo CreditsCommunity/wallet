@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -137,31 +138,33 @@ func TestNodeEncryptedFormat(t *testing.T) {
 	}
 }
 
-// The session's key: usable until Destroy, then zeroed and refused.
-func TestLockedKey(t *testing.T) {
+// Too little free memory for the node's Argon2id: refused before the derivation, which would
+// otherwise end the process.
+func TestNodeKeyMemoryCheck(t *testing.T) {
+	oldMem, oldKDF := memoryAvailable, NodeKDF
+	defer func() { memoryAvailable, NodeKDF = oldMem, oldKDF }()
+	NodeKDF.Time, NodeKDF.MemoryKiB = 1, 64
 	key, _ := FromBase58(testSecret)
-	lk, err := NewLockedKey(key)
+	enc, err := EncryptNodeKey(key, []byte("pw"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var lent ed25519.PrivateKey
-	err = lk.Use(func(k ed25519.PrivateKey) error {
-		lent = k
-		if Base58(k) != testSecret {
-			t.Error("another key")
-		}
-		ed25519.Sign(k, []byte("x"))
-		return nil
-	})
-	if err != nil || Address(lk.Public()) != testAddress {
+	memoryAvailable = func() (uint64, bool) { return 70 * 1024, true } // less than 64 KiB + a fifth
+	if _, err := DecryptNodeKey(enc, []byte("pw")); !errors.Is(err, ErrNodeKeyMemory) || err.Error() != "the node's key needs 1 GiB of free memory to open (as the node does)" {
+		t.Fatalf("short of memory: %v", err)
+	}
+	if _, err := OpenNodePrivate([]byte(base58.Encode(enc)), []byte("pw")); !errors.Is(err, ErrNodeKeyMemory) {
+		t.Fatalf("open: %v", err)
+	}
+	memoryAvailable = func() (uint64, bool) { return 0, false } // unknown: tried
+	if _, err := DecryptNodeKey(enc, []byte("pw")); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(lent, make([]byte, 64)) {
-		t.Error("the copy lent to Use was not zeroed")
+	memoryAvailable = func() (uint64, bool) { return 1 << 30, true }
+	if _, err := DecryptNodeKey(enc, []byte("pw")); err != nil {
+		t.Fatal(err)
 	}
-	lk.Destroy()
-	lk.Destroy()
-	if !lk.Destroyed() || !errors.Is(lk.Use(func(ed25519.PrivateKey) error { return nil }), ErrLocked) {
-		t.Error("usable after Destroy")
+	if avail, ok := availableMemory(); runtime.GOOS == "linux" && (!ok || avail == 0) {
+		t.Errorf("this system's memory: %d %v", avail, ok)
 	}
 }

@@ -15,16 +15,20 @@ type lockedMem struct {
 	size uintptr
 }
 
-func newLockedMem(n int) (*lockedMem, error) {
+// newLockedMem: locked is false when the key could not be kept out of swap.
+func newLockedMem(n int) (mem *lockedMem, locked bool) {
+	if heapOnly {
+		return &lockedMem{b: make([]byte, n)}, false
+	}
 	size := uintptr(4096)
 	addr, err := windows.VirtualAlloc(0, size, windows.MEM_COMMIT|windows.MEM_RESERVE, windows.PAGE_READWRITE)
 	if err != nil || addr == 0 {
-		return &lockedMem{b: make([]byte, n)}, nil // best effort
+		return &lockedMem{b: make([]byte, n)}, false
 	}
-	_ = windows.VirtualLock(addr, size)            // best effort
+	locked = windows.VirtualLock(addr, size) == nil
 	p := *(*unsafe.Pointer)(unsafe.Pointer(&addr)) // memory outside Go's heap: vet's uintptr rule does not apply
 	b := unsafe.Slice((*byte)(p), n)
-	return &lockedMem{b: b, addr: addr, size: size}, nil
+	return &lockedMem{b: b, addr: addr, size: size}, locked
 }
 
 func (m *lockedMem) protect() {

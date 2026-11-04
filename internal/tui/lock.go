@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/history"
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/internal/node"
@@ -100,23 +101,28 @@ func (m *model) updateLock(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		if msg.err != nil {
-			s.failed++
-			s.retryAt = m.now().Add(unlockDelay(s.failed))
 			s.step = lockPassword
 			if s.pw == nil { // a plain node's key: no password was asked
 				s.step = lockList
 			}
-			if wallet.IsWrongPassword(msg.err) {
-				s.note = wallet.ErrUnlock.Error()
-			} else {
+			if !wallet.IsWrongPassword(msg.err) {
+				// not the password (the file's checks, the memory for a node's key): said as it is
 				s.note = oneLine(msg.err.Error())
+				return nil
 			}
+			s.failed++
+			s.retryAt = m.now().Add(unlockDelay(s.failed))
+			s.note = wallet.ErrUnlock.Error()
 			return tea.Tick(unlockDelay(s.failed), func(time.Time) tea.Msg { return retryMsg{} })
 		}
 		s.failed, s.note = 0, ""
 		s.reset("")
 		m.unlocked = msg.u
 		m.lastInput = m.now()
+		if w := msg.u.Warning(); w != "" && !m.memWarned {
+			m.memWarned = true // once
+			m.flash = strings.TrimPrefix(m.flash+"; "+w, "; ")
+		}
 		return m.refreshCurrent()
 	case retryMsg:
 		return nil
@@ -228,7 +234,7 @@ func (m *model) lockView() string {
 	}
 	if len(m.accounts) == 0 {
 		b.WriteString("Welcome. Create an account with " + stKey.Render("[n]") + " or import one with " + stKey.Render("[i]") + ".\n")
-		b.WriteString(stDim.Render(truncate("Keys are stored encrypted in "+m.w.Store.Dir, m.width-2)) + "\n")
+		b.WriteString(stDim.Render(truncate("Keys are stored encrypted in "+echo.Terminal(m.w.Store.Dir), m.width-2)) + "\n")
 	}
 	// the list: name and address, nothing else
 	rows := max(m.height-14, 3)
@@ -264,16 +270,16 @@ func (m *model) lockView() string {
 	switch s.step {
 	case lockList:
 		if f != nil && f.IsNodeKey() && !f.NodeKeyEncrypted {
-			b.WriteString(stWarn.Render(truncate("NODE KEY in clear in "+f.NodeKey+": no password", m.width-2)) + "\n")
+			b.WriteString(stWarn.Render(truncate("NODE KEY in clear in "+echo.Terminal(f.NodeKey)+": no password", m.width-2)) + "\n")
 		}
 		if m.w.NodeKeyMissing() {
-			b.WriteString(keyHelp("g", "make the node's key from 24 words:") + stWarn.Render(truncate(" the node has none yet in "+m.w.NodeKey.Dir, m.width-40)) + "\n")
+			b.WriteString(keyHelp("g", "make the node's key from 24 words:") + stWarn.Render(truncate(" the node has none yet in "+echo.Terminal(m.w.NodeKey.Dir), m.width-40)) + "\n")
 		}
 		b.WriteString(keyHelp("Enter", "unlock", "n", "new", "i", "import", "S", "node", "?", "help", "q", "quit") + "\n")
 	case lockPassword, lockOpening:
 		what := "Password of " + f.Name
 		if f.NodeKeyEncrypted {
-			what = "The node's password for its key (" + f.NodeKey + ")"
+			what = "The node's password for its key (" + echo.Terminal(f.NodeKey) + ")"
 		}
 		if s.pw != nil {
 			b.WriteString(truncate(what, m.width-2) + "\n")

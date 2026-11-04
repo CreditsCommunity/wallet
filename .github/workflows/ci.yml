@@ -58,6 +58,9 @@ jobs:
           CREDITS_WALLET_FAKE_NODE: '1'  # the offline transfer test must run, not be skipped
         run: go test -count=1 ./...
 
+      - name: The session's locked key under the race detector
+        run: go test -race -count=1 -run LockedKey ./internal/keys
+
       - name: Cross-compile
         env:
           CGO_ENABLED: '0'

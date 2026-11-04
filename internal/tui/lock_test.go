@@ -316,3 +316,19 @@ func TestTUIEncryptedNodeKey(t *testing.T) {
 		t.Errorf("send:\n%s", v)
 	}
 }
+
+// A failure that is not the password (here the files' checks) is said as it is, with no wait added.
+func TestUnlockOtherFailure(t *testing.T) {
+	m, dir := nodeWalletModel(t, false)
+	os.WriteFile(filepath.Join(dir, keys.NodePrivateFile), []byte(nodeSecret), 0o600)
+	m.Update(m.loadAccounts()())
+	os.Remove(filepath.Join(dir, keys.NodePrivateFile)) // gone between the list and the unlock
+	cmd := press(m, tea.KeyEnter)
+	if cmd == nil {
+		t.Fatal("no unlock started")
+	}
+	runCmd(m, cmd)
+	if m.unlocked != nil || m.lock.failed != 0 || m.lock.note == wallet.ErrUnlock.Error() || m.lock.note == "" {
+		t.Fatalf("failed %d, note %q", m.lock.failed, m.lock.note)
+	}
+}
