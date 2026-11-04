@@ -193,6 +193,9 @@ func (a *app) open() error {
 		return err
 	}
 	a.w = wallet.New(cfg, p, dir)
+	if w := config.HomeWarning(); w != "" && os.Getenv("CREDITS_WALLET_HOME") == "" {
+		fmt.Fprintln(os.Stderr, "warning:", w) // the data folder is in that home
+	}
 	for _, warning := range config.PermissionWarnings(dir) {
 		fmt.Fprintln(os.Stderr, "warning:", warning)
 	}
@@ -216,6 +219,7 @@ func writeJSON(w io.Writer, v any, indent string) error {
 }
 
 func main() {
+	hardenProcess()
 	os.Exit(run(os.Args[1:]))
 }
 

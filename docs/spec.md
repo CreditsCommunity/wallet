@@ -87,19 +87,30 @@ ci/release/build.sh      the reproducible release archives
   file as well? [y/N]"; the default is no. On yes it proposes `<home>/credits-recovery-<name>.txt`
   (home: `%USERPROFILE%` on Windows; elsewhere `$HOME` if the effective user owns it, otherwise the
   effective user's home from the password database, so `sudo` without `-H` never puts it in another
-  user's home) and accepts another path (`~/` expanded). Refused, with the question repeated (three
+  user's home; `config.DataDir` uses the same rule, and the wallet warns when `$HOME` is not the
+  effective user's or when it runs as root) and accepts another path (`~/` expanded). Refused, with the question repeated (three
   tries, then no file): an existing file or a symbolic link at the path, a folder that does not
-  exist, a path in the data folder or the accounts folder (also through links), a folder that
-  holds, or is below a folder that holds, key files (`NodePrivate.txt`, `NodePublic.txt`, wallet
-  key files, the official wallets' keys JSON). Rationale: the key files are encrypted under the
+  exist or cannot be listed, a path in the data folder or the accounts folder (by name, then by
+  identity: `os.SameFile` against every ancestor of the folder as typed and as resolved, which
+  covers links, Windows junctions, bind mounts and case-insensitive file systems), a folder that
+  holds, or is below a folder that holds, key files: `NodePrivate*`/`NodePublic*`, and by content
+  (files up to 16 KiB, the first 4096 of a folder, links followed) wallet key files whatever their
+  name, the official wallets' keys JSON, a base58 64-byte secret key. Rationale: the key files are encrypted under the
   password; the words beside them would bypass it. The file holds the account name, address, date
   (UTC), the 24 numbered words and a one-line warning. It is written by the same writer as
-  `--words-file` and `account export --out`: a temporary file created exclusively (mode 0600) in
-  the target folder, written and synced, then hard-linked to the name (fails if anything exists
-  there; without hard links, `O_CREAT|O_EXCL`); on Windows the mode is not applied and a path
+  `--words-file` and `account export --out`. On Linux an unnamed file (`O_TMPFILE`, mode 0600) in
+  the target folder, written and synced, then named with `linkat` through `/proc/self/fd` (fails
+  if anything exists there): nothing is left by a crash. Elsewhere, or without `O_TMPFILE`,
+  `PATH.partial` created exclusively and kept open, written and synced, then hard-linked to the
+  name (a leftover `.partial`, from a crash, makes the next write refuse and is documented as to
+  delete); without hard links, `O_CREAT|O_EXCL`. After naming, the file at the path must be the
+  open one (`os.SameFile` with its descriptor), or it is removed and the write fails (a swap by
+  another user in a shared folder); on Windows the mode is not applied and a path
   outside `%USERPROFILE%` gets a warning. The file is written before the key file and removed if
   the account cannot be saved. The words never go to the logs, an error message or the JSON; the
-  buffer holding the file's content is zeroed after writing. Afterwards the wallet prints the full
+  buffer holding the file's content is zeroed after writing and the slices of words are cleared
+  (`clear`; Go strings cannot be wiped). At start-up the wallet makes itself non-dumpable
+  (`prctl(PR_SET_DUMPABLE, 0)`, Linux) and sets `RLIMIT_CORE` to 0 (Linux, macOS), best effort. Afterwards the wallet prints the full
   path and "This file holds your account in clear: copy it to paper or an offline USB key, then
   delete it from this computer." (the TUI shows the same).
 
@@ -400,8 +411,9 @@ Addresses in and out:
   it with its first and last 6 characters highlighted (bold, underlined) to compare with the
   source (clipboard hijacking); the review highlights the recipient, node, token and contract the
   same way. In an address-only field (send To, delegate Node, token Token and To, token add,
-  contract address) anything else is refused, the field unchanged, the refusal showing the pasted
-  text escaped and cut. In a free field (contract arguments) other text is inserted without
+  contract address) anything else is refused, the field unchanged; the refusal shows only the
+  length of the pasted text (it may be a secret key or a phrase pasted by mistake) and goes when
+  the field loses focus. In a free field (contract arguments) other text is inserted without
   control characters. A paste into a secret field (password, imported key) is passed on unchanged
   and never shown. The wallet never reads the clipboard itself: the text inputs' Ctrl+V (which
   runs external programs) is disabled.

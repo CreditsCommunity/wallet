@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CreditsCommunity/wallet/internal/config"
 	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/history"
 	"github.com/CreditsCommunity/wallet/internal/keys"
@@ -213,6 +214,7 @@ func (a *app) accountNew(name, wordsFile string, showWords bool) error {
 	}
 	defer keys.Zero(master[:])
 	words := keys.Words(&master)
+	defer clear(words) // the strings cannot be wiped; the slice at least drops them
 	key := keys.DeriveKey(&master)
 	defer keys.Zero(key)
 	recoveryFile := ""
@@ -306,6 +308,9 @@ func (a *app) askRecoveryFile(name string) (string, error) {
 	def, err := wallet.DefaultRecoveryPath(name)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "no default place for the file:", err)
+	}
+	if w := config.HomeWarning(); w != "" && os.Getenv("CREDITS_WALLET_HOME") != "" {
+		fmt.Fprintln(os.Stderr, "warning:", w) // (otherwise said already, for the data folder)
 	}
 	for tries := 0; tries < 3; tries++ {
 		prompt := "File: "

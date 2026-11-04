@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/CreditsCommunity/wallet/internal/config"
 	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/internal/wallet"
@@ -72,6 +73,7 @@ func (s *accountScreen) title() string {
 
 func (s *accountScreen) forget() {
 	keys.Zero(s.key)
+	clear(s.words)
 	s.key, s.words = nil, nil
 	s.form.wipe()
 	if s.check != nil {
@@ -233,6 +235,7 @@ func (s *accountScreen) save(m *model) tea.Cmd {
 	return func() tea.Msg {
 		defer keys.Zero(pw)
 		defer keys.Zero(key)
+		defer clear(words)
 		if recovery != "" {
 			data := wallet.RecoveryText(name, keys.Address(key.Public().(ed25519.PublicKey)), time.Now(), words)
 			err := wallet.WriteSecretFile(recovery, data)
@@ -284,7 +287,11 @@ func (s *accountScreen) view(m *model) string {
 		b.WriteString(stDim.Render("the words are only on your paper.") + "\n")
 		b.WriteString("\n" + keyHelp("y", "save to a file", "n/Enter", "no", "Esc", "cancel") + "\n")
 	case accFilePath:
-		b.WriteString("Where to save the 24 words (a new file, outside the wallet's folder).\n\n")
+		b.WriteString("Where to save the 24 words (a new file, outside the wallet's folder).\n")
+		if w := config.HomeWarning(); w != "" {
+			b.WriteString(stWarn.Render(w) + "\n")
+		}
+		b.WriteString("\n")
 		b.WriteString(s.file.view())
 		b.WriteString("\n" + keyHelp("Enter", "save", "Esc", "cancel") + "\n")
 	case accSaving:

@@ -1,6 +1,6 @@
 //go:build unix
 
-package wallet
+package config
 
 import (
 	"os"

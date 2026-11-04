@@ -10,6 +10,11 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/mr-tron/base58"
+
+	"github.com/CreditsCommunity/wallet/internal/config"
+	"github.com/CreditsCommunity/wallet/internal/keys"
 )
 
 // The recovery file: on request, after the phrase of a new account was shown and checked, its 24
@@ -17,7 +22,7 @@ import (
 // encrypted key files are), not in a folder that holds key files of any kind. A copy of the words
 // beside the key files would let whoever takes that folder skip the password altogether. It is
 // created new (never overwriting, never through a symbolic link), owner-only (0600), written
-// whole: a temporary file in the same folder, linked to its name only when complete.
+// whole (see WriteSecretFile).
 
 // RecoveryAdvice is what to do with the file once written (terminal and TUI).
 const RecoveryAdvice = "This file holds your account in clear: copy it to paper or an offline USB key, then delete it from this computer."
@@ -25,28 +30,8 @@ const RecoveryAdvice = "This file holds your account in clear: copy it to paper 
 // RecoveryQuestion is the question asked after the check of the phrase; the default is no.
 const RecoveryQuestion = "Save the 24 words to a file as well? [y/N] "
 
-// UserHome is the home folder of the user the wallet runs as: %USERPROFILE% on Windows; on Linux
-// and macOS $HOME, unless it is not a folder of the effective user (sudo without -H keeps the
-// invoking user's $HOME), in which case the home of the effective user's account.
-func UserHome() (string, error) {
-	if runtime.GOOS == "windows" {
-		if p := os.Getenv("USERPROFILE"); p != "" {
-			return p, nil
-		}
-		return os.UserHomeDir()
-	}
-	home := os.Getenv("HOME")
-	if home != "" && ownedByMe(home) {
-		return home, nil
-	}
-	if h, err := accountHome(); err == nil && h != "" {
-		return h, nil
-	}
-	if home != "" {
-		return home, nil
-	}
-	return "", errors.New("no home folder: HOME is not set")
-}
+// UserHome is config.UserHome: the data folder and the recovery file use the same home.
+func UserHome() (string, error) { return config.UserHome() }
 
 // DefaultRecoveryPath is ~/credits-recovery-<account>.txt (%USERPROFILE%\... on Windows).
 func DefaultRecoveryPath(account string) (string, error) {
@@ -70,8 +55,9 @@ func ExpandHome(path string) string {
 }
 
 // CheckRecoveryPath checks where the recovery file may go and returns its absolute path. Refused:
-// an existing file or link at that path, a folder that does not exist, a path in the data folder
-// or the accounts folder (also through links), a folder (or a folder above it) holding key files.
+// an existing file or link at that path, a folder that does not exist or cannot be listed, a path
+// in the data folder or the accounts folder (compared by identity: links, junctions, bind mounts,
+// a case-insensitive file system), a folder (or a folder above it) holding key files.
 func (w *Wallet) CheckRecoveryPath(path string) (string, error) {
 	return CheckRecoveryPath(path, w.DataDir, w.Store.Dir)
 }
@@ -99,36 +85,65 @@ func CheckRecoveryPath(path, dataDir, accountsDir string) (string, error) {
 	if r, err := filepath.EvalSymlinks(dir); err == nil {
 		realDir = r
 	}
-	for _, keep := range []string{dataDir, accountsDir} {
-		if keep == "" {
+	// the data and accounts folders: by name (they may not exist yet), then by identity
+	type kept struct {
+		path string
+		st   os.FileInfo
+	}
+	var keep []kept
+	for _, k := range []string{dataDir, accountsDir} {
+		if k == "" {
 			continue
 		}
-		keepAbs, err := filepath.Abs(keep)
+		kAbs, err := filepath.Abs(k)
 		if err != nil {
 			continue
 		}
-		realKeep := keepAbs
-		if r, err := filepath.EvalSymlinks(keepAbs); err == nil {
-			realKeep = r
+		realK := kAbs
+		if r, err := filepath.EvalSymlinks(kAbs); err == nil {
+			realK = r
 		}
-		if within(dir, keepAbs) || within(realDir, realKeep) || within(realDir, keepAbs) {
-			return "", fmt.Errorf("%s is in the wallet's data folder %s, next to the keys: refused, choose a folder outside it", abs, keepAbs)
+		if within(dir, kAbs) || within(realDir, realK) || within(realDir, kAbs) {
+			return "", dataFolderErr(abs, kAbs)
+		}
+		if st, err := os.Stat(kAbs); err == nil {
+			keep = append(keep, kept{kAbs, st})
 		}
 	}
 	if st, err := os.Stat(realDir); err != nil || !st.IsDir() {
 		return "", fmt.Errorf("%s is not an existing folder", dir)
 	}
-	for d := realDir; ; {
-		if name := keyFileIn(d); name != "" {
+	for _, start := range []string{realDir, dir} {
+		for d := start; ; d = filepath.Dir(d) {
+			if st, err := os.Stat(d); err == nil {
+				for _, k := range keep {
+					if os.SameFile(st, k.st) {
+						return "", dataFolderErr(abs, k.path)
+					}
+				}
+			}
+			if filepath.Dir(d) == d {
+				break
+			}
+		}
+	}
+	for d := realDir; ; d = filepath.Dir(d) {
+		name, err := keyFileIn(d)
+		if err != nil && d == realDir {
+			return "", fmt.Errorf("%s cannot be listed (%v): refused, the wallet must see that no key files are there", d, err)
+		}
+		if name != "" {
 			return "", fmt.Errorf("%s holds key files (%s): refused, the words never go next to keys", d, name)
 		}
-		up := filepath.Dir(d)
-		if up == d {
+		if filepath.Dir(d) == d {
 			break
 		}
-		d = up
 	}
 	return abs, nil
+}
+
+func dataFolderErr(abs, folder string) error {
+	return fmt.Errorf("%s is in the wallet's data folder %s, next to the keys: refused, choose a folder outside it", abs, folder)
 }
 
 // within tells whether path is dir or inside it (case-insensitive on Windows, as filepath.Rel).
@@ -137,37 +152,62 @@ func within(path, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
-// keyFileIn returns the name of a key file in dir, or "": a node's NodePrivate.txt or
-// NodePublic.txt, a wallet key file, or the official wallets' keys JSON.
-func keyFileIn(dir string) string {
+// maxKeyScan bounds how many files of a folder are read to look for key files (names are always
+// checked); maxKeyFile is the largest file read.
+const (
+	maxKeyScan = 4096
+	maxKeyFile = 16 << 10
+)
+
+// keyFileIn returns the name of a key file in dir, or "": a node's NodePrivate*/NodePublic* file,
+// a wallet key file (whatever its name: an encrypted export too), the official wallets' keys JSON,
+// a base58 secret key (export --format base58); a link to any of them counts. The error is that
+// of listing the folder.
+func keyFileIn(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return ""
+		return "", err
 	}
+	read := 0
 	for _, e := range entries {
 		name := e.Name()
-		if strings.EqualFold(name, "NodePrivate.txt") || strings.EqualFold(name, "NodePublic.txt") {
-			return name
+		lower := strings.ToLower(name)
+		if !e.IsDir() && (strings.HasPrefix(lower, "nodeprivate") || strings.HasPrefix(lower, "nodepublic")) {
+			return name, nil
 		}
-		if !e.Type().IsRegular() || !strings.EqualFold(filepath.Ext(name), ".json") {
+		if read >= maxKeyScan {
 			continue
 		}
-		if isKeyJSON(filepath.Join(dir, name)) {
-			return name
+		st, err := os.Stat(filepath.Join(dir, name)) // follows a link
+		if err != nil || !st.Mode().IsRegular() || st.Size() == 0 || st.Size() > maxKeyFile {
+			continue
+		}
+		read++
+		if isKeyFile(filepath.Join(dir, name)) {
+			return name, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
-func isKeyJSON(path string) bool {
+// isKeyFile tells whether a small file holds a key: a wallet key file, the official keys JSON, or
+// a base58 secret key of 64 bytes.
+func isKeyFile(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, 64<<10+1))
-	if err != nil || len(data) > 64<<10 {
+	data, err := io.ReadAll(io.LimitReader(f, maxKeyFile+1))
+	if err != nil || len(data) > maxKeyFile {
 		return false
+	}
+	defer keys.Zero(data)
+	if trimmed := strings.TrimSpace(string(data)); len(trimmed) >= 80 && len(trimmed) <= 100 && !strings.ContainsAny(trimmed, " \t\r\n") {
+		if b, err := base58.Decode(trimmed); err == nil && len(b) == 64 {
+			keys.Zero(b)
+			return true
+		}
 	}
 	var k struct {
 		Ciphertext string `json:"ciphertext"`
@@ -205,63 +245,104 @@ func RecoveryText(account, address string, when time.Time, words []string) []byt
 }
 
 // WriteSecretFile creates a new file readable by its owner only (0600) holding data. It never
-// overwrites and never writes through a link: data goes to a temporary file in the same folder
-// (created exclusively), synced, then hard-linked to path, which fails if anything (a file, a
-// link) is there; on a file system without hard links the file is created with O_EXCL directly.
+// overwrites and never writes through a link, and the file appears whole or not at all:
+//   - on Linux, an unnamed file in the folder (O_TMPFILE), written and synced, then given its name
+//     (linkat): nothing is left behind if the wallet is killed or the power fails;
+//   - elsewhere (or where O_TMPFILE is not supported) PATH.partial, created exclusively, kept
+//     open, written and synced, then hard-linked to path; a crash may leave PATH.partial, which
+//     holds the secret: the docs say to delete it; the next write refuses while it is there;
+//   - without hard links, path itself with O_CREATE|O_EXCL.
+//
+// After the name is given, the file at path must be the one written (os.SameFile with the open
+// descriptor): if another user swapped it in a shared folder, path is removed and the write fails.
 // Windows ignores the mode: the file takes its folder's ACL (the user profile is private).
 func WriteSecretFile(path string, data []byte) error {
 	if st, err := os.Lstat(path); err == nil {
 		if st.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%s is a symbolic link: refused", path)
 		}
-		return fmt.Errorf("%s already exists: refused, the wallet never overwrites a file", path)
+		return existsErr(path)
 	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".credits-secret-*")
+	if done, err := unnamedWrite(path, data); done {
+		if err == nil {
+			syncDir(filepath.Dir(path))
+		}
+		return err
+	}
+	partial := path + ".partial"
+	tmp, err := os.OpenFile(partial, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("%s exists, left by an interrupted write: it may hold a secret; check it, delete it, then try again", partial)
+	}
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer os.Remove(partial) // after Close (deferred later, run first): Windows does not remove an open file
+	defer tmp.Close()
 	if err := tmp.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
-		tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
 		return err
 	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Link(tmpName, path); err != nil {
+	if err := os.Link(partial, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("%s already exists: refused, the wallet never overwrites a file", path)
+			return existsErr(path)
 		}
 		return writeExclusive(path, data)
 	}
-	syncDir(dir)
+	if err := sameFile(tmp, path); err != nil {
+		return err
+	}
+	syncDir(filepath.Dir(path))
 	return nil
+}
+
+// unnamedWrite is writeUnnamed (replaced in tests, to exercise the named fallback on Linux).
+var unnamedWrite = writeUnnamed
+
+func existsErr(path string) error {
+	return fmt.Errorf("%s already exists: refused, the wallet never overwrites a file", path)
+}
+
+// sameFile checks that path is the file open as f; if not, path is removed.
+func sameFile(f *os.File, path string) error {
+	mine, err1 := f.Stat()
+	there, err2 := os.Lstat(path)
+	if err1 == nil && err2 == nil && os.SameFile(mine, there) {
+		return nil
+	}
+	if err2 == nil {
+		os.Remove(path)
+	}
+	return fmt.Errorf("%s was replaced while it was written (another user in this folder?): removed, nothing written", path)
 }
 
 // writeExclusive is the fallback without hard links: O_CREATE|O_EXCL (which also refuses a link).
 func writeExclusive(path string, data []byte) error {
 	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return existsErr(path)
+		}
+		return err
+	}
+	fail := func(err error) error {
+		out.Close()
+		os.Remove(path)
 		return err
 	}
 	if _, err := out.Write(data); err != nil {
-		out.Close()
-		os.Remove(path)
-		return err
+		return fail(err)
 	}
 	if err := out.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := sameFile(out, path); err != nil {
 		out.Close()
-		os.Remove(path)
 		return err
 	}
 	return out.Close()

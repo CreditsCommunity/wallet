@@ -152,10 +152,19 @@ scrive le 24 parole anche in un file:
   se preferisci scrivi un altro percorso (Invio tiene quello proposto; `~/` è la tua cartella home).
 - Il file contiene il nome dell'account, il suo indirizzo, la data, le 24 parole numerate e un
   avviso. Viene creato nuovo, leggibile solo da te (permessi 600; su Windows quelli del profilo
-  utente), e non sostituisce mai un file esistente né segue un collegamento simbolico.
+  utente), e non sostituisce mai un file esistente né segue un collegamento simbolico. Su Linux
+  compare intero o non compare affatto. Su macOS e Windows il wallet scrive prima
+  `credits-recovery-NOME.txt.partial` lì accanto e lo rinomina quando è completo: se il computer si
+  blocca o va via la corrente in quei pochi millisecondi, **cancella il file `.partial`** (contiene
+  le parole). Finché c'è, il wallet si rifiuta di scrivere.
 - **Non sta mai accanto alle chiavi.** Un percorso nella cartella dei dati del wallet, o in una
-  cartella che contiene file di chiavi (file delle chiavi del wallet, `NodePrivate.txt`, il JSON
-  delle chiavi dei wallet ufficiali), viene rifiutato e il wallet chiede di nuovo. Chi copia la
+  cartella che contiene file di chiavi, o che sta sotto una di queste, viene rifiutato e il wallet
+  chiede di nuovo. Sono file di chiavi: i file delle chiavi del wallet e le loro esportazioni
+  cifrate, `NodePrivate.txt` e le sue copie, una chiave segreta in base58 (`export --format
+  base58`), il JSON delle chiavi dei wallet ufficiali e i collegamenti a uno di questi. Anche una
+  cartella che il wallet non riesce a leggere viene rifiutata. La cartella dei dati viene
+  riconosciuta anche sotto un altro nome (un collegamento, una junction, maiuscole diverse su
+  macOS). Chi copia la
   cartella dei dati ottiene i file delle chiavi cifrati, che richiedono ancora la tua password; con
   le parole lì accanto la password non proteggerebbe più nulla.
 - **Portalo via dalla macchina.** Il wallet poi dice: *This file holds your account in clear: copy
@@ -163,6 +172,10 @@ scrive le 24 parole anche in un file:
   account in chiaro: copialo su carta o su una chiavetta USB tenuta offline, poi cancellalo da
   questo computer). Fallo subito: un file lasciato sul computer può essere letto da un malware, da
   un servizio di backup o da chiunque metta le mani sul disco.
+
+Con `sudo` il wallet usa la home dell'utente con cui gira sia per la cartella dei dati sia per
+questo file. Se `$HOME` appartiene a un altro utente (`sudo` senza `-H`) o il wallet gira come
+root, te lo segnala.
 
 La domanda non viene fatta con `--json`, con `--words-file` o `--show-words`, né senza un
 terminale: gli script continuano a usare `--words-file FILE` (lo stesso meccanismo di scrittura,

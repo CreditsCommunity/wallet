@@ -150,10 +150,17 @@ wallet also writes the 24 words to a file:
   type another path if you prefer (Enter keeps the default; `~/` stands for your home folder).
 - The file holds the account name, its address, the date, the 24 numbered words and a warning. It
   is created new, readable by you only (mode 600; on Windows the user profile's own permissions),
-  and never replaces an existing file or follows a symbolic link.
+  and never replaces an existing file or follows a symbolic link. On Linux it appears whole or not
+  at all. On macOS and Windows the wallet first writes `credits-recovery-NAME.txt.partial` next to
+  it and renames it when complete: if the computer crashes or loses power during those few
+  milliseconds, **delete the `.partial` file** (it holds the words). The wallet refuses to write
+  while one is there.
 - **It is never kept next to the keys.** A path in the wallet's data folder, or in a folder that
-  holds key files (wallet key files, `NodePrivate.txt`, the official wallets' keys JSON), is refused
-  and the wallet asks again. Whoever copies the data folder gets the encrypted key files, which
+  holds key files, or is below one, is refused and the wallet asks again. Key files are wallet key
+  files and encrypted exports, `NodePrivate.txt` and its copies, a base58 secret key
+  (`export --format base58`), the official wallets' keys JSON, and links to any of them. A folder
+  the wallet cannot list is refused too. The data folder is recognised even under another name (a
+  link, a junction, a different case on macOS). Whoever copies the data folder gets the encrypted key files, which
   still need your password; with the words beside them the password would protect nothing.
 - **Move it off the machine.** The wallet then says: *This file holds your account in clear: copy
   it to paper or an offline USB key, then delete it from this computer.* Do that now: a file left
@@ -161,6 +168,10 @@ wallet also writes the 24 words to a file:
 
 The question is not asked with `--json`, with `--words-file` or `--show-words`, or without a
 terminal: scripts keep using `--words-file FILE` (the same writer, the words alone on one line).
+
+Under `sudo`, the wallet uses the home of the user it runs as for both its data folder and this
+file. If `$HOME` belongs to someone else (`sudo` without `-H`), or the wallet runs as root, it
+warns you.
 
 ### Backups
 
