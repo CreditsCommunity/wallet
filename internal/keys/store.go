@@ -58,7 +58,15 @@ type File struct {
 	Nonce      string    `json:"nonce"`  // base64, 24 random bytes
 	Ciphertext string    `json:"ciphertext"`
 	Created    time.Time `json:"created"`
+
+	// NodeKey is the node's NodePrivate.txt when the account is the node's own key pair, used in
+	// place (the wallet of a node): not in the store, not encrypted, no password. "" for an
+	// account of the store.
+	NodeKey string `json:"-"`
 }
+
+// IsNodeKey tells whether the account is the node's own key, read from the node's folder.
+func (f *File) IsNodeKey() bool { return f.NodeKey != "" }
 
 const saltSize = 16
 
@@ -136,8 +144,20 @@ func Encrypt(name string, key ed25519.PrivateKey, password []byte, params KDFPar
 }
 
 // Decrypt opens a key file with its password and checks the key against the recorded public key.
-// The caller zeroes the returned key after use (keys.Zero).
+// The node's key (IsNodeKey) is read from the node's folder instead, where it is in clear: no
+// password. The caller zeroes the returned key after use (keys.Zero).
 func (f *File) Decrypt(password []byte) (ed25519.PrivateKey, error) {
+	if f.IsNodeKey() {
+		key, err := ReadNodeKey(f.NodeKey)
+		if err != nil {
+			return nil, err
+		}
+		if Address(key.Public().(ed25519.PublicKey)) != f.Public {
+			Zero(key)
+			return nil, fmt.Errorf("%s changed since the wallet read it: refused, look at the node's key", f.NodeKey)
+		}
+		return key, nil
+	}
 	if f.Version != FileVersion {
 		return nil, fmt.Errorf("key file version %d is not supported (this wallet reads version %d)", f.Version, FileVersion)
 	}

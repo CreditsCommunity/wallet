@@ -51,9 +51,23 @@ usage: credits-wallet [global flags] [command] [arguments]
   account import <name> [file]          import a secret key (base58), a 24-word phrase or the
                                         official wallets' keys JSON; asks for it without a file
   account export <name> [--format encrypted|base58|official] [--out FILE]
+  account export <name> --format node --out <node folder> [--replace]
+                                        write the key as the node's NodePrivate.txt and
+                                        NodePublic.txt (the node's identity follows its key);
+                                        never over the node's key unless --replace, which keeps
+                                        the old files as .bak-DATE; the node must be stopped
   account list                          the accounts and their addresses
-  account address <name>                the account's address alone (to pipe into xclip -sel c,
-                                        pbcopy or clip)
+  account address [name]                the account's address alone (to pipe into xclip -sel c,
+                                        pbcopy or clip); without a name the node's key
+  account node-key                      the node's key account (a node's wallet: started with
+                                        the node's wallet.toml, node_key in the profile, or
+                                        --node-key): its file, address, the node running
+  account node-key repair [--out FOLDER] writes a missing or mismatching NodePublic.txt from the
+                                        node's NodePrivate.txt (the node stopped)
+  account node-key new [--out FOLDER] [--words-file FILE | --show-words]
+                                        the node has no key yet: make it from a new 24-word
+                                        phrase (shown and checked as for account new) and write
+                                        it in the node's folder for the node's first start
   balance [account|address...]          CS balances (all accounts without arguments)
   send <account> <to> <amount> [--data TEXT] [--yes] [--wait SECONDS]
                                         sign and send CS, with optional user data (a text,
@@ -108,6 +122,9 @@ global flags (anywhere on the line):
   --json                machine-readable output
   --password-file FILE  read the password from the first line of FILE (unattended use: the
                         password is on disk in clear, keep the file chmod 600)
+  --node-key FILE       the node's key file (NodePrivate.txt) or folder: the wallet of that node,
+                        its key the account "node" (else node_key in the profile, else
+                        $CREDITS_WALLET_NODE_KEY; never guessed from the current folder)
 
 data folder: $CREDITS_WALLET_HOME, or ~/.credits-wallet (Linux, macOS), %APPDATA%\credits-wallet (Windows)
 `
@@ -119,6 +136,7 @@ type app struct {
 	historyNode  string
 	json         bool
 	passwordFile string
+	nodeKey      string
 
 	dataDir string
 	w       *wallet.Wallet
@@ -133,6 +151,7 @@ func (a *app) globalFlags(fs *flag.FlagSet) {
 	fs.StringVar(&a.historyNode, "history-node", "", "history from a remote full node HOST:PORT")
 	fs.BoolVar(&a.json, "json", false, "JSON output")
 	fs.StringVar(&a.passwordFile, "password-file", "", "password file")
+	fs.StringVar(&a.nodeKey, "node-key", "", "the node's key file or folder")
 }
 
 // parse parses flags placed anywhere among the positional arguments; everything after "--" is
@@ -193,6 +212,12 @@ func (a *app) open() error {
 		return err
 	}
 	a.w = wallet.New(cfg, p, dir)
+	cwd, _ := os.Getwd()
+	if a.w.NodeKey, err = wallet.ResolveNodeKey(p, cfg.Path, a.nodeKey, cwd); err != nil {
+		return err
+	}
+	// the node's key account is said with its address and file the first time it is read
+	a.w.NodeKeyNotice = func(s string) { fmt.Fprintln(os.Stderr, s) }
 	if w := config.HomeWarning(); w != "" && os.Getenv("CREDITS_WALLET_HOME") == "" {
 		fmt.Fprintln(os.Stderr, "warning:", w) // the data folder is in that home
 	}
@@ -263,7 +288,7 @@ func run(args []string) int {
 // valueFlags are the flags that take a value (the next argument, unless written --flag=value).
 var valueFlags = map[string]bool{"config": true, "profile": true, "node": true, "password-file": true,
 	"format": true, "out": true, "csv": true, "limit": true, "offset": true, "wait": true, "words-file": true,
-	"history-node": true, "data": true, "until": true, "token": true, "from": true}
+	"history-node": true, "node-key": true, "data": true, "until": true, "token": true, "from": true}
 
 // findCommand returns the first argument that is neither a flag nor a flag's value.
 func findCommand(args []string) string {
@@ -316,6 +341,7 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		if err := a.open(); err != nil {
 			return err
 		}
+		a.w.NodeKeyNotice = nil // the interface shows it on its own screen
 		return tui.Run(a.w, a.dataDir)
 	case "status":
 		return a.cmdStatus(ctx, args)

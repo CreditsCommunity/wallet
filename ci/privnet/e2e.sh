@@ -3,7 +3,10 @@
 #
 # Starts NODES (default 5) nodes of a CREDITS_TESTNET build of the community node, all of them initial
 # confidants, each with its contract executor (CONTRACTS=1), the genesis funds going to a master key
-# made here; then runs the wallet's commands against node 1's API: status, account import and new,
+# made here; the last node's key is made by the wallet itself (account node-key new: the node's
+# format, proven by the node starting with it and taking part as a trusted node); then runs the
+# wallet's commands against node 1's API: status, account import and new, the node's key as an
+# account (signing without a password, refusals while a node runs or holds a key),
 # balance, send (with user data), delegate (with and without a time limit), delegations, undelegate,
 # history (from node 1, and from node 2 as a remote history node), the network identity from node 1's
 # diagnostic API, and with CONTRACTS=1 the smart contracts with the wallet itself: its templates
@@ -80,14 +83,22 @@ trap stop_all EXIT
 trap 'exit 143' INT TERM
 
 # ---- the network ---------------------------------------------------------------------------------
+# the keys of nodes 1..NODES-1 from PyNaCl, as the node's ci/testnet/run.sh; the last node's key from
+# the wallet (its 24 words in $WORK/node-words), written in that node's folder before its first start
 mapfile -t KEYS < <(python3 -c '
 import os, sys, base58, nacl.signing
-for i in range(1, int(sys.argv[2]) + 1):
+for i in range(1, int(sys.argv[2])):
     d = os.path.join(sys.argv[1], f"n{i}"); os.makedirs(d, exist_ok=True)
     k = nacl.signing.SigningKey.generate(); pub = bytes(k.verify_key)
     open(os.path.join(d, "NodePublic.txt"), "w").write(base58.b58encode(pub).decode())
     open(os.path.join(d, "NodePrivate.txt"), "w").write(base58.b58encode(bytes(k) + pub).decode())
     print(base58.b58encode(pub).decode())' "$WORK" "$NODES")
+LAST=$WORK/n$NODES
+mkdir -p "$LAST" && chmod 755 "$LAST"
+NODEKEY=$(CREDITS_WALLET_HOME=$WORK/wallet-nodekey "$WALLET" account node-key new --out "$LAST" --words-file "$WORK/node-words" --json | jq -r .address)
+[ -n "$NODEKEY" ] && [ "$NODEKEY" != null ] || fail "the wallet did not make node $NODES's key"
+[ "$(cat "$LAST/NodePublic.txt")" = "$NODEKEY" ] && [ "$(stat -c %a "$LAST/NodePrivate.txt")" = 600 ] || fail "node $NODES's key files"
+KEYS+=("$NODEKEY")
 read -r MASTER_SEED MASTER_PUB < <(python3 -c 'import base58, nacl.signing; k = nacl.signing.SigningKey.generate(); print(base58.b58encode(bytes(k)).decode(), base58.b58encode(bytes(k.verify_key)).decode())')
 export CS_TESTNET_GENESIS_KEY=$MASTER_PUB CS_TESTNET_STARTER_KEY=$MASTER_PUB
 log "master key $MASTER_PUB, nodes: ${KEYS[*]}"
@@ -167,11 +178,12 @@ Format="[%TimeStamp%] %Severity% %Message%"
 CFG
 done
 
-for i in $(seq 1 "$NODES"); do
-    (cd "$WORK/n$i" && exec "$NODE_BIN" --db-path db --config-file config.ini </dev/null >> stdout.log 2>&1) &
+start_node() {
+    (cd "$WORK/n$1" && exec "$NODE_BIN" --db-path db --config-file config.ini </dev/null >> stdout.log 2>&1) &
     PIDS+=($!)
-done
-log "$NODES nodes started"
+}
+for i in $(seq 1 "$NODES"); do start_node "$i"; done
+log "$NODES nodes started (node $NODES with the key the wallet made: $NODEKEY)"
 
 # ---- the wallet ----------------------------------------------------------------------------------
 export CREDITS_WALLET_HOME=$WORK/wallet
@@ -193,6 +205,12 @@ network = "private"
 [nodes.n3]
 address = "127.0.0.1:9103"
 network = "private"
+# the wallet of the last node: its key, in place, is the account "node"
+[nodes.nodekey]
+address = "127.0.0.1:9090"
+network = "private"
+diag = "127.0.0.1:9401"
+node_key = "$LAST/NodePrivate.txt"
 CFG
 PW=$WORK/password
 echo "e2e password" > "$PW" && chmod 600 "$PW"
@@ -221,6 +239,10 @@ done
 [ "$(jq -r '.synced // false' <<< "${st:-{\}}")" = true ] || fail "node 1 never got synced: ${st:-no answer}"
 log "network up: block $(jq -r .last_block <<< "$st")"
 expect "network      : PRIVATE" status
+# the last node runs with the key the wallet made: it names it as its own in the first round table
+for _ in $(seq 1 30); do grep -q "$NODEKEY (me)" "$LAST/node.log" && break; sleep 1; done
+grep -q "$NODEKEY (me)" "$LAST/node.log" || fail "node $NODES does not run with the key the wallet made"
+log "node $NODES runs with the key the wallet made ($NODEKEY), a confidant of the first round table"
 
 # the network identity (node 1's diagnostic API): a community node from release community.17 reports
 # a uuid (random on a private network, never mainnet's); an older one reports none and the
@@ -254,6 +276,25 @@ expect "sent 12.5 CS to $BOB" send alice "$BOB" 12.5 --data "e2e invoice 42 — 
 refused send bob "$ALICE" 1000 --yes
 if [ -n "$uuid" ]; then refused send master "$BOB" 1 --yes --profile n1main; fi   # declared mainnet, the node says otherwise
 expect "112.5 CS" balance bob
+
+# the node's key as the account "node" (the wallet of the last node): marked, the default, and it
+# signs without a password; a key made by the node's own start (node 1, PyNaCl) is used the same way
+expect "NODE KEY (default;" account list --profile nodekey
+[ "$("$WALLET" account address --profile nodekey)" = "$NODEKEY" ] || fail "the default account is not the node's key"
+expect "public file : $LAST/NodePublic.txt matches" account node-key --profile nodekey
+expect "node        : running" account node-key --profile nodekey
+expect "sent 50 CS to $NODEKEY" send master "$NODEKEY" 50 --yes
+out=$("$WALLET" send node "$BOB" 10 --data "from the node's key" --yes --profile nodekey 2>&1) || { echo "$out"; fail "send from the node's key"; }
+echo "$out" | sed 's/^/    /'
+grep -q "NODE KEY" <<< "$out" && grep -q "sent 10 CS to $BOB" <<< "$out" || fail "send from the node's key: $out"
+expect "122.5 CS" balance bob
+# never over a node's key, never while a node runs (node 1 holds db/.lock), never a word shown first
+refused account node-key new --profile nodekey --words-file "$WORK/w2"
+out=$("$WALLET" account node-key new --out "$WORK/n1" --words-file "$WORK/w3" 2>&1) && fail "node-key new in a running node's folder: $out"
+grep -q "the node is running" <<< "$out" || fail "node 1 running: $out"
+refused account export alice --format node --out "$WORK/n1" --replace --yes
+[ ! -e "$WORK/w2" ] && [ ! -e "$WORK/w3" ] || fail "words written by a refused node-key new"
+log "the node's key as an account: ok"
 
 # delegations
 expect "delegated 1,000 CS to $N3 without a time limit" delegate alice "$N3" 1000 --yes
@@ -368,6 +409,24 @@ if [ "$CONTRACTS" = 1 ]; then
     expect "state:" contract info "$TIPJAR"
     log "contracts: ok"
 fi
+
+# the last node stopped, its key replaced by bob's with account export --format node --replace (the
+# old files kept), then started again: it starts with the exported key, without a question
+kill "${PIDS[$((NODES - 1))]}"
+for _ in $(seq 1 30); do kill -0 "${PIDS[$((NODES - 1))]}" 2>/dev/null || break; sleep 1; done
+expect "backup  : $LAST/NodePrivate.txt.bak-" account export bob --format node --out "$LAST" --replace --yes
+[ "$(cat "$LAST/NodePublic.txt")" = "$BOB" ] || fail "NodePublic.txt after --replace"
+[ "$(cat "$LAST"/NodePublic.txt.bak-*)" = "$NODEKEY" ] && [ "$(stat -c %a "$LAST"/NodePrivate.txt.bak-*)" = 600 ] || fail "the backups"
+start_node "$NODES"
+for _ in $(seq 1 60); do
+    st=$("$WALLET" status --node "127.0.0.1:$(api_port "$NODES")" --json 2>/dev/null || true)
+    [ -z "$st" ] || break
+    sleep 2
+done
+[ -n "$st" ] || { tail -n 20 "$LAST/stdout.log"; fail "node $NODES did not start with the exported key"; }
+grep -q "No suitable keys\|Bad private key\|PUBLIC key file" "$LAST/stdout.log" && fail "node $NODES asked about its key"
+log "export --format node --replace: node $NODES runs with bob's key"
+
 log "PASS"
 if [ "${KEEP:-0}" = 1 ]; then
     log "KEEP=1: the network keeps running; CREDITS_WALLET_HOME=$CREDITS_WALLET_HOME; stop this script to end it"

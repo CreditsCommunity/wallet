@@ -43,9 +43,12 @@ From release community.17 on, every package of the
 
 This guide is in the package as `wallet-guide.md` (and `wallet-guide.it.md`).
 
-The guided set-up of the node (`./setup.sh`, or `setup.bat` on Windows) offers to create or
-import an account at the end, with a wallet profile for the node it has just configured (see
-[section 4](#4-profiles-the-local-node-the-diag-port-and-the-network-check)).
+The guided set-up of the node (`./setup.sh`, or `setup.bat` on Windows) writes a wallet profile
+for the node it has just configured (`wallet.toml`, see
+[section 4](#4-profiles-the-local-node-the-diag-port-and-the-network-check)) and, by default, makes
+the node's own key the wallet's account: when the node has a key, it is used as it is; when it has
+none yet, the set-up makes it now from a 24-word phrase (see [The node's key](#the-nodes-key-the-wallet-of-a-node)).
+A separate account, for savings, is the other choice.
 
 ### On its own
 
@@ -158,7 +161,8 @@ wallet also writes the 24 words to a file:
 - **It is never kept next to the keys.** A path in the wallet's data folder, or in a folder that
   holds key files, or is below one, is refused and the wallet asks again. Key files are wallet key
   files and encrypted exports, `NodePrivate.txt` and its copies, a base58 secret key
-  (`export --format base58`), the official wallets' keys JSON, and links to any of them. A folder
+  (`export --format base58`), the official wallets' keys JSON, and links to any of them. The node's
+  folder is refused too, even while the wallet is making the node's key there. A folder
   the wallet cannot list is refused too. The data folder is recognised even under another name (a
   link, a junction, a different case on macOS). Whoever copies the data folder gets the encrypted key files, which
   still need your password; with the words beside them the password would protect nothing.
@@ -199,13 +203,82 @@ new password (`account import main2`).
 After importing a keys JSON or a base58 key from a file, delete the plain file: the key is then in
 the encrypted key store.
 
-**The node's key is different. Never delete `csnode/NodePrivate.txt`: the node needs it to run.**
-Importing it makes the node's key a spending key as well, and that key stays in clear on the
-server for the node: anyone who gets into the server can take the CS of that account. The node's
-rewards and delegations go to that address, so you may want to see it in the wallet, but **keep
-funds in a separate account** (`account new`) and move them out of the node's account. The node's
-set-up creates a separate account by default; importing the node's key is an explicit second
-choice.
+Next to a node there is no need to import the node's key: the wallet uses it in place (next
+section). An imported copy is encrypted in the key store, but the original stays in clear for the
+node, so the copy protects nothing more. **Never delete `csnode/NodePrivate.txt`: the node needs it
+to run.**
+
+### The node's key (the wallet of a node)
+
+The node has its own key pair: its address receives the node's rewards and the delegations made to
+it, and operators usually keep their stake there. Next to its node the wallet is **the node's
+wallet** and uses that key directly, as the account `node`:
+
+- when it runs with the package's `wallet.toml` (`./credits-wallet --config wallet.toml`, in the
+  `csnode` folder): its profile says `node_key = "NodePrivate.txt"`;
+- when a node profile of your `config.toml` has `node_key = "/path/to/csnode/NodePrivate.txt"`
+  (the set-up writes it there with the full path when it creates `config.toml`);
+- with `--node-key /path/to/csnode/NodePrivate.txt` on the command line;
+- in the node's Docker image (`CREDITS_WALLET_NODE_KEY=/data/keys/NodePrivate.txt`).
+
+`node_key = "off"` in the profile turns it off. The wallet never guesses it from the folder you
+run it in: a folder someone else controls could hold a planted key pair, whose address you would
+then hand out. Before using the key it checks that `NodePrivate.txt` and its folder are yours (or
+root's) and that nobody else can write to them (fix with `chmod 600 NodePrivate.txt` and `chmod
+go-w` on the folder; the set-up does both when you choose the node's key), and the first time it
+reads the key it says the account's address and the file it comes from: check that they are your
+node's. A key file other users can **read** is used, with a warning: the node writes its own key
+readable by everyone (mode 644), so run the `chmod 600` the warning shows. On Windows these checks
+are not done (`account node-key` says so): check the file's Properties > Security yourself.
+
+The account `node` is listed first and selected when the interface starts; it is marked **NODE
+KEY** in the list, on the account's screen, in `account list` and in every review. The wallet reads
+`NodePrivate.txt` where the node reads it: the key is **not copied** into the wallet's key store and
+**not encrypted** (the node needs the plain file), so no password is asked to sign with it; on
+mainnet you still type `send`. `account node-key` shows the file, the address, whether
+`NodePublic.txt` matches and whether the node is running. (If the key store already has an account
+named `node`, from an earlier import, the node's key is called `node-key` and the other keeps its
+name.)
+
+> **The node's key is kept in clear on the server**, because the node needs it: CS on it are as
+> exposed as the server. Keep on it only what the node needs (its stake), and your savings in a
+> separate account (`account new`).
+
+**The node has no key yet.** A new node folder has no `NodePrivate.txt`; the node would make one at
+its first start and ask you questions on its console. Make it with the wallet instead, from a
+24-word phrase that is your paper backup of the node's identity:
+
+```sh
+./credits-wallet --config wallet.toml account node-key new      # in the csnode folder
+```
+
+or `g` on the main screen of the interface. As for `account new`, the wallet shows the 24 words
+once, asks for three of them back and offers the recovery file (default no; never in the node's
+folder). It then writes `NodePrivate.txt` and `NodePublic.txt` in the node's folder exactly as the
+node writes them, readable by you only (mode 600). The node uses them at its next start without a
+question. The wallet refuses, before showing any word, when a key file is already there (or a link
+with that name), when the node is running, or when the folder belongs to another user or every user
+can write to it. `--out FOLDER` names another node's folder. The 24 words restore the key: with
+`account import`, or with the node's own `--seed` option.
+
+**An account's key as the node's.** `account export NAME --format node --out CSNODE_FOLDER` writes
+an account of the wallet as the node's `NodePrivate.txt` and `NodePublic.txt` (the password of the
+account is asked; you type `export` to confirm). It never writes over a key the node has. To
+**replace the node's identity**, stop the node, then add `--replace`: the wallet keeps the old files
+as `NodePrivate.txt.bak-DATE` and `NodePublic.txt.bak-DATE` (mode 600) and asks you to type
+`replace`. **The node's identity follows its key**: its address, the delegations it received, its
+history as a trusted node and its rewards all belong to the key; a node started with another key is
+another node. **Stop the node first**: the wallet looks for a running node (its `db/.lock`, its API
+port, on Linux its process), but only as a safeguard; a node started with other settings or as
+another user is not seen, and a node that keeps running keeps the old key until its next start.
+The backups hold the old key in clear: once you are sure, copy them offline (paper, an offline USB
+key) and delete them from the server. `account node-key` lists them.
+
+**A half-written key.** If `NodePrivate.txt` is there but `NodePublic.txt` is missing or does not
+match it (a crash during a write, a file copied by hand), the node stops at its start and asks on
+its console: a node without a console hangs. With the node stopped,
+`./credits-wallet --config wallet.toml account node-key repair` writes `NodePublic.txt` from
+`NodePrivate.txt` (a file that did not match is kept as `NodePublic.txt.bak-DATE`).
 
 ---
 
@@ -263,9 +336,12 @@ Choose a profile with `--profile test` on any command. `--node HOST:PORT` talks 
 which then always counts as **mainnet**.
 
 The node's set-up (`setup.sh` / `setup.ps1`) writes `wallet.toml` in the `csnode` folder with a
-profile for the node it configured (its API port, its diag port, mainnet), and copies it to the
-data folder as `config.toml` when there is none yet. An existing `config.toml` is never changed:
-`credits-wallet --config wallet.toml` uses the set-up's file instead.
+profile for the node it configured (its API port, its diag port, mainnet, and, when you choose the
+node's key, `node_key = "NodePrivate.txt"`: the node's key is the account `node`; otherwise
+`node_key = "off"`, and a value you set by hand is kept on later runs), and copies it to the data folder as
+`config.toml` when there is none yet (with the full path of `NodePrivate.txt`). An existing
+`config.toml` is never changed: `credits-wallet --config wallet.toml` uses the set-up's file
+instead.
 
 ### The network check
 
@@ -482,6 +558,8 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
   for: one signed on a test network can be replayed on mainnet by whoever runs or watches that test
   node. Never use an account that holds CS on mainnet anywhere else. Declare test nodes as
   `network = "testnet"` (or `private`) in their profile.
+- **The node's key is in clear on the server** (the node needs it): keep on it only what the node
+  needs, and your savings in a separate account, with its 24 words on paper.
 - **Send a small amount first** to a new recipient, and check that it arrived, before the large
   one. Do the same with a new token or contract.
 - **Check the whole address** on the review screen, and the token's contract address, not its name.
@@ -504,6 +582,11 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
 | "not confirmed by the node" | The node does not tell its network: an official node, an older release, or the diag port off (`diag_port=0`) or on another port (`diag` in the profile). The configuration decides; check that the profile's network is right. |
 | "MISMATCH" / the wallet refuses to send | The profile's network and the node's differ: you are on the wrong node or the wrong profile. Fix the profile; never force it. |
 | "wrong password" | Retry. A forgotten password: import the account again from its 24 words. |
+| "the node's key file is encrypted by the node" | The node was started with `--encryptkey` (or its first start chose a password): only the node can open that key. Use a separate account, or make the node's key plain again with the node. |
+| "the node is running" (`node-key new`, `--format node`) | Stop the node first: the wallet never writes the node's key while it runs. |
+| "NodePrivate.txt already exists" | The node has a key: the wallet never writes over it. To replace the node's identity on purpose: `account export NAME --format node --out FOLDER --replace`. |
+| The account `node` is missing | The wallet is not the node's wallet: run it with `--config wallet.toml` in the `csnode` folder, or set `node_key` in the profile (or `--node-key FILE`). |
+| "the node's key … can be written by other users" / "belongs to another user" | `chmod 600 NodePrivate.txt`, `chmod go-w` on the node's folder; run the wallet as the user who owns the node's folder. |
 | Tokens "found from history (may be incomplete on a pruned node)" | The node keeps no token cache. Turn on `tokens_cache=true` in `[api]` of its `config.ini` and restart it, or add the token with `token add`. |
 | A token is missing although the cache is on | The cache was turned on after the node pruned, or the node started from a snapshot: it knows every token, but not the wallets whose last use of a token is older than its oldest block. Add the token with `token add` (its balance is read from the contract). The node's first start with the cache on also takes a while (log: `tokens loaded!`). |
 | "the executor lost the errors" when compiling | The node's contract executor did not return the error lines; fix the source with an IDE or update the node's executor. |

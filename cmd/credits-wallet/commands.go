@@ -117,19 +117,33 @@ func (a *app) cmdAccount(ctx context.Context, args []string) error {
 	yes := fs.Bool("yes", false, "no questions")
 	wordsFile := fs.String("words-file", "", "new: write the seed phrase to FILE")
 	showWords := fs.Bool("show-words", false, "new: print the seed phrase in the output")
+	replace := fs.Bool("replace", false, "export --format node: replace the node's key")
 	pos, err := a.commandArgs(fs, args, 1)
 	if err != nil {
 		return err
 	}
 	if len(pos) == 0 {
-		return usagef("account: new, import, export, list or address")
+		return usagef("account: new, import, export, list, address or node-key")
 	}
 	sub, rest := pos[0], pos[1:]
+	if *replace && !(sub == "export" && *format == "node") {
+		return usagef("--replace goes with account export NAME --format node --out FOLDER")
+	}
 	switch {
 	case sub == "list" && len(rest) == 0:
 		return a.accountList()
-	case sub == "address" && len(rest) == 1:
-		return a.accountAddress(rest[0])
+	case sub == "address" && len(rest) <= 1:
+		name := ""
+		if len(rest) == 1 {
+			name = rest[0]
+		}
+		return a.accountAddress(name)
+	case sub == "node-key" && len(rest) == 0:
+		return a.nodeKeyStatus()
+	case sub == "node-key" && len(rest) == 1 && rest[0] == "new":
+		return a.nodeKeyNew(*outFile, *wordsFile, *showWords)
+	case sub == "node-key" && len(rest) == 1 && rest[0] == "repair":
+		return a.nodeKeyRepair(*outFile)
 	case sub == "new" && len(rest) == 1:
 		return a.accountNew(rest[0], *wordsFile, *showWords)
 	case sub == "import" && (len(rest) == 1 || len(rest) == 2):
@@ -139,20 +153,30 @@ func (a *app) cmdAccount(ctx context.Context, args []string) error {
 		}
 		return a.accountImport(rest[0], file)
 	case sub == "export" && len(rest) == 1:
+		if *format == "node" {
+			return a.exportNodeFormat(rest[0], *outFile, *replace, *yes)
+		}
 		return a.accountExport(rest[0], *format, *outFile, *yes)
 	}
 	return usagef("account %s: wrong arguments", sub)
 }
 
-// accountAddress prints an account's address alone, for a pipe into xclip, pbcopy or clip.
+// accountAddress prints an account's address alone, for a pipe into xclip, pbcopy or clip. Without
+// a name: the default account, the node's key in a node's wallet.
 func (a *app) accountAddress(name string) error {
+	if name == "" {
+		if a.w.NodeKey == nil {
+			return usagef("account address NAME (only a node's wallet has a default account: the node's key)")
+		}
+		name = a.w.NodeAccountName()
+	}
 	if err := keys.ValidName(name); err != nil {
 		return err
 	}
-	if !a.w.Store.Exists(name) {
+	if !a.w.HasAccount(name) {
 		return fmt.Errorf("no account named %q (see 'account list')", name)
 	}
-	f, err := a.w.Store.Load(name)
+	f, err := a.w.LoadAccount(name)
 	if err != nil {
 		return err
 	}
@@ -167,7 +191,7 @@ func (a *app) accountAddress(name string) error {
 }
 
 func (a *app) accountList() error {
-	files, problems, err := a.w.Store.List()
+	files, problems, err := a.w.Accounts()
 	if err != nil {
 		return err
 	}
@@ -176,18 +200,32 @@ func (a *app) accountList() error {
 		type row struct {
 			Name    string `json:"name"`
 			Address string `json:"address"`
+			NodeKey string `json:"node_key,omitempty"`
+			Default bool   `json:"default,omitempty"`
 		}
 		rows := []row{}
 		for _, f := range files {
-			rows = append(rows, row{f.Name, f.Public})
+			rows = append(rows, row{f.Name, f.Public, f.NodeKey, f.IsNodeKey()})
 		}
 		return a.printJSON(rows)
 	}
 	if len(files) == 0 {
 		fmt.Fprintf(a.out, "no accounts in %s: 'account new NAME' or 'account import NAME'\n", a.w.Store.Dir)
 	}
+	nodeKey := false
 	for _, f := range files {
+		if f.IsNodeKey() {
+			nodeKey = true
+			fmt.Fprintf(a.out, "%-20s %s  NODE KEY (default; %s, in clear)\n", f.Name, f.Public, f.NodeKey)
+			continue
+		}
 		fmt.Fprintf(a.out, "%-20s %s\n", f.Name, f.Public)
+	}
+	if a.w.NodeKeyMissing() {
+		fmt.Fprintf(os.Stderr, "The node in %s has no key yet: 'account node-key new' makes it from a 24-word phrase.\n", a.w.NodeKey.Dir)
+	}
+	if nodeKey {
+		fmt.Fprintln(os.Stderr, wallet.NodeKeyWarning)
 	}
 	return nil
 }
@@ -201,95 +239,137 @@ func (a *app) accountNew(name, wordsFile string, showWords bool) error {
 	if err := keys.ValidName(name); err != nil {
 		return err
 	}
-	if a.w.Store.Exists(name) {
+	if a.w.HasAccount(name) || (a.w.NodeKey != nil && name == a.w.NodeAccountName()) {
 		return fmt.Errorf("an account named %q already exists", name)
 	}
-	interactive := stdinIsTerminal()
-	if !interactive && wordsFile == "" && !showWords {
+	if !stdinIsTerminal() && wordsFile == "" && !showWords {
 		return errors.New("no terminal to show the seed phrase on: add --words-file FILE (or --show-words to print it); nothing was created")
 	}
-	master, err := newMasterSeed()
+	p, err := a.newPhrase(name, wordsFile, showWords, "")
 	if err != nil {
 		return err
 	}
-	defer keys.Zero(master[:])
-	words := keys.Words(&master)
-	defer clear(words) // the strings cannot be wiped; the slice at least drops them
-	key := keys.DeriveKey(&master)
-	defer keys.Zero(key)
-	recoveryFile := ""
-	if interactive {
-		fmt.Fprintln(os.Stderr, "Your seed phrase. Write it down on paper and keep it safe: it is shown only this once,")
-		fmt.Fprintln(os.Stderr, "and anyone who has it owns the account.")
-		fmt.Fprintln(os.Stderr)
-		for i, w := range words {
-			fmt.Fprintf(os.Stderr, "%3d. %-10s", i+1, w)
-			if i%6 == 5 {
-				fmt.Fprintln(os.Stderr)
-			}
-		}
-		fmt.Fprintln(os.Stderr)
-		if err := checkWords(words); err != nil {
-			return err
-		}
-		if !a.json && wordsFile == "" && !showWords {
-			if recoveryFile, err = a.askRecoveryFile(name); err != nil {
-				return err
-			}
-		}
-	}
+	defer p.wipe()
 	pw, err := a.readPassword("Password for the key file: ", true)
 	if err != nil {
 		return err
 	}
 	defer keys.Zero(pw)
-	if wordsFile != "" {
-		data := []byte(strings.Join(words, " ") + "\n")
-		err := wallet.WriteSecretFile(wordsFile, data)
-		keys.Zero(data)
-		if err != nil {
-			return fmt.Errorf("--words-file: %w; nothing was created", err)
-		}
-	}
-	if recoveryFile != "" {
-		data := wallet.RecoveryText(name, keys.Address(key.Public().(ed25519.PublicKey)), time.Now(), words)
-		err := wallet.WriteSecretFile(recoveryFile, data)
-		keys.Zero(data)
-		if err != nil {
-			return fmt.Errorf("the recovery file: %w; nothing was created", err)
-		}
-	}
-	f, err := a.w.CreateAccount(name, key, pw)
+	undo, err := p.writeFiles(name, wordsFile)
 	if err != nil {
-		if wordsFile != "" {
-			os.Remove(wordsFile)
-		}
-		if recoveryFile != "" {
-			os.Remove(recoveryFile)
-		}
+		return err
+	}
+	f, err := a.w.CreateAccount(name, p.key, pw)
+	if err != nil {
+		undo()
 		return err
 	}
 	if a.json {
 		out := map[string]any{"name": f.Name, "address": f.Public}
 		if showWords {
-			out["words"] = strings.Join(words, " ")
+			out["words"] = strings.Join(p.words, " ")
 		}
 		if wordsFile != "" {
 			out["words_file"] = wordsFile
 		}
 		return a.printJSON(out)
 	}
+	p.report(a, showWords, wordsFile)
+	fmt.Fprintf(a.out, "account: %s\naddress: %s\n", f.Name, f.Public)
+	return nil
+}
+
+// phrase is a new master seed's 24 words and key, shown and checked, and the recovery file chosen.
+type phrase struct {
+	words    []string
+	key      ed25519.PrivateKey
+	recovery string
+}
+
+func (p *phrase) wipe() {
+	keys.Zero(p.key)
+	clear(p.words) // the strings cannot be wiped; the slice at least drops them
+}
+
+// newPhrase draws a master seed, and on a terminal shows its 24 words (never in the output) and has
+// three of them typed back, then (unless the words go to --words-file or the output) offers the
+// recovery file. nodeDir, when a node's key is being made, is that node's folder: the recovery
+// file may not go there.
+func (a *app) newPhrase(name, wordsFile string, showWords bool, nodeDir string) (*phrase, error) {
+	master, err := newMasterSeed()
+	if err != nil {
+		return nil, err
+	}
+	defer keys.Zero(master[:])
+	p := &phrase{words: keys.Words(&master), key: keys.DeriveKey(&master)}
+	if stdinIsTerminal() {
+		fmt.Fprintln(os.Stderr, "Your seed phrase. Write it down on paper and keep it safe: it is shown only this once,")
+		fmt.Fprintln(os.Stderr, "and anyone who has it owns the account.")
+		fmt.Fprintln(os.Stderr)
+		for i, w := range p.words {
+			fmt.Fprintf(os.Stderr, "%3d. %-10s", i+1, w)
+			if i%6 == 5 {
+				fmt.Fprintln(os.Stderr)
+			}
+		}
+		fmt.Fprintln(os.Stderr)
+		if err := checkWords(p.words); err != nil {
+			p.wipe()
+			return nil, err
+		}
+		if !a.json && wordsFile == "" && !showWords {
+			if p.recovery, err = a.askRecoveryFile(name, nodeDir); err != nil {
+				p.wipe()
+				return nil, err
+			}
+		}
+	}
+	return p, nil
+}
+
+// writeFiles writes the words to --words-file and the recovery file, if any; undo removes them
+// (when the account or the node's key could not be written).
+func (p *phrase) writeFiles(name, wordsFile string) (undo func(), err error) {
+	if wordsFile != "" {
+		data := []byte(strings.Join(p.words, " ") + "\n")
+		err := wallet.WriteSecretFile(wordsFile, data)
+		keys.Zero(data)
+		if err != nil {
+			return nil, fmt.Errorf("--words-file: %w; nothing was created", err)
+		}
+	}
+	if p.recovery != "" {
+		data := wallet.RecoveryText(name, keys.Address(p.key.Public().(ed25519.PublicKey)), time.Now(), p.words)
+		err := wallet.WriteSecretFile(p.recovery, data)
+		keys.Zero(data)
+		if err != nil {
+			if wordsFile != "" {
+				os.Remove(wordsFile)
+			}
+			return nil, fmt.Errorf("the recovery file: %w; nothing was created", err)
+		}
+	}
+	return func() {
+		if wordsFile != "" {
+			os.Remove(wordsFile)
+		}
+		if p.recovery != "" {
+			os.Remove(p.recovery)
+		}
+	}, nil
+}
+
+// report says where the words went.
+func (p *phrase) report(a *app, showWords bool, wordsFile string) {
 	if showWords {
-		fmt.Fprintf(a.out, "words  : %s\n", strings.Join(words, " "))
+		fmt.Fprintf(a.out, "words  : %s\n", strings.Join(p.words, " "))
 	}
 	if wordsFile != "" {
 		fmt.Fprintf(os.Stderr, "the seed phrase is in %s (mode 600): copy it to paper, then delete the file\n", wordsFile)
 	}
-	if recoveryFile != "" {
-		fmt.Fprintf(os.Stderr, "The 24 words are in %s (mode 600).\n%s\n", recoveryFile, wallet.RecoveryAdvice)
+	if p.recovery != "" {
+		fmt.Fprintf(os.Stderr, "The 24 words are in %s (mode 600).\n%s\n", p.recovery, wallet.RecoveryAdvice)
 	}
-	fmt.Fprintf(a.out, "account: %s\naddress: %s\n", f.Name, f.Public)
-	return nil
 }
 
 // newMasterSeed draws the master seed of a new account (replaced in tests).
@@ -297,7 +377,7 @@ var newMasterSeed = keys.NewMasterSeed
 
 // askRecoveryFile asks whether to save the phrase to a file as well (default no) and where (default
 // ~/credits-recovery-NAME.txt), refusing a place next to the keys. "" is no file.
-func (a *app) askRecoveryFile(name string) (string, error) {
+func (a *app) askRecoveryFile(name, nodeDir string) (string, error) {
 	answer, err := ask(wallet.RecoveryQuestion)
 	if err != nil {
 		return "", nil // no answer (end of input): no
@@ -324,7 +404,7 @@ func (a *app) askRecoveryFile(name string) (string, error) {
 		if path == "" {
 			path = def
 		}
-		abs, err := a.w.CheckRecoveryPath(path)
+		abs, err := a.w.CheckRecoveryPath(path, nodeDir)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, echo.Terminal(err.Error()))
 			continue
@@ -417,13 +497,16 @@ func (a *app) accountImport(name, file string) error {
 }
 
 func (a *app) accountExport(name, format, outFile string, yes bool) error {
-	f, err := a.w.Store.Load(name)
+	f, err := a.w.LoadAccount(name)
 	if err != nil {
 		return err
 	}
 	var data []byte
 	switch format {
 	case "encrypted":
+		if f.IsNodeKey() {
+			return fmt.Errorf("%s is the node's key, kept in clear in %s, not in the key store: 'account import NAME %s' makes an encrypted copy", f.Name, f.NodeKey, f.NodeKey)
+		}
 		data, err = os.ReadFile(a.w.Store.FilePath(f.Name))
 		if err != nil {
 			return err
@@ -441,11 +524,13 @@ func (a *app) accountExport(name, format, outFile string, yes bool) error {
 				}
 			}
 		}
-		pw, err := a.readPassword("Password: ", false)
-		if err != nil {
-			return err
+		var pw []byte
+		if !f.IsNodeKey() {
+			if pw, err = a.readPassword("Password: ", false); err != nil {
+				return err
+			}
 		}
-		key, err := f.Decrypt(pw)
+		key, err := a.w.OpenKey(f, pw)
 		keys.Zero(pw)
 		if err != nil {
 			return err
@@ -457,7 +542,7 @@ func (a *app) accountExport(name, format, outFile string, yes bool) error {
 		}
 		keys.Zero(key)
 	default:
-		return usagef("--format must be encrypted, base58 or official")
+		return usagef("--format must be encrypted, base58, official or node")
 	}
 	defer keys.Zero(data)
 	if outFile == "" {
@@ -480,7 +565,7 @@ func (a *app) cmdBalance(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(pos) == 0 {
-		files, problems, err := a.w.Store.List()
+		files, problems, err := a.w.Accounts()
 		if err != nil {
 			return err
 		}
@@ -574,9 +659,12 @@ func (a *app) confirmAndSend(ctx context.Context, plan *wallet.SendPlan, yes boo
 			}
 		}
 	}
-	pw, err := a.readPassword("Password of "+plan.Account+": ", false)
-	if err != nil {
-		return err
+	var pw []byte
+	if !plan.NodeKey { // the node's key is in clear in the node's folder: no password
+		var err error
+		if pw, err = a.readPassword("Password of "+plan.Account+": ", false); err != nil {
+			return err
+		}
 	}
 	res, err := a.w.Send(ctx, plan, pw, time.Duration(wait)*time.Second)
 	keys.Zero(pw)
@@ -680,6 +768,9 @@ func printPlan(p *wallet.SendPlan) {
 		wallet.KindCall: "Call a contract", wallet.KindPay: "Pay a contract"}
 	fmt.Fprintf(e, "%-49s%s\n", titles[p.Kind], p.Network.Label())
 	fmt.Fprintf(e, "  From     %s  %s   balance %s CS\n", p.Account, keys.Address(p.From), p.Balance.Grouped())
+	if p.NodeKey {
+		fmt.Fprintf(e, "           NODE KEY: the node's own key, signed from its file in clear (no password)\n")
+	}
 	switch p.Kind {
 	case wallet.KindTransfer:
 		fmt.Fprintf(e, "  To       %s\n", keys.Address(p.To))

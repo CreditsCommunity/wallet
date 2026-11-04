@@ -183,10 +183,18 @@ func (s *sendScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.step = sendReview
-		if s.plan.Network.IsMainnet() {
+		switch {
+		case s.plan.NodeKey:
+			// the node's key is in clear in the node's folder: no password to ask
+			s.confirm = newForm("Confirm")
+			s.confirm.inputs[0].Placeholder = "Enter to sign with the node's key"
+			if s.plan.Network.IsMainnet() {
+				s.confirm.inputs[0].Placeholder = "type send"
+			}
+		case s.plan.Network.IsMainnet():
 			s.confirm = newForm("Confirm", "Password").secret(1)
 			s.confirm.inputs[0].Placeholder = "type send"
-		} else {
+		default:
 			s.confirm = newForm("Password").secret(0)
 		}
 		return nil
@@ -254,9 +262,12 @@ func (s *sendScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			s.confirm.setFocus(0)
 			return nil
 		}
-		pw := []byte(s.confirm.inputs[pwIndex].Value())
+		var pw []byte
+		if !s.plan.NodeKey {
+			pw = []byte(s.confirm.inputs[pwIndex].Value())
+		}
 		s.confirm.wipe()
-		if len(pw) == 0 {
+		if len(pw) == 0 && !s.plan.NodeKey {
 			s.err = fmt.Errorf("the password is empty")
 			return nil
 		}
@@ -387,6 +398,9 @@ func (s *sendScreen) view(m *model) string {
 		bal = x.CS.Grouped() + " CS"
 	}
 	fmt.Fprintf(&b, "%-10s %s  %s   balance %s\n", "From", s.account.Name, keys.Short(s.account.Public), bal)
+	if s.account.IsNodeKey() {
+		b.WriteString(stWarn.Render(fmt.Sprintf("%-10s NODE KEY: signed from the node's file, in clear (no password)", "")) + "\n")
+	}
 	switch s.step {
 	case sendFields, sendPreparing:
 		if s.fields == nil {

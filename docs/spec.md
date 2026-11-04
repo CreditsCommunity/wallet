@@ -61,7 +61,8 @@ ci/release/build.sh      the reproducible release archives
 
 | Import or export | Format |
 |---|---|
-| Private key | base58 of the 64-byte ed25519 secret key (seed + public key), the node's `NodePrivate.txt` format; or base58 of the 32-byte seed |
+| Private key | base58 of the 64-byte ed25519 secret key (seed + public key), the node's `NodePrivate.txt` format (4.3); or base58 of the 32-byte seed |
+| The node's key files | `NodePrivate.txt` and `NodePublic.txt` (4.3): used in place by a node's wallet (4.4), written by `account node-key new` and `account export --format node` |
 | Seed phrase | the node's 24 words (English list of `cscrypto`): 256-bit master seed + 8-bit checksum, key derived with libsodium `crypto_kdf_derive_from_key` (key id 0, empty context) then `crypto_sign_seed_keypair` — the same derivation as `node` when it generates its keys; the checksum is verified |
 | Keys JSON of the official web wallet (wallet.credits.com) and desktop wallet | `{"key":{"public":"<base58 32 bytes>","private":"<base58 64 bytes>"}}`: the private key is the 64-byte ed25519 secret key (seed + public key), the same as `NodePrivate.txt`, **not encrypted**. Imported (both halves checked against each other); after the import the wallet suggests deleting the plain file. Exported in the same format only on request, with a warning, for use in the official wallets |
 
@@ -114,6 +115,104 @@ ci/release/build.sh      the reproducible release archives
   path and "This file holds your account in clear: copy it to paper or an offline USB key, then
   delete it from this computer." (the TUI shows the same).
 
+### 4.3 The node's key files
+
+The node reads its key at start-up from `NodePrivate.txt` and `NodePublic.txt` in its working
+folder (`--private-key-file`, `--public-key-file` name others; client/config/config.cpp,
+`Config::readKeys`):
+
+| File | Content (exactly) | How the node reads it |
+|---|---|---|
+| `NodePrivate.txt` | base58 (Bitcoin alphabet) of the 64-byte ed25519 secret key, seed then public key, **no newline** | the first line (`std::getline`), `DecodeBase58` (spaces around it skipped): 64 bytes is a plain key; more is a key the node encrypted itself (`--encryptkey`, or "[1] Encrypt with password" at its first start), opened only with the node's password; fewer: "Bad private key file", the node stops |
+| `NodePublic.txt` | base58 of the 32-byte public key, **no newline** | its first line must equal, as text, the base58 public key of `NodePrivate.txt`; otherwise the node stops and asks on its console whether to rewrite it (`f`) |
+
+Without `NodePrivate.txt` the node asks on its console to generate a key (`g`), shows its 24 words
+(the same derivation as the wallet's, 4.1) and offers to encrypt the file. `--seed` makes the node
+ask for the 24 words instead of reading the files. The node writes both files itself with
+`std::ofstream`, without a newline; the wallet writes the same bytes. Proven by
+`internal/keys/testdata/node-key-check.cpp` (the steps of `Config::readKeys` with the node's own
+cscrypto, base58 and libsodium, then a signature checked with the public key) and by the private
+network test, whose last node starts with a key the wallet made and names it as its own in its
+first round table.
+
+### 4.4 The node's key as an account (the wallet of a node)
+
+Operators keep their stake on the node's key, and the node's rewards and the delegations it
+receives go to that address. Next to its node the wallet therefore uses the node's own key pair,
+**in place**, as an account:
+
+- **The wallet of a node**, always by an explicit choice: `--node-key FILE` (a key file or a
+  node's folder, relative to the current folder), else the node profile's `node_key` (relative to
+  the configuration file's folder: the set-up writes `node_key = "NodePrivate.txt"` in
+  `csnode/wallet.toml` when told to use the node's key, `"off"` otherwise, and keeps a value set by
+  hand), else `$CREDITS_WALLET_NODE_KEY` (an absolute path; the node's Docker image
+  sets it to `/data/keys/NodePrivate.txt`). `node_key = "off"` turns it off. It is **never guessed
+  from the current folder**: a folder someone else controls (an archive, a shared folder, `/tmp`)
+  could hold a planted key pair, which would become the default account, so that the address the
+  user copies and the key that signs are the planter's. The public key file is `NodePublic.txt`
+  next to the private one.
+- **Checks before use** (Linux, macOS; Windows ACLs are not checked): the key file and its folder
+  owned by the user the wallet runs as (or root) and writable by nobody else (no group or world
+  write: `chmod 600`, `chmod go-w`); the key file a regular file, or a link whose target and the
+  target's folder pass the same checks. Otherwise the key is refused, not used, with the reason.
+  The key file is opened first, then checked (`fstat`) and read through the same descriptor. A key
+  file other users can read (the node writes it 0644) is used with a warning naming `chmod 600`.
+  `account node-key` says on Windows that the checks are not done, and lists the
+  `NodePrivate.txt.bak-*` / `NodePublic.txt.bak-*` backups (old keys in clear: to move offline and
+  delete). Signing refuses a key whose public half is not the plan's sender.
+  The first time the account is read in a session the wallet says it with its address, its file
+  and why it is used ("node key account node: ADDRESS, read from FILE (node_key in wallet.toml)",
+  on stderr; the TUI shows the file under the address), so a substituted key is visible.
+- **The account.** Named `node` (`node-key` when the key store already has an account `node`, an
+  earlier import of the node's key for instance; the store's account keeps its name), listed
+  first, the default account (selected at start in the TUI; `account address` without a name), and
+  marked everywhere: `NODE KEY` in `account list` (and `"node_key"`, `"default"` in its JSON), in
+  the TUI's account list and details, in every review. `NodePrivate.txt` is read where the node
+  reads it: never copied into the key store, never encrypted, no password asked (the review asks
+  to type `send` on mainnet, as for any account). The key is read to find the address and again to
+  sign, then zeroed; a key that changed in between is refused. A key the node encrypted is reported
+  ("encrypted by the node: only the node can open it"), not used. `account export node --format
+  encrypted` is refused (`account import NAME NodePrivate.txt` makes an encrypted copy, which adds
+  no protection while the original stays in clear); `--format base58` and `official` need no
+  password.
+- **No key yet.** `account node-key new` (TUI: `g` on the main screen of a node's wallet whose node
+  has no key) makes the key from a new 24-word phrase with the derivation of 4.1, shows and checks
+  the words as `account new` does (three typed back; the recovery-file question; `--words-file` or
+  `--show-words` without a terminal) and writes `NodePrivate.txt` and `NodePublic.txt` (4.3) in the
+  node's folder (`--out FOLDER` for another one) for the node's first start: the node's identity
+  gets a paper backup. Refused, before any word is shown: a key file (or a link) of either name
+  there, a `.partial` left by an interrupted write, the node running, a folder that is not the
+  wallet user's or that every user can write to (Linux, macOS; a link to the folder is followed).
+  Written with the recovery file's writer (`WriteSecretFile`: mode 0600, created new, never
+  overwriting, never through a link, whole or not at all), `NodePrivate.txt` first, then both read
+  back as the node reads them; on any failure nothing is left (the words file and the recovery file
+  are removed too). The recovery file and `--words-file` are refused in the node's folder (by name
+  and identity, subfolders too), as next to any key file.
+- **A half-written key** (`NodePrivate.txt` without a matching `NodePublic.txt`: the node would stop
+  at its start and ask on its console, and a node without one hangs): `node-key new` says so and
+  points to `account node-key repair`, which writes `NodePublic.txt` from the readable
+  `NodePrivate.txt`, the node stopped (a mismatching file kept as `NodePublic.txt.bak-DATE`).
+- **Is the node running?** The community node holds an exclusive lock on `db/.lock` (`flock`;
+  `LockFileEx` on Windows) for its whole run, from before it reads its key: the wallet tries the
+  same lock (read-only, released at once). It also connects to `127.0.0.1` at the `[api] port` of
+  the folder's `config.ini`, and on Linux looks for a process named `node` whose working folder is
+  the node's (the official node takes no lock). With the keys in a subfolder without `config.ini`
+  (Docker: `/data/keys`), the folder above is checked too. The node writes no PID file.
+- **Export to the node's format.** `account export NAME --format node --out FOLDER` writes an
+  account's key as `NodePrivate.txt` and `NodePublic.txt`, with the same checks and writer; a key
+  already there is never overwritten. `--replace` (with `--format node` only) replaces the node's
+  identity: the node must be stopped, the old files are first copied to
+  `NAME.bak-YYYYMMDD-HHMMSS` (mode 0600, new files), then removed, then the new ones written; if
+  that fails the old ones are put back. Both ask to type `export` (`replace` when a key is
+  replaced) on a terminal, or `--yes`. The `--replace` warning says to stop the node first: the
+  detection of a running node is best effort. The wallet says that the node's identity follows its key:
+  its address, the delegations it received, its history as a trusted node and its rewards; a node
+  started with another key is another node.
+- **Warnings**, short, once per use (the TUI's start, `account list`, `account node-key`, the
+  generation, the export): the node's key is kept in clear on the server because the node needs
+  it, so CS on it are as exposed as the server; operators usually keep their stake there already:
+  keep on it only what the node needs, and savings in a separate account.
+
 ## 5. Functions
 
 ### 5.1 Node and network
@@ -130,7 +229,7 @@ ci/release/build.sh      the reproducible release archives
     `network = private`, per node profile) and shown in another colour with a lighter confirmation;
     a `--node` address that no profile declares counts as mainnet;
   - the confirmation on mainnet is typing `send` and the password (TUI and commands); on a test
-    network the password alone (TUI) or `y` (commands);
+    network the password alone (TUI) or `y` (commands); the node's key (4.4) asks no password;
   - the **community node** (from CreditsCommunity/node#162, release community.17) tells its network in
     its diagnostic API: `API_DIAG.GetNodeInfo` returns `NodeInfo.networkUuid` (field 9, optional i64:
     the first 8 bytes of the hash of block 1 as a little-endian uint64, the same 64 bits in the
@@ -182,6 +281,7 @@ transactions. Running the wallet next to the user's own node is what the design 
 ### 5.2 Accounts and balances
 
 - List accounts, select one; create, import, export (encrypted file or base58 key after the password).
+  In a node's wallet the node's key is the first account and the default (4.4).
 - Balance in CS (`WalletBalanceGet`), delegated amounts and the delegations made and received
   (`WalletDataGet`, `DelegatedItem`), token balances (`TokenBalancesGet`; needs `[api] tokens_cache=true`
   on the node, otherwise the screen says so: the node answers "This node doesn't provide such info").
@@ -479,7 +579,9 @@ the file, compiles it and reports errors.
 ```
 credits-wallet                          # the TUI
 credits-wallet status
-credits-wallet account new|import|export|list
+credits-wallet account new|import|export|list|address
+credits-wallet account node-key | node-key new [--out FOLDER]       # the node's key (4.4)
+credits-wallet account export <account> --format node --out FOLDER [--replace]
 credits-wallet balance [account]
 credits-wallet send <account> <to> <amount> [--data TEXT] [--yes]
 credits-wallet delegate <account> <node> <amount> [--until DATE] | undelegate <account> <node> <amount>
@@ -571,6 +673,8 @@ use (documented with its risks).
    list; the network identity of community nodes. Done.
 4. Packaging in the node releases; user guide (docs/guide.md, docs/guide.it.md); reproducible
    release archives; every token held with its full address, also without a token cache. Done.
+   After it: the recovery file; the node's key as the account of a node's wallet, made from 24
+   words when the node has none, and the export to the node's format (4.3, 4.4).
 
 Later (not in milestone 4):
 

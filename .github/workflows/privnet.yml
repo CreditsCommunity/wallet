@@ -1,5 +1,8 @@
 # The wallet end to end on a private network of the community node (ci/privnet/e2e.sh): 5 nodes with
-# their contract executors on one Linux runner; status, accounts, send with user data, delegate and
+# their contract executors on one Linux runner, the last node started with a key the wallet made
+# (account node-key new); status, accounts, the node's key as an account (signing without a password,
+# the refusals while a node runs), export --format node --replace (that node restarted with the
+# exported key), send with user data, delegate and
 # undelegate, delegations, history from node 1 and from node 2 as a remote history node, the network
 # identity from node 1's diagnostic API, and the smart contracts with the wallet itself: its
 # templates compared with the node's samples/contracts, a compile error, TestToken deployed and
