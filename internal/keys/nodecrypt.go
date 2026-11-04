@@ -2,11 +2,9 @@ package keys
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
-	"fmt"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20"
@@ -139,43 +137,4 @@ func decryptNodeKey(encrypted, fileKey []byte) (ed25519.PrivateKey, error) {
 		return nil, ErrNodeKeyPassword
 	}
 	return key, nil
-}
-
-// EncryptNodeKey is the node's PrivateKey::getEncrypted: what --encryptkey writes, decoded. The
-// wallet never writes it (it never encrypts the node's key file); the tests use it to prove the
-// round trip with the node's code. nonce nil: random.
-func EncryptNodeKey(key ed25519.PrivateKey, password, nonce []byte) ([]byte, error) {
-	if len(key) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("a secret key is 64 bytes, got %d", len(key))
-	}
-	if nonce == nil {
-		nonce = make([]byte, nodeNonceSize)
-		if _, err := rand.Read(nonce); err != nil {
-			return nil, err
-		}
-	}
-	if len(nonce) != nodeNonceSize {
-		return nil, errors.New("the node's nonce is 8 bytes")
-	}
-	if err := checkNodeKDFMemory(); err != nil {
-		return nil, err
-	}
-	fileKey := nodeFileKey(password)
-	defer Zero(fileKey)
-	return encryptNodeKey(key, fileKey, nonce)
-}
-
-func encryptNodeKey(key ed25519.PrivateKey, fileKey, nonce []byte) ([]byte, error) {
-	c, polyKey, err := chachaOriginal(fileKey, nonce)
-	if err != nil {
-		return nil, err
-	}
-	defer Zero(polyKey)
-	out := make([]byte, NodeEncryptedSize)
-	copy(out, nonce)
-	ct := out[nodeNonceSize : nodeNonceSize+ed25519.PrivateKeySize]
-	c.XORKeyStream(ct, key)
-	tag := nodeTag(polyKey, ct)
-	copy(out[nodeNonceSize+ed25519.PrivateKeySize:], tag[:])
-	return out, nil
 }
