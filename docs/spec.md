@@ -384,7 +384,29 @@ A pruned node keeps only recent blocks, so the history of an account may not be 
 ## 6. Terminal interface
 
 Keyboard first (arrows, Tab, Enter, Esc, `?` for help), mouse where the terminal supports it, light
-and dark themes following the terminal. Mock-ups (80 columns):
+and dark themes following the terminal.
+
+Addresses in and out:
+
+- **Copy.** `y` copies the selected account's own address (main screen, and the screen after an
+  account is created or imported), as `y` copies a token's address: OSC 52 (wrapped for tmux or
+  screen), which reaches the local clipboard over SSH; only a valid base58 address is ever copied;
+  a short note says so. The address is also printed whole, alone on its line, for terminals that
+  block OSC 52 (Shift+drag). CLI: `account address NAME` prints the address alone (`--json`:
+  name and address), to pipe into `xclip`, `pbcopy` or `clip`.
+- **Paste.** The terminal's paste reaches the interface as a bracketed paste (one key message,
+  `Paste` set). In a form: the text is trimmed (spaces, newlines) and a leading `credits:` removed.
+  If it is a base58 32-byte address it replaces the field's value, and a line under the field shows
+  it with its first and last 6 characters highlighted (bold, underlined) to compare with the
+  source (clipboard hijacking); the review highlights the recipient, node, token and contract the
+  same way. In an address-only field (send To, delegate Node, token Token and To, token add,
+  contract address) anything else is refused, the field unchanged, the refusal showing the pasted
+  text escaped and cut. In a free field (contract arguments) other text is inserted without
+  control characters. A paste into a secret field (password, imported key) is passed on unchanged
+  and never shown. The wallet never reads the clipboard itself: the text inputs' Ctrl+V (which
+  runs external programs) is disabled.
+
+Mock-ups (80 columns):
 
 ```
 ┌ credits-wallet ─────────────────────────── MAINNET ─ node 127.0.0.1:9090 ✓ synced ┐

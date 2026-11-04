@@ -43,6 +43,7 @@ type accountScreen struct {
 	kind      string
 	address   string
 	err       error
+	note      string // after saving: "address copied"
 }
 
 type savedMsg struct {
@@ -210,7 +211,11 @@ func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		s.recovery = path
 		return s.save(m)
 	case accSaved:
-		if _, ok := msg.(tea.KeyMsg); ok {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.String() == "y" && s.err == nil && s.address != "" {
+				s.note = copyOwnAddress(s.address)
+				return nil
+			}
 			return m.back()
 		}
 	}
@@ -288,6 +293,9 @@ func (s *accountScreen) view(m *model) string {
 		if s.err == nil {
 			b.WriteString(stOK.Render("✓ account saved") + "\n")
 			b.WriteString("address " + s.address + "\n")
+			if s.note != "" {
+				b.WriteString(stWarn.Render(s.note) + "\n")
+			}
 			if s.recovery != "" {
 				b.WriteString("The 24 words are in this file (mode 600):\n" + echo.Terminal(s.recovery) + "\n")
 				b.WriteString(stWarn.Render(wallet.RecoveryAdvice) + "\n")
@@ -299,7 +307,11 @@ func (s *accountScreen) view(m *model) string {
 				b.WriteString(stWarn.Render(wallet.PlainKeyAdvice(s.fromFile)) + "\n")
 			}
 		}
-		b.WriteString("\n" + stDim.Render("any key: back") + "\n")
+		if s.err == nil {
+			b.WriteString("\n" + keyHelp("y", "copy the address") + "  " + stDim.Render("any other key: back") + "\n")
+		} else {
+			b.WriteString("\n" + stDim.Render("any key: back") + "\n")
+		}
 	}
 	if s.err != nil {
 		b.WriteString("\n" + stBad.Render(oneLine(s.err.Error())) + "\n")

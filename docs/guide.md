@@ -117,6 +117,18 @@ In the interface press `n`; on the command line:
 
 The account's address (its public key, base58) is shown; give it to whoever sends you CS.
 
+**Copying your address.** On the main screen, and after creating or importing an account, `y`
+copies the account's full address to the clipboard (OSC 52: it works over SSH too, to the
+clipboard of the computer you are sitting at). The address is also shown whole on a line of its
+own: if your terminal blocks OSC 52, hold Shift and drag over it. On the command line
+`account address NAME` prints the address alone, to pipe into the clipboard:
+
+```sh
+./credits-wallet account address main | xclip -selection clipboard   # Linux (X11; wl-copy on Wayland)
+./credits-wallet account address main | pbcopy                       # macOS
+.\credits-wallet.exe account address main | clip                     # Windows
+```
+
 ### The recovery phrase
 
 - The 24 words **are** the account: anyone who has them can spend everything in it, from any
@@ -290,6 +302,13 @@ The review shows the recipient in full, the amount, the expected fee (about 0.00
 mainnet type `send`, then the password. The wallet follows the transaction until it is in a block.
 
 - Check the **whole** recipient address, not only its first and last letters.
+- **Pasting the recipient.** Use your terminal's paste (Ctrl+Shift+V, right click, Cmd+V on
+  macOS) in the recipient field, and in every field that takes an address (a node to delegate to,
+  a token, a contract). Spaces, line breaks and a leading `credits:` are removed; anything that is
+  not an address (base58 of 32 bytes) is refused and the field stays as it was. The pasted address
+  is shown with its first and last 6 characters highlighted: compare them, and the rest, with where
+  you copied it from. Some malware replaces addresses in the clipboard with its own. The wallet
+  never reads the clipboard by itself (Ctrl+V does nothing in its fields).
 - The Data text is **public**: anyone can read it on the chain.
 - If the wallet says "sent, but … check history later", **do not send again** before the history
   shows whether the first one arrived.
@@ -479,6 +498,7 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
 | "the executor lost the errors" when compiling | The node's contract executor did not return the error lines; fix the source with an IDE or update the node's executor. |
 | "sent, but … check history later" | Do not send again. Check `history` in a minute: the transaction is in a block, or it expired and you can send again. |
 | Garbled screen | Use a terminal with UTF-8 and at least 80×24 (Windows Terminal on Windows). |
+| Pasting an address says "not a CREDITS address" | What was pasted is not a whole address: copy it again, all of it. If the address you copied is right and the paste differs, something on this computer changed the clipboard: do not send. |
 | `y` copies nothing | Your terminal does not support OSC 52 (or tmux needs `set -g set-clipboard on`): hold Shift and drag over the address to select it. |
 | macOS: "cannot be opened" | `xattr -d com.apple.quarantine credits-wallet` (or `xattr -dr com.apple.quarantine csnode` for the whole package). |
 | Docker: the accounts are gone | The data folder must be on the volume: the image sets `CREDITS_WALLET_HOME=/data/wallet`; run the wallet with `docker exec` in the container that has the volume. |

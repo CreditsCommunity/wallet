@@ -52,6 +52,8 @@ usage: credits-wallet [global flags] [command] [arguments]
                                         official wallets' keys JSON; asks for it without a file
   account export <name> [--format encrypted|base58|official] [--out FILE]
   account list                          the accounts and their addresses
+  account address <name>                the account's address alone (to pipe into xclip -sel c,
+                                        pbcopy or clip)
   balance [account|address...]          CS balances (all accounts without arguments)
   send <account> <to> <amount> [--data TEXT] [--yes] [--wait SECONDS]
                                         sign and send CS, with optional user data (a text,

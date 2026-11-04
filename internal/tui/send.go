@@ -79,7 +79,7 @@ type sentMsg struct {
 }
 
 func newSendScreen(f *keys.File) *sendScreen {
-	s := &sendScreen{kind: wallet.KindTransfer, account: f, fields: newForm("To", "Amount", "Data")}
+	s := &sendScreen{kind: wallet.KindTransfer, account: f, fields: newForm("To", "Amount", "Data").address(0)}
 	s.fields.inputs[1].Placeholder = "CS, e.g. 12.5"
 	s.fields.inputs[2].Placeholder = "optional text, public on the chain"
 	s.fields.inputs[2].CharLimit = 4096
@@ -88,10 +88,10 @@ func newSendScreen(f *keys.File) *sendScreen {
 
 // newDelegateScreen delegates CS to a node (withdraw false) or withdraws from a delegation.
 func newDelegateScreen(f *keys.File, withdraw bool, nodeAddr string) *sendScreen {
-	s := &sendScreen{kind: wallet.KindDelegate, account: f, fields: newForm("Node", "Amount", "Until")}
+	s := &sendScreen{kind: wallet.KindDelegate, account: f, fields: newForm("Node", "Amount", "Until").address(0)}
 	s.fields.inputs[2].Placeholder = "empty: no time limit; or 2027-01-31 / 2027-01-31 18:00 (UTC)"
 	if withdraw {
-		s.kind, s.fields = wallet.KindUndelegate, newForm("Node", "Amount")
+		s.kind, s.fields = wallet.KindUndelegate, newForm("Node", "Amount").address(0)
 	}
 	s.fields.inputs[1].Placeholder = "CS, at least 5"
 	if nodeAddr != "" {
@@ -102,7 +102,7 @@ func newDelegateScreen(f *keys.File, withdraw bool, nodeAddr string) *sendScreen
 }
 
 func newTokenSendScreen(f *keys.File, token string) *sendScreen {
-	s := &sendScreen{kind: wallet.KindToken, account: f, fields: newForm("Token", "To", "Amount")}
+	s := &sendScreen{kind: wallet.KindToken, account: f, fields: newForm("Token", "To", "Amount").address(0, 1)}
 	s.fields.inputs[0].Placeholder = "token contract address"
 	s.fields.inputs[2].Placeholder = "tokens, at most the token's decimals"
 	if token != "" {
@@ -319,23 +319,23 @@ func planLines(p *wallet.SendPlan) [][2]string {
 		if p.Data != "" {
 			data = printable(p.Data) + stDim.Render("  public")
 		}
-		rows = append(rows, [2]string{"To", keys.Address(p.To) + " " + stOK.Render("✓")},
+		rows = append(rows, [2]string{"To", highlightAddress(keys.Address(p.To)) + " " + stOK.Render("✓")},
 			[2]string{"Amount", p.Amount.Grouped() + " CS"}, [2]string{"Data", data})
 	case wallet.KindDelegate:
-		rows = append(rows, [2]string{"Node", keys.Address(p.To)},
+		rows = append(rows, [2]string{"Node", highlightAddress(keys.Address(p.To))},
 			[2]string{"Amount", p.Amount.Grouped() + " CS delegated " + untilLocal(p.Until)})
 	case wallet.KindUndelegate:
-		rows = append(rows, [2]string{"Node", keys.Address(p.To)},
+		rows = append(rows, [2]string{"Node", highlightAddress(keys.Address(p.To))},
 			[2]string{"Amount", p.Amount.Grouped() + " CS back, of " + p.Delegated.Grouped() + " CS delegated"})
 	case wallet.KindToken:
 		t := p.Token
-		rows = append(rows, [2]string{"Token", keys.Address(t.Contract)},
+		rows = append(rows, [2]string{"Token", highlightAddress(keys.Address(t.Contract))},
 			[2]string{"", stDim.Render(fmt.Sprintf("calls itself %s %s, %d decimals", printable(t.Code), printable(t.Name), t.Decimals))})
 		for _, warning := range t.Warnings {
 			rows = append(rows, [2]string{"WARNING", stBad.Render(warning)})
 		}
 		rows = append(rows,
-			[2]string{"To", keys.Address(p.To) + " " + stOK.Render("✓")},
+			[2]string{"To", highlightAddress(keys.Address(p.To)) + " " + stOK.Render("✓")},
 			[2]string{"Amount", t.Amount + " " + printable(t.Code) + stDim.Render("  balance "+printable(t.Balance))})
 	case wallet.KindDeploy:
 		c := p.Contract
@@ -350,7 +350,7 @@ func planLines(p *wallet.SendPlan) [][2]string {
 		rows = append(rows, [2]string{"Address", keys.Address(p.To)}, [2]string{"", stDim.Render(fmt.Sprintf("from the account, inner id %d and the byte code", p.InnerID))})
 	case wallet.KindCall:
 		c := p.Contract
-		rows = append(rows, [2]string{"Contract", keys.Address(p.To)}, [2]string{"", stDim.Render(printable(c.Name))})
+		rows = append(rows, [2]string{"Contract", highlightAddress(keys.Address(p.To))}, [2]string{"", stDim.Render(printable(c.Name))})
 		rows = appendWrapped(rows, "Method", node.Signature(c.Method))
 		// every argument in full, wrapped: they are what is signed
 		for i, arg := range c.Method.Arguments {
@@ -365,7 +365,7 @@ func planLines(p *wallet.SendPlan) [][2]string {
 		if p.Data != "" {
 			data = printable(p.Data) + stDim.Render("  public, payable()'s userData")
 		}
-		rows = append(rows, [2]string{"Contract", keys.Address(p.To)}, [2]string{"", stDim.Render(printable(p.Contract.Name) + ": its payable() runs")},
+		rows = append(rows, [2]string{"Contract", highlightAddress(keys.Address(p.To))}, [2]string{"", stDim.Render(printable(p.Contract.Name) + ": its payable() runs")},
 			[2]string{"Amount", p.Amount.Grouped() + " CS"}, [2]string{"Data", data})
 	}
 	fee := p.Fee.Fixed(6) + " CS expected"
@@ -402,7 +402,7 @@ func (s *sendScreen) view(m *model) string {
 		if s.kind == wallet.KindToken {
 			addrField = 1
 		}
-		if to := s.fields.value(addrField); to != "" {
+		if to := s.fields.value(addrField); to != "" && !s.fields.isPasted(addrField) {
 			if _, err := keys.ParseAddress(to); err == nil {
 				b.WriteString(stOK.Render("           ✓ address") + "\n")
 			} else {

@@ -106,7 +106,7 @@ func (s *contractsScreen) update(m *model, msg tea.Msg) tea.Cmd {
 				return openContract(m, s.account, s, s.rows[s.sel].Address)
 			}
 		case "a":
-			s.mode, s.input = contractsAddress, newForm("Contract")
+			s.mode, s.input = contractsAddress, newForm("Contract").address(0)
 			s.input.inputs[0].Placeholder = "contract address (base58)"
 		case "o":
 			s.mode, s.input = contractsOpen, newForm("File")

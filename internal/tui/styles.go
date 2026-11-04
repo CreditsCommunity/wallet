@@ -1,9 +1,11 @@
 package tui
 
 import (
-	"github.com/CreditsCommunity/wallet/internal/echo"
 	"strings"
 
+	"github.com/CreditsCommunity/wallet/internal/echo"
+
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -26,6 +28,7 @@ var (
 	stBad     = lipgloss.NewStyle().Foreground(colBad).Bold(true)
 	stSel     = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
 	stKey     = lipgloss.NewStyle().Bold(true)
+	stHi      = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(colAccent) // the ends of an address
 	stMainnet = lipgloss.NewStyle().Bold(true).Foreground(colMainnet).Background(lipgloss.AdaptiveColor{Light: "#af0000", Dark: "#ff5f5f"}).Padding(0, 1)
 	stTestnet = lipgloss.NewStyle().Bold(true).Foreground(colMainnet).Background(lipgloss.AdaptiveColor{Light: "#007700", Dark: "#5fd75f"}).Padding(0, 1)
 	stBox     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colDim).Padding(0, 1)
@@ -45,15 +48,23 @@ type form struct {
 	labels []string
 	inputs []textinput.Model
 	focus  int
+
+	addr       map[int]bool   // fields that take only an address (a paste of anything else is refused)
+	pasted     map[int]string // the address pasted into a field (highlighted while it is unchanged)
+	pasteErr   string         // the refusal of the last paste
+	pasteErrAt int
 }
 
 func newForm(labels ...string) *form {
-	f := &form{labels: labels}
+	f := &form{labels: labels, addr: map[int]bool{}, pasted: map[int]string{}, pasteErrAt: -1}
 	for range labels {
 		in := textinput.New()
 		in.Prompt = ""
 		in.CharLimit = 4096
 		in.Width = 50
+		// Ctrl+V would read the clipboard through external programs (xclip, pbpaste): off. The
+		// terminal's own paste arrives as a bracketed paste (see paste.go).
+		in.KeyMap.Paste = key.NewBinding(key.WithDisabled())
 		f.inputs = append(f.inputs, in)
 	}
 	f.inputs[0].Focus()
@@ -63,6 +74,14 @@ func newForm(labels ...string) *form {
 func (f *form) secret(i int) *form {
 	f.inputs[i].EchoMode = textinput.EchoPassword
 	f.inputs[i].EchoCharacter = '•'
+	return f
+}
+
+// address marks fields that take only an address.
+func (f *form) address(fields ...int) *form {
+	for _, i := range fields {
+		f.addr[i] = true
+	}
 	return f
 }
 
@@ -77,6 +96,10 @@ func (f *form) setFocus(i int) {
 // update handles a key; it returns true when Enter was pressed on the last field.
 func (f *form) update(msg tea.Msg) (tea.Cmd, bool) {
 	if k, ok := msg.(tea.KeyMsg); ok {
+		if k.Paste {
+			return f.paste(k), false
+		}
+		f.pasteErr, f.pasteErrAt = "", -1
 		switch k.String() {
 		case "tab", "down":
 			f.setFocus(f.focus + 1)
@@ -105,6 +128,7 @@ func (f *form) view() string {
 			label = stSel.Width(10).Render(f.labels[i])
 		}
 		b.WriteString(label + " " + in.View() + "\n")
+		b.WriteString(f.pastedLine(i))
 	}
 	return b.String()
 }

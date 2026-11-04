@@ -119,6 +119,18 @@ Nell'interfaccia premi `n`; da riga di comando:
 
 Viene mostrato l'indirizzo dell'account (la sua chiave pubblica, in base58): dallo a chi ti invia CS.
 
+**Copiare il tuo indirizzo.** Nella schermata principale, e dopo aver creato o importato un
+account, `y` copia negli appunti l'indirizzo completo dell'account (OSC 52: funziona anche via SSH,
+verso gli appunti del computer che stai usando). L'indirizzo è anche mostrato per intero su una riga
+a sé: se il tuo terminale blocca OSC 52, tieni premuto Shift e trascina per selezionarlo. Da riga
+di comando `account address NAME` stampa solo l'indirizzo, da passare agli appunti:
+
+```sh
+./credits-wallet account address main | xclip -selection clipboard   # Linux (X11; wl-copy su Wayland)
+./credits-wallet account address main | pbcopy                       # macOS
+.\credits-wallet.exe account address main | clip                     # Windows
+```
+
 ### La frase di recupero
 
 - Le 24 parole **sono** l'account: chi le ha può spendere tutto quello che contiene, da qualsiasi
@@ -297,6 +309,13 @@ nodo ha confermato la rete. Su mainnet scrivi `send`, poi la password. Il wallet
 transazione finché non è in un blocco.
 
 - Controlla **l'intero** indirizzo del destinatario, non solo le prime e le ultime lettere.
+- **Incollare il destinatario.** Usa l'incolla del terminale (Ctrl+Shift+V, clic destro, Cmd+V su
+  macOS) nel campo del destinatario e in ogni campo che vuole un indirizzo (un nodo a cui delegare,
+  un token, un contratto). Spazi, a capo e un `credits:` iniziale vengono tolti; tutto ciò che non è
+  un indirizzo (base58 di 32 byte) viene rifiutato e il campo resta com'era. L'indirizzo incollato è
+  mostrato con i primi e gli ultimi 6 caratteri evidenziati: confrontali, insieme al resto, con il
+  punto da cui l'hai copiato. Alcuni malware sostituiscono negli appunti gli indirizzi con i propri.
+  Il wallet non legge mai gli appunti da solo (Ctrl+V nei suoi campi non fa nulla).
 - Il testo Data è **pubblico**: chiunque può leggerlo sulla blockchain.
 - Se il wallet dice "sent, but … check history later", **non inviare di nuovo** prima che la
   cronologia mostri se il primo invio è arrivato.
@@ -492,6 +511,7 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
 | "the executor lost the errors" durante la compilazione | L'esecutore di contratti del nodo non ha restituito le righe di errore; correggi il sorgente con un IDE oppure aggiorna l'esecutore del nodo. |
 | "sent, but … check history later" | Non inviare di nuovo. Controlla `history` tra un minuto: la transazione è in un blocco, oppure è scaduta e puoi inviare di nuovo. |
 | Schermo illeggibile | Usa un terminale con UTF-8 e almeno 80×24 (Windows Terminal su Windows). |
+| Incollando un indirizzo compare "not a CREDITS address" | Quello che hai incollato non è un indirizzo completo: copialo di nuovo, per intero. Se l'indirizzo copiato è giusto e quello incollato è diverso, qualcosa su questo computer ha cambiato gli appunti: non inviare. |
 | `y` non copia nulla | Il tuo terminale non supporta OSC 52 (oppure tmux richiede `set -g set-clipboard on`): tieni premuto Shift e trascina sull'indirizzo per selezionarlo. |
 | macOS: "cannot be opened" | `xattr -d com.apple.quarantine credits-wallet` (oppure `xattr -dr com.apple.quarantine csnode` per l'intero pacchetto). |
 | Docker: gli account sono spariti | La cartella dei dati deve essere nel volume: l'immagine imposta `CREDITS_WALLET_HOME=/data/wallet`; esegui il wallet con `docker exec` nel container che ha il volume. |

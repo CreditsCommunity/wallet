@@ -121,12 +121,14 @@ func (a *app) cmdAccount(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(pos) == 0 {
-		return usagef("account: new, import, export or list")
+		return usagef("account: new, import, export, list or address")
 	}
 	sub, rest := pos[0], pos[1:]
 	switch {
 	case sub == "list" && len(rest) == 0:
 		return a.accountList()
+	case sub == "address" && len(rest) == 1:
+		return a.accountAddress(rest[0])
 	case sub == "new" && len(rest) == 1:
 		return a.accountNew(rest[0], *wordsFile, *showWords)
 	case sub == "import" && (len(rest) == 1 || len(rest) == 2):
@@ -139,6 +141,28 @@ func (a *app) cmdAccount(ctx context.Context, args []string) error {
 		return a.accountExport(rest[0], *format, *outFile, *yes)
 	}
 	return usagef("account %s: wrong arguments", sub)
+}
+
+// accountAddress prints an account's address alone, for a pipe into xclip, pbcopy or clip.
+func (a *app) accountAddress(name string) error {
+	if err := keys.ValidName(name); err != nil {
+		return err
+	}
+	if !a.w.Store.Exists(name) {
+		return fmt.Errorf("no account named %q (see 'account list')", name)
+	}
+	f, err := a.w.Store.Load(name)
+	if err != nil {
+		return err
+	}
+	if _, err := keys.ParseAddress(f.Public); err != nil {
+		return fmt.Errorf("the key file of %q has no valid address: %w", name, err)
+	}
+	if a.json {
+		return a.printJSON(map[string]any{"name": f.Name, "address": f.Public})
+	}
+	fmt.Fprintln(a.out, f.Public)
+	return nil
 }
 
 func (a *app) accountList() error {
