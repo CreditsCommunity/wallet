@@ -25,8 +25,9 @@ func RememberNodeKey(path string, p Profile, value string) error {
 	if strings.ContainsAny(value, "\x00\n\r") {
 		return errors.New("not a file name")
 	}
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		path = real
+	path, err := checkConfigTarget(path)
+	if err != nil {
+		return err
 	}
 	data, err := os.ReadFile(path)
 	exists := err == nil
@@ -66,15 +67,61 @@ func RememberNodeKey(path string, p Profile, value string) error {
 			return fmt.Errorf("the configuration could not be updated without changing other settings: add node_key = %s to [nodes.%s] by hand", tomlString(value), p.Name)
 		}
 	}
-	mode := os.FileMode(0o600)
+	mode := os.FileMode(0o600) // a new file: the user's only
 	if exists {
 		if st, err := os.Stat(path); err == nil {
 			mode = st.Mode().Perm()
 		}
-	} else if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
 	}
 	return writeWhole(path, []byte(text), mode)
+}
+
+// checkConfigTarget is where RememberNodeKey writes, and whether it may (Linux, macOS; the ACLs
+// are not checked on Windows): the configuration file, a link's target and their folders must be
+// the user's (or root's) and writable by nobody else, as the node's key (spec 4.4); the file a
+// regular one. A file that does not exist yet: its folder is created (mode 700) and checked.
+// Returns the path to write (a link's target: the link is kept).
+func checkConfigTarget(path string) (string, error) {
+	lst, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		dir := filepath.Dir(path)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", err
+		}
+		st, err := os.Stat(dir)
+		if err != nil {
+			return "", err
+		}
+		return path, ownedSafe(dir, st, "the configuration's folder")
+	case err != nil:
+		return "", err
+	}
+	folders := []string{filepath.Dir(path)}
+	real := path
+	if lst.Mode()&os.ModeSymlink != 0 {
+		if real, err = filepath.EvalSymlinks(path); err != nil {
+			return "", fmt.Errorf("%s is a link that leads nowhere: %w", path, err)
+		}
+		folders = append(folders, filepath.Dir(real))
+	}
+	for _, d := range folders {
+		st, err := os.Stat(d)
+		if err != nil {
+			return "", err
+		}
+		if err := ownedSafe(d, st, "the configuration's folder"); err != nil {
+			return "", err
+		}
+	}
+	st, err := os.Stat(real)
+	if err != nil {
+		return "", err
+	}
+	if !st.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file: refused", real)
+	}
+	return real, ownedSafe(real, st, "the configuration file")
 }
 
 func writeWhole(path string, data []byte, mode os.FileMode) error {

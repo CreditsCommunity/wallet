@@ -201,6 +201,7 @@ func TestNodeKeySetting(t *testing.T) {
 // "Use it and remember it": node_key written into the active profile, every other line kept.
 func TestRememberNodeKey(t *testing.T) {
 	dir := t.TempDir()
+	os.Chmod(dir, 0o700) // whatever the umask
 	path := filepath.Join(dir, "config.toml")
 	text := "# my wallet\nnode = \"lab\"\nhistory_page = 30   # keep\n\n[nodes.local]\naddress = \"127.0.0.1:9090\"\n# node_key = \"old\"\n\n[nodes.lab]  # the lab\naddress = \"10.0.0.5:9090\"\nnetwork = \"testnet\"\n\n[nodes.\"x y\"]\naddress = \"10.0.0.6:9090\"\n"
 	os.WriteFile(path, []byte(text), 0o640)
@@ -297,5 +298,50 @@ func TestLockAfter(t *testing.T) {
 		if _, err := Parse(bad, "x"); err == nil {
 			t.Errorf("%s accepted", bad)
 		}
+	}
+}
+
+// The configuration is written only where the node's key would be read: the file, a link's target
+// and their folders the user's and writable by nobody else.
+func TestRememberNodeKeyOwnership(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the ACLs are not checked on Windows")
+	}
+	p := Profile{Name: "local", Address: DefaultAddress, Network: Mainnet}
+	dir := t.TempDir()
+	os.Chmod(dir, 0o700)
+	path := filepath.Join(dir, "config.toml")
+	os.WriteFile(path, []byte("[nodes.local]\naddress = \"127.0.0.1:9090\"\n"), 0o600)
+	os.Chmod(path, 0o620)
+	if err := RememberNodeKey(path, p, "/k"); err == nil || !strings.Contains(err.Error(), "can be written by other users") {
+		t.Errorf("group-writable file: %v", err)
+	}
+	os.Chmod(path, 0o600)
+	open := t.TempDir()
+	os.Chmod(open, 0o777)
+	if err := RememberNodeKey(filepath.Join(open, "config.toml"), p, "/k"); err == nil || !strings.Contains(err.Error(), "can be written by other users") {
+		t.Errorf("a new file in a folder every user can write: %v", err)
+	}
+	// a link: its target and the target's folder are checked, the link is kept
+	link := filepath.Join(dir, "link.toml")
+	os.Symlink(path, link)
+	if err := RememberNodeKey(link, p, "/k"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Lstat(link); st.Mode()&os.ModeSymlink == 0 {
+		t.Error("the link was replaced")
+	}
+	if c, _ := Load(path, true); c.Nodes["local"].NodeKey != "/k" {
+		t.Error("the target was not written")
+	}
+	planted := filepath.Join(open, "target.toml")
+	os.WriteFile(planted, []byte("[nodes.local]\naddress = \"127.0.0.1:9090\"\n"), 0o600)
+	link2 := filepath.Join(dir, "link2.toml")
+	os.Symlink(planted, link2)
+	if err := RememberNodeKey(link2, p, "/k"); err == nil {
+		t.Error("written through a link into a folder every user can write")
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v", st.Mode().Perm())
 	}
 }
