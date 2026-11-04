@@ -15,8 +15,12 @@ import (
 	"github.com/CreditsCommunity/wallet/internal/wallet"
 )
 
+// typeText types text one key at a time, as a keyboard does: a whole word in one message would
+// read as a key's name ("enter", "end", "home" are seed words).
 func typeText(m *model, text string) {
-	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
+	for _, r := range text {
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
 }
 
 func press(m *model, k tea.KeyType) tea.Cmd {
