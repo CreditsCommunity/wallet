@@ -437,10 +437,19 @@ log "export --format node --replace: node $NODES runs with bob's key"
 # same password
 NODEPW=$WORK/node-password
 echo "node e2e pw" > "$NODEPW" && chmod 600 "$NODEPW"
-# start_node with its console answered: "p" (a password, read by std::cin), then, once std::cin has
-# taken it, the lines of $2 (read by getchar: std::cin would otherwise buffer them away)
+# start_node with its console answered: "p" (a password, read by std::cin), then, once the node
+# asks "Enter password:" (std::cin has taken the "p"), the lines of $2 (read by getchar: std::cin
+# would otherwise buffer them away)
 start_node_typed() {
-    (cd "$WORK/n$1" && exec "$NODE_BIN" --db-path db --config-file config.ini ${3:-} < <(printf p; sleep 3; printf '%s' "$2") >> stdout.log 2>&1) &
+    local before
+    before=$(grep -c "Enter password:" "$WORK/n$1/stdout.log" 2>/dev/null || true)
+    (cd "$WORK/n$1" && exec "$NODE_BIN" --db-path db --config-file config.ini ${3:-} < <(
+        printf p
+        for _ in $(seq 1 600); do
+            [ "$(grep -c "Enter password:" stdout.log 2>/dev/null || true)" -gt "${before:-0}" ] && break
+            sleep 0.1
+        done
+        printf '%s' "$2") >> stdout.log 2>&1) &
     PIDS+=($!)
 }
 stop_last() {  # the last node, until it is gone (with its executor it may take a while)

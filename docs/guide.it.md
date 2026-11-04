@@ -112,7 +112,10 @@ I binari sono riproducibili: lo stesso tag compilato di nuovo dà gli stessi fil
 - Una password sbagliata dice solo che l'account non si è potuto sbloccare; ogni tentativo
   sbagliato di fila aggiunge una breve attesa (2 s, poi 4, 8, fino a 30 s).
 - Da sbloccata, la chiave resta in memoria protetta dallo swap e fuori dai core dump, e viene
-  azzerata quando il wallet si blocca o esce.
+  azzerata quando il wallet si blocca o esce. Se il sistema lo rifiuta ("the key could not be
+  locked in memory: it may reach swap"), usa uno swap cifrato. Alcune copie un programma Go non
+  può cancellarle (quello che la firma calcola dalla chiave, la password digitata): disattiva i
+  core dump sulle macchine che custodiscono fondi.
 
 In Docker il wallet gira dentro il container del nodo, con i suoi dati nel volume `/data`
 (`/data/wallet`); imposta `CREDITS_API=on` in `.env` (il wallet parla con l'API del nodo). Con il
@@ -284,8 +287,11 @@ hai scelto "[1] Encrypt with password", `NodePrivate.txt` è cifrato con la pass
 wallet lo apre con quella stessa password: nella schermata di sblocco dell'interfaccia, e da riga
 di comando quando un comando firma (funziona anche `--password-file`). Fino ad allora l'account
 `node` mostra l'indirizzo di `NodePublic.txt`, segnato "encrypted by the node", e il wallet
-controlla che la chiave aperta sia proprio quella. L'apertura richiede qualche secondo e 1 GiB di
-memoria, come nel nodo. Il wallet non scrive mai la chiave aperta da nessuna parte e rifiuta di
+controlla che la chiave aperta sia proprio quella; finché non la sblocchi, `account list`, `account
+address` e la schermata della chiave trovata segnano l'indirizzo "(from NodePublic.txt, unverified
+until unlocked)". L'apertura richiede qualche secondo e **1 GiB di memoria libera**, come nel nodo:
+con meno, il wallet rifiuta con "the node's key needs 1 GiB of free memory to open (as the node
+does)" (chiudi qualcosa, o aprila su una macchina con più memoria). Il wallet non scrive mai la chiave aperta da nessuna parte e rifiuta di
 esportarla in chiaro. Tutti i nodi usano lo stesso salt per questa cifratura: scegli una password
 lunga.
 
@@ -649,6 +655,7 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
 | "MISMATCH" / il wallet rifiuta di inviare | La rete del profilo e quella del nodo differiscono: sei sul nodo sbagliato o sul profilo sbagliato. Correggi il profilo; non forzare mai. |
 | "wrong password" | Riprova. Password dimenticata: importa di nuovo l'account dalle sue 24 parole. |
 | "the node's key file is encrypted by the node" | Il nodo è stato avviato con `--encryptkey` (o al primo avvio è stata scelta una password): scrivi la password del nodo (nella schermata di sblocco, o quando il comando la chiede; `--password-file` negli script). |
+| "the node's key needs 1 GiB of free memory to open" | Aprire una chiave cifrata dal nodo richiede 1 GiB, come nel nodo: libera memoria e riprova. |
 | "could not unlock" | La password è sbagliata (o il file della chiave è danneggiato). Aspetta i secondi indicati e riprova; per l'account `node` di una chiave cifrata è la password del nodo. |
 | "is encrypted by the node and NodePublic.txt does not give its address" | `NodePublic.txt` manca o è danneggiato: neanche il nodo partirebbe. Ripristinalo da un backup o con il nodo. |
 | "This folder holds a node key" | Hai lanciato un comando in una cartella con `NodePrivate.txt`: il wallet non la usa se non aggiungi `--node-key NodePrivate.txt` (o imposti `node_key`). |

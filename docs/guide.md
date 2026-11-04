@@ -111,7 +111,10 @@ The binaries are reproducible: the same tag built again gives the same files (se
 - A wrong password says only that the account could not be unlocked; each wrong try in a row adds
   a short wait (2 s, then 4, 8, up to 30 s).
 - While unlocked, the key is kept in memory locked against swapping and out of core dumps, and is
-  zeroed when the wallet locks or quits.
+  zeroed when the wallet locks or quits. If the system refuses that ("the key could not be locked
+  in memory: it may reach swap"), use encrypted swap. Some copies cannot be wiped by a Go program
+  (what the signature computes from the key, the password you typed): disable core dumps on
+  machines that hold funds.
 
 In Docker the wallet runs inside the node's container, with its data on the `/data` volume
 (`/data/wallet`); set `CREDITS_API=on` in `.env` (the wallet talks to the node's API). With the
@@ -272,7 +275,11 @@ Encrypt with password" at its first start, `NodePrivate.txt` is encrypted with t
 The wallet opens it with that same password: on the unlock screen of the interface, and on the
 command line when a command signs (`--password-file` works too). The account `node` shows the
 address of `NodePublic.txt` until then, marked "encrypted by the node", and the wallet checks that
-the key it opens is that one. Opening takes some seconds and 1 GiB of memory, as in the node. The
+the key it opens is that one; until you unlock it, `account list`, `account address` and the
+found-key screen mark the address "(from NodePublic.txt, unverified until unlocked)". Opening takes
+some seconds and **1 GiB of free memory**, as in the node: with less, the wallet refuses with
+"the node's key needs 1 GiB of free memory to open (as the node does)" (stop something, or open it
+on a machine with more memory). The
 wallet never writes the opened key anywhere, and refuses to export it in clear. Every node uses the
 same salt for this encryption, so choose a long password.
 
@@ -626,6 +633,7 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
 | "MISMATCH" / the wallet refuses to send | The profile's network and the node's differ: you are on the wrong node or the wrong profile. Fix the profile; never force it. |
 | "wrong password" | Retry. A forgotten password: import the account again from its 24 words. |
 | "the node's key file is encrypted by the node" | The node was started with `--encryptkey` (or its first start chose a password): type the node's password (on the unlock screen, or when the command asks; `--password-file` in scripts). |
+| "the node's key needs 1 GiB of free memory to open" | Opening a key the node encrypted takes 1 GiB, as in the node: free some memory and try again. |
 | "could not unlock" | The password is wrong (or the key file damaged). Wait the few seconds shown and try again; for the account `node` of an encrypted key it is the node's password. |
 | "is encrypted by the node and NodePublic.txt does not give its address" | `NodePublic.txt` is missing or damaged: the node would not start either. Restore it from a backup or with the node. |
 | "This folder holds a node key" | You ran a command in a folder with `NodePrivate.txt`: the wallet does not use it unless you add `--node-key NodePrivate.txt` (or set `node_key`). |

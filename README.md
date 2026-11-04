@@ -326,9 +326,11 @@ receives the account's public address only; every history output names the sourc
   own, so that what you receive goes to them); a forgotten password (keep the 24 words).
 - **Memory:** Go cannot guarantee that secrets are wiped. The wallet zeroes the byte slices it
   controls; the interface keeps the unlocked key in memory of its own, locked against swapping, out
-  of core dumps and inaccessible between signatures, zeroed on lock and exit. Copies may remain: the TUI's text inputs hold passwords and pasted keys as
-  immutable strings, Argon2id's working memory is freed and not wiped, and a core dump or swap
-  may hold any of them. Disable core dumps and use encrypted swap on machines holding funds.
+  of core dumps and inaccessible between signatures, zeroed on lock and exit (it says so when the
+  system refuses the lock). Copies may remain: the TUI's text inputs hold passwords and pasted keys
+  as immutable strings, `crypto/ed25519` keeps the expanded key it signs with on the heap without
+  zeroing it, Argon2id's working memory is freed and not wiped, and a core dump or swap may hold
+  any of them. Disable core dumps and use encrypted swap on machines holding funds.
 - **The node:** the wallet trusts the node it talks to for balances, fees, inner ids, sync state
   and history, but never sends it a secret; see docs/spec.md, "Trust in the node".
 - **Windows:** the wallet does not set ACLs itself. `%APPDATA%\credits-wallet` is private to the

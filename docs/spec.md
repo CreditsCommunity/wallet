@@ -78,9 +78,17 @@ ci/release/build.sh      the reproducible release archives
   zero it after use. The terminal interface keeps the key of the account it unlocked for the
   session (6, "Unlock"): in memory of its own outside Go's heap (`mmap`, `VirtualAlloc`), locked
   against swapping (`mlock`, `VirtualLock`), left out of core dumps (Linux `MADV_DONTDUMP`) and
-  inaccessible (`PROT_NONE`, `PAGE_NOACCESS`) except to copy it out for one signature, the copy
-  zeroed after it (`keys.LockedKey`; every step best effort); the key is zeroed and the memory
-  freed on lock, on a switch of account, on the inactivity timer and at exit.
+  inaccessible (`PROT_NONE`, `PAGE_NOACCESS`) except to copy it out for one signature
+  (`keys.LockedKey`); the key is zeroed and the memory freed on lock, on a switch of account, on
+  the inactivity timer and at exit, and a garbage collection follows the lock and the unlock. When
+  the system refuses the page or the lock (an `mlock` limit), the key is kept anyway and the
+  interface says once "the key could not be locked in memory: it may reach swap". **What is not
+  wiped:** each signature works on a copy of the key on Go's heap, zeroed after it, but
+  `crypto/ed25519` derives from it an expanded key on the heap (its cache) that the standard
+  library never zeroes; the password typed in the interface passes through its text input as Go
+  strings, which cannot be zeroed; `golang.org/x/crypto/argon2` does not zero its working memory
+  (256 MiB, 1 GiB for a node's key). All of them stay in the process's memory until it is reused
+  (core dumps are off: 4.2 above).
 - Key files are written whole to a temporary file (mode 0600), synced, then linked to their name:
   never half-written, never replacing an existing account. Files whose KDF parameters are outside
   time 1-16, memory 64 MiB-1 GiB, parallelism 1-32 are refused (more costs too much to open; less
@@ -144,7 +152,13 @@ the node reads only printable ASCII (32-126) from its console, 3 to 128 characte
 encrypts. The node can also use a file's content as the password ("f"); the wallet asks only for a
 typed password. `NodePublic.txt` stays plain. The wallet decrypts it in Go (`keys.DecryptNodeKey`:
 `golang.org/x/crypto/argon2`, `chacha20`, `poly1305`), never writes the decrypted key anywhere and
-never encrypts a node's key itself. Proven by `internal/keys/testdata/node-encrypted-vectors.json`,
+never encrypts a node's key itself. Argon2id takes 1 GiB, and an allocation that fails ends the
+process (the terminal left raw): before deriving, the wallet checks the free memory (Linux
+`MemAvailable` of `/proc/meminfo`, else `sysinfo`; Windows `GlobalMemoryStatusEx`; macOS only the
+physical memory, `hw.memsize`, as it reports no available figure and swaps rather than kills) and
+refuses with "the node's key needs 1 GiB of free memory to open (as the node does)" below 1.2 GiB.
+`x/crypto/argon2` does not zero that memory; the wallet returns it to the system after the
+unlock. Proven by `internal/keys/testdata/node-encrypted-vectors.json`,
 files encrypted and opened by the node's own code (`internal/keys/testdata/node-key-crypt.cpp`,
 built against the node), which the wallet opens and re-encrypts byte for byte with the same nonce;
 with `NODE_KEY_CRYPT` set, a round trip in both directions (the node opens what the wallet
@@ -199,8 +213,11 @@ receives go to that address. Next to its node the wallet therefore uses the node
   NodePrivate.txt` makes an encrypted copy, which adds no protection while the original stays in
   clear); `--format base58` and `official` need no password.
 - **A key the node encrypted** (4.3; `--encryptkey`): the account's address is the
-  `NodePublic.txt` next to it (without a valid one the key is reported, not used: the node would
-  not start either), marked `encrypted by the node` (`"node_key_encrypted"` in JSON). The node's
+  `NodePublic.txt` next to it, read with the same checks as the key (owner, not writable by others,
+  a regular file; without a valid one the key is reported, not used: the node would not start
+  either), marked `encrypted by the node` (`"node_key_encrypted"` in JSON) and tagged "(from
+  NodePublic.txt, unverified until unlocked)" in `account list`, `account address` (on stderr: the
+  output stays the address alone; `"address_unverified"` in JSON) and the found-key prompt. The node's
   password opens it: asked on the TUI's unlock screen like any account's, and by the commands when
   they sign (the terminal or `--password-file`). Once opened, its public key must be the
   `NodePublic.txt`'s, or it is refused. The TUI's session keeps the opened key in locked memory and
@@ -215,7 +232,9 @@ receives go to that address. Next to its node the wallet therefore uses the node
   checks (refused when the file or its folder can be written by others, a warning when others can
   read it), and offers: **use it for this session**; **use it and remember it** (`node_key` with the
   absolute path written into the active profile of the configuration file in use, or of
-  `config.toml` in the data folder, created if missing: an existing `node_key` line of that
+  `config.toml` in the data folder, created if missing (mode 600); the file, a link's target and
+  their folders must be the user's (or root's) and writable by nobody else, as the key, or nothing
+  is written: an existing `node_key` line of that
   profile's `[nodes.NAME]` table is replaced, otherwise the line goes under the table's header;
   comments and every other line are kept, the new text must parse to the same configuration but
   for that value, written to a temporary file in the same folder, synced, renamed over it with the
