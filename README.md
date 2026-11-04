@@ -159,8 +159,8 @@ and operators usually keep their stake there.
   `node_key = "off"` turns it off.
 - **A key the node encrypted** (`--encryptkey`, or "[1] Encrypt with password" at the node's first
   start) is opened with the node's password: on the interface's unlock screen, or when a command
-  signs. The wallet implements the node's two formats (Argon2id 1 GiB with a random salt per file,
-  or the fixed salt of older nodes; original ChaCha20-Poly1305; docs/spec.md 4.3), checks the key against `NodePublic.txt`, and never
+  signs. The wallet implements the node's format (Argon2id 1 GiB with the node's fixed salt,
+  original ChaCha20-Poly1305; docs/spec.md 4.3), checks the key against `NodePublic.txt`, and never
   writes the opened key anywhere or exports it in clear.
 - **A key in the current folder** is never used by itself. The interface, started in a folder with
   `NodePrivate.txt` and no node's key configured, shows its address and path and offers: use it for

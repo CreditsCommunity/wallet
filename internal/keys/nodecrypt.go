@@ -12,10 +12,8 @@ import (
 )
 
 // A NodePrivate.txt the node encrypted itself (--encryptkey, or "[1] Encrypt with password" at its
-// first start), libsodium 1.0.17 or later. Two formats, told apart by their decoded length:
-//
-// legacy, 88 bytes: older community nodes and the official node (cscrypto's PrivateKey::getEncrypted,
-// cscrypto/src/privatekey.cpp):
+// first start): cscrypto's PrivateKey::getEncrypted (cscrypto/src/privatekey.cpp), libsodium 1.0.17
+// or later:
 //
 //	key  = crypto_pwhash(32 bytes, password, salt "IDI NAHUY BLYAT'" (16 fixed bytes),
 //	                     OPSLIMIT_SENSITIVE = 4, MEMLIMIT_SENSITIVE = 1 GiB, ALG_DEFAULT = Argon2id v1.3,
@@ -23,22 +21,14 @@ import (
 //	file = base58(nonce (8 random bytes) || crypto_aead_chacha20poly1305_encrypt(secret key (64 bytes),
 //	                     no associated data, nonce, key))      = 8 + 64 + 16 = 88 bytes
 //
-// salted, 104 bytes: community nodes with a random salt per file (cs::keyfile::encrypt,
-// client/config/keyfilecrypt.cpp), the same derivation and cipher with the file's own salt:
-//
-//	file = base58(salt (16 random bytes) || nonce (8 random bytes) || ciphertext and tag (64 + 16))
-//
-// The node reads both and never rewrites a legacy file by itself. The wallet only opens them; the
-// tests write them with package keystest.
-//
 // crypto_aead_chacha20poly1305 is the original construction (not the IETF one): a 64-bit nonce and
 // a 64-bit block counter; the Poly1305 key is the first 32 bytes of block 0, the text is encrypted
 // from block 1, and the tag is over ad || le64(len(ad)) || ciphertext || le64(len(ciphertext))
 // without padding. The password is passed as its bytes (std::strlen: up to the first NUL); the
 // node reads only printable ASCII (32-126) from its console.
 //
-// In the legacy format the salt is the same for every node: the derived key depends on the password
-// only, so a weak password is weaker there than in the salted format or the wallet's own key files.
+// The salt is the same for every node: the derived key depends on the password only, so a weak
+// password is weaker here than in the wallet's own key files (random salt per file).
 
 // NodeKDF are the Argon2id parameters of the node's encryption. They are the node's and must not
 // change; tests make them lighter to keep fast.
@@ -50,15 +40,9 @@ var NodeKDF = struct {
 var nodeSalt = []byte{73, 68, 73, 32, 78, 65, 72, 85, 89, 32, 66, 76, 89, 65, 84, 39}
 
 const (
-	nodeSaltSize  = 16
 	nodeNonceSize = 8
-	nodeSealed    = ed25519.PrivateKeySize + poly1305.TagSize
-	// NodeEncryptedSize is the size of a legacy encrypted NodePrivate.txt once decoded from base58
-	// (the fixed salt).
-	NodeEncryptedSize = nodeNonceSize + nodeSealed
-	// NodeSaltedEncryptedSize is the size of an encrypted NodePrivate.txt with its own random salt
-	// once decoded from base58.
-	NodeSaltedEncryptedSize = nodeSaltSize + nodeNonceSize + nodeSealed
+	// NodeEncryptedSize is the size of an encrypted NodePrivate.txt once decoded from base58.
+	NodeEncryptedSize = nodeNonceSize + ed25519.PrivateKeySize + poly1305.TagSize
 )
 
 // ErrNodeKeyMemory: the machine has not the memory the node's Argon2id needs (opening it anyway
@@ -81,12 +65,8 @@ func checkNodeKDFMemory() error {
 // ErrNodeKeyPassword is the only answer to a node-encrypted key that does not open: no detail.
 var ErrNodeKeyPassword = errors.New("wrong password (or the node's key file was changed)")
 
-// nodeFileKey derives the key of a file: salt nil is the legacy fixed salt.
-func nodeFileKey(password, salt []byte) []byte {
-	if salt == nil {
-		salt = nodeSalt
-	}
-	return argon2.IDKey(password, salt, NodeKDF.Time, NodeKDF.MemoryKiB, 1, 32)
+func nodeFileKey(password []byte) []byte {
+	return argon2.IDKey(password, nodeSalt, NodeKDF.Time, NodeKDF.MemoryKiB, 1, 32)
 }
 
 // chachaOriginal returns the cipher of the original construction at block 0: the IETF cipher with
@@ -119,41 +99,34 @@ func nodeTag(polyKey, ciphertext []byte) [poly1305.TagSize]byte {
 }
 
 // DecryptNodeKey opens the decoded content of a node-encrypted NodePrivate.txt with the node's
-// password, as the node does: 88 bytes are the legacy format, 104 the salted one, any other length
-// is refused. Any failure is ErrNodeKeyPassword. The caller zeroes the key after use. It costs what
-// the node's opening costs: 1 GiB of memory and a few seconds; with less memory free it is refused
-// (ErrNodeKeyMemory). golang.org/x/crypto/argon2 does not zero its 1 GiB of working memory: it is
-// left to the garbage collector.
+// password, as the node's PrivateKey::readFromEncrypted does. Any failure is ErrNodeKeyPassword.
+// The caller zeroes the key after use. It costs what the node's opening costs: 1 GiB of memory and
+// a few seconds; with less memory free it is refused (ErrNodeKeyMemory). golang.org/x/crypto/argon2
+// does not zero its 1 GiB of working memory: it is left to the garbage collector.
 func DecryptNodeKey(encrypted, password []byte) (ed25519.PrivateKey, error) {
-	var salt []byte
-	switch len(encrypted) {
-	case NodeEncryptedSize:
-	case NodeSaltedEncryptedSize:
-		salt = encrypted[:nodeSaltSize]
-	default:
+	if len(encrypted) != NodeEncryptedSize {
 		return nil, ErrNodeKeyPassword
 	}
 	if err := checkNodeKDFMemory(); err != nil {
 		return nil, err
 	}
-	fileKey := nodeFileKey(password, salt)
+	fileKey := nodeFileKey(password)
 	defer Zero(fileKey)
-	return decryptNodeKey(encrypted[len(salt):], fileKey)
+	return decryptNodeKey(encrypted, fileKey)
 }
 
-// decryptNodeKey opens nonce || ciphertext || tag (both formats past their salt).
-func decryptNodeKey(sealed, fileKey []byte) (ed25519.PrivateKey, error) {
-	if len(sealed) != nodeNonceSize+nodeSealed {
+func decryptNodeKey(encrypted, fileKey []byte) (ed25519.PrivateKey, error) {
+	if len(encrypted) != NodeEncryptedSize {
 		return nil, ErrNodeKeyPassword
 	}
-	c, polyKey, err := chachaOriginal(fileKey, sealed[:nodeNonceSize])
+	c, polyKey, err := chachaOriginal(fileKey, encrypted[:nodeNonceSize])
 	if err != nil {
 		return nil, ErrNodeKeyPassword
 	}
 	defer Zero(polyKey)
-	ct := sealed[nodeNonceSize : nodeNonceSize+ed25519.PrivateKeySize]
+	ct := encrypted[nodeNonceSize : nodeNonceSize+ed25519.PrivateKeySize]
 	tag := nodeTag(polyKey, ct)
-	if subtle.ConstantTimeCompare(tag[:], sealed[nodeNonceSize+ed25519.PrivateKeySize:]) != 1 {
+	if subtle.ConstantTimeCompare(tag[:], encrypted[nodeNonceSize+ed25519.PrivateKeySize:]) != 1 {
 		return nil, ErrNodeKeyPassword
 	}
 	secret := make([]byte, ed25519.PrivateKeySize)

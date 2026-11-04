@@ -15,34 +15,30 @@ import (
 	"golang.org/x/crypto/poly1305"
 )
 
-const (
-	saltSize  = 16
-	nonceSize = 8
-)
+const nonceSize = 8
 
-// EncryptNodeKey is what the node writes for a new encryption (--encryptkey), decoded: salt (16
-// random bytes) || nonce (8 random bytes) || ciphertext || tag, 104 bytes, the key derived with
-// Argon2id (time, memoryKiB, parallelism 1: the node's are keys.NodeKDF, tests make them lighter).
+// nodeSalt is the salt of the node's derivation (cscrypto's getKeyFromPassword; package keys has
+// the same, and its tests check that the two agree).
+var nodeSalt = []byte{73, 68, 73, 32, 78, 65, 72, 85, 89, 32, 66, 76, 89, 65, 84, 39}
+
+// EncryptNodeKey is what the node's --encryptkey writes, decoded: nonce (8 random bytes) ||
+// ciphertext || tag, 88 bytes, the key derived with Argon2id (time, memoryKiB, parallelism 1: the
+// node's are keys.NodeKDF, tests make them lighter).
 func EncryptNodeKey(key ed25519.PrivateKey, password []byte, time, memoryKiB uint32) ([]byte, error) {
 	if len(key) != ed25519.PrivateKeySize {
 		return nil, errors.New("a secret key is 64 bytes")
 	}
-	head := make([]byte, saltSize+nonceSize)
-	if _, err := rand.Read(head); err != nil {
+	nonce := make([]byte, nonceSize)
+	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	fileKey := argon2.IDKey(password, head[:saltSize], time, memoryKiB, 1, 32)
+	fileKey := argon2.IDKey(password, nodeSalt, time, memoryKiB, 1, 32)
 	defer clear(fileKey)
-	sealed, err := Seal(key, fileKey, head[saltSize:])
-	if err != nil {
-		return nil, err
-	}
-	return append(head[:saltSize], sealed...), nil
+	return Seal(key, fileKey, nonce)
 }
 
 // Seal is the node's crypto_aead_chacha20poly1305_encrypt (the original construction, no
-// associated data) of the key with a derived file key: nonce || ciphertext || tag, the part of
-// both formats after the salt.
+// associated data) of the key with a derived file key: nonce || ciphertext || tag.
 func Seal(key ed25519.PrivateKey, fileKey, nonce []byte) ([]byte, error) {
 	if len(nonce) != nonceSize {
 		return nil, errors.New("the node's nonce is 8 bytes")

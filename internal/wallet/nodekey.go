@@ -33,7 +33,7 @@ const NodeKeyWarning = "The node's key is kept in clear on this server, because 
 	"Operators usually keep their stake there already: keep on it only what the node needs, and savings in a separate account."
 
 // NodeKeyEncryptedWarning is NodeKeyWarning for a key the node encrypted with its password.
-const NodeKeyEncryptedWarning = "The node's key is on this server, encrypted with the node's password (Argon2id; files encrypted by older nodes use a salt every node shares): " +
+const NodeKeyEncryptedWarning = "The node's key is on this server, encrypted with the node's password (Argon2id with a salt every node shares): " +
 	"a strong password matters. Keep on it only what the node needs, and savings in a separate account."
 
 // NodeIdentityNote is said before the node's key is written or replaced.
