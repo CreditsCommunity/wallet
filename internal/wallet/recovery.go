@@ -165,7 +165,7 @@ func CheckRecoveryPath(path, dataDir, accountsDir string, nodeDirs ...string) (s
 			return "", fmt.Errorf("%s cannot be listed (%v): refused, the wallet must see that no key files are there", d, err)
 		}
 		if name != "" {
-			return "", fmt.Errorf("%s holds key files (%s): refused, the words never go next to keys", d, name)
+			return "", fmt.Errorf("%s holds key files (%s): refused, this file never goes next to keys", d, name)
 		}
 		if filepath.Dir(d) == d {
 			break

@@ -184,6 +184,8 @@ func (m *model) updateLock(msg tea.Msg) tea.Cmd {
 			m.screen = newAccountScreen(false)
 		case "i":
 			m.screen = newAccountScreen(true)
+		case "b":
+			m.screen = newBackupScreen()
 		case "g":
 			if m.w.NodeKeyMissing() {
 				m.screen = newNodeKeyScreen(m.w.NodeKey.Dir)
@@ -275,7 +277,7 @@ func (m *model) lockView() string {
 		if m.w.NodeKeyMissing() {
 			b.WriteString(keyHelp("g", "make the node's key from 24 words:") + stWarn.Render(truncate(" the node has none yet in "+echo.Terminal(m.w.NodeKey.Dir), m.width-40)) + "\n")
 		}
-		b.WriteString(keyHelp("Enter", "unlock", "n", "new", "i", "import", "S", "node", "?", "help", "q", "quit") + "\n")
+		b.WriteString(keyHelp("Enter", "unlock", "n", "new", "i", "import", "b", "backup", "S", "node", "?", "help", "q", "quit") + "\n")
 	case lockPassword, lockOpening:
 		what := "Password of " + f.Name
 		if f.NodeKeyEncrypted {

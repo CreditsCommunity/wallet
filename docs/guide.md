@@ -208,6 +208,7 @@ warns you.
 | What | How | Note |
 |---|---|---|
 | The phrase | on paper | restores everything, without the password |
+| The backup file | `backup export ~/wallet.dat` (or `b`, `e`) | every account in one file, encrypted twice; see below |
 | The key file | `account export main --out main.key` | encrypted copy; needs the password |
 | The data folder | copy it | key files (encrypted), configuration, local contract and token lists |
 
@@ -217,6 +218,43 @@ in `accounts/`, readable by you only.
 
 **A forgotten password cannot be recovered**: import the account again from its 24 words, with a
 new password (`account import main2`).
+
+### The backup file (.dat)
+
+One file holds every account of the wallet, ready to be imported on this or another machine:
+
+```sh
+./credits-wallet backup export /media/usb/wallet-2026-11-04.dat
+./credits-wallet backup import /media/usb/wallet-2026-11-04.dat
+```
+
+In the interface press `b` (on the unlock screen or the main screen), then `e` to export or `i` to
+import.
+
+- **What is in it**: each account's key file exactly as stored (still encrypted with **its own
+  password**: the backup never decrypts it), its name and address, and its local token and
+  contract lists. **Not in it**: the node's key (`NodePrivate.txt` belongs to the node's folder:
+  keep its 24 words, or a copy of the file offline) and `config.toml` (settings of this machine).
+- **The backup password.** You choose it at export and type it twice; it encrypts the whole file
+  (Argon2id and XChaCha20-Poly1305, as the key files), so without it the file does not even tell
+  the names or addresses. It cannot be empty; under 12 characters the wallet shows a hint. Use a
+  long one or a few unrelated words.
+- **Where.** A new file (never over an existing one, never through a link, mode 600). As for the
+  recovery file, the wallet refuses its data folder, the node's folder and any folder that holds
+  key files. When it is written the wallet prints the path and the number of accounts, and says:
+  *this file contains your accounts, each still protected by its own password and the whole file by
+  the backup password; keep it off this computer, e.g. on a USB key.*
+- **Import.** The wallet asks the backup password, lists the accounts in the file (names and
+  addresses) and asks `Restore N accounts? [y/N]`. An account whose address is already in the
+  wallet is skipped (its token and contract lists are merged). A name already used by another
+  address needs a new name: the wallet asks one (Enter skips that account), or give
+  `--rename-suffix -old` on the command line (`main` becomes `main-old`). Scripts add `--yes`.
+- **Restored accounts keep their own passwords**, the ones they had when the backup was made: the
+  backup password opens the file, then each account asks its own password as before. Keep both, or
+  the 24 words.
+- A wrong backup password and a damaged file say the same thing: "could not open the backup: wrong
+  backup password, or a damaged file". `--json` prints only names, addresses and counts, never the
+  content.
 
 ### Other imports
 
@@ -608,6 +646,8 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
   node. Never use an account that holds CS on mainnet anywhere else. Declare test nodes as
   `network = "testnet"` (or `private`) in their profile.
 - **Lock the wallet** (`l`) before you leave the terminal, and keep `lock_after_minutes` short.
+- **Keep backups off the machine.** A backup file (`backup export`) is encrypted twice, but it
+  belongs on a USB key or another disk, not next to the wallet.
 - **The node's key is in clear on the server** (the node needs it): keep on it only what the node
   needs, and your savings in a separate account, with its 24 words on paper.
 - **Send a small amount first** to a new recipient, and check that it arrived, before the large

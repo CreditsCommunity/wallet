@@ -84,6 +84,8 @@ with the packages of `testdata/requirements.txt` (pinned with hashes:
 ./credits-wallet contract call main CONTRACT add 4                     # a signed call
 ./credits-wallet contract pay main CONTRACT 3 --data "thanks"          # CS to its payable()
 ./credits-wallet contract list main
+./credits-wallet backup export /media/usb/wallet.dat      # every account in one encrypted file
+./credits-wallet backup import /media/usb/wallet.dat      # asks its password, lists, restores
 ./credits-wallet help
 ```
 
@@ -102,7 +104,8 @@ In the terminal interface: `[s]` send (with an optional Data field), `[d]` deleg
 `w` withdraw the selected one), `[t]` tokens (`s` send the selected token, `a` a token by its
 address), `[h]` history (`t` token transfers, `e` CSV export), `[c]` contracts (`o` open a `.java`,
 `n` new from a template, `a` a contract by address; on a source `e` edits it in your editor, `d`
-deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call), `[S]` node status.
+deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call), `[S]` node status,
+`[b]` backup (also on the unlock screen: `e` export, `i` import).
 
 ### First steps
 
@@ -142,6 +145,16 @@ deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call),
 - `account export NAME` copies the encrypted file; `--format base58` prints the secret key after the
   password; `--format official` writes the official wallets' **unencrypted** keys JSON, with a
   warning.
+- `backup export FILE.dat` (`b` then `e` in the interface) writes **every account** into one file:
+  the key files as stored (each still encrypted with its own password), their names and their
+  local token and contract lists, all sealed under a backup password typed twice (Argon2id with the
+  key files' parameters and its own salt, XChaCha20-Poly1305, the versioned header as associated
+  data). Never the node's key (`NodePrivate.txt` stays in the node's folder) nor `config.toml`. A
+  new file, mode 600, never in the data folder or next to key files: keep it off the computer, on
+  a USB key. `backup import FILE.dat` (`b` then `i`) asks the backup password, lists the accounts
+  and restores them once confirmed: an address already in the wallet is skipped, a name taken by
+  another address gets a new name (asked, or `--rename-suffix S`). Restored accounts keep their
+  own passwords. Format: docs/spec.md 4.5.
 
 ### The node's key
 
@@ -344,7 +357,9 @@ receives the account's public address only; every history output names the sourc
   by the node's own code), the node's encrypted key files (`testdata/node-encrypted-vectors.json`,
   encrypted and opened by the node's code; with `NODE_KEY_CRYPT` set to
   `internal/keys/testdata/node-key-crypt.cpp` built the same way, a round trip both ways), the
-  unlock screen, the session and its locks, the found-key prompt, signing (byte-identical to the node's samples, and for user data, delegations,
+  unlock screen, the session and its locks, the found-key prompt, the backup file (round trip,
+  wrong password, damaged and truncated files, refused places, existing addresses and name
+  clashes, the interface's flow), signing (byte-identical to the node's samples, and for user data, delegations,
   token calls, deploys and contract addresses to `testdata/sign-vectors.txt`, made by
   `testdata/sign-vectors.py` the way the node's `ci/testnet/fund.py`, `samples/python/token_client.py`
   and `samples/clients/python/credits_client.py` build them), key store, amounts, the network-identity
