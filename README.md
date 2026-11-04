@@ -138,7 +138,7 @@ deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call),
 
 Next to its node the wallet is **the node's wallet**: it uses the node's own key pair, in place, as
 the account `node`, listed first, the default, and marked `NODE KEY`. That is always an explicit
-choice: the package's `csnode/wallet.toml` (whose profile says `node_key = "NodePrivate.txt"`),
+choice: the package's `csnode/wallet.toml` (whose profile says `node_key = "NodePrivate.txt"` when the set-up was told to use the node's key),
 `node_key` in a node profile of `config.toml`, `--node-key FILE`, or the node's Docker image
 (`CREDITS_WALLET_NODE_KEY`); never a guess from the current folder, where someone could have
 planted a key pair. The key file and its folder must be yours (or root's) and writable by nobody
@@ -163,8 +163,10 @@ and operators usually keep their stake there.
   delegations it received, its history as a trusted node and its rewards.
 - `account import NAME NodePrivate.txt` still makes an encrypted copy in the key store, but the
   original stays in clear for the node, so the copy protects nothing more.
-- `account node-key` shows the key's file, its address, whether `NodePublic.txt` matches and
-  whether the node is running.
+- `account node-key` shows the key's file, its address, whether `NodePublic.txt` matches, whether
+  the node is running and the `.bak-*` backups (old keys in clear: move them offline, then delete
+  them); `account node-key repair` writes a missing or mismatching `NodePublic.txt` (the node
+  stopped). A key file other users can read is used with a warning: `chmod 600 NodePrivate.txt`.
 
 ### Networks
 

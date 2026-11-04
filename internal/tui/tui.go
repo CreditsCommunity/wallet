@@ -186,7 +186,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.accounts, m.accErr = msg.files, msg.err
 		if !m.nodeWarned && len(m.accounts) > 0 && m.accounts[0].IsNodeKey() {
 			m.nodeWarned = true
-			m.flash = strings.TrimPrefix(m.flash+"; "+wallet.NodeKeyWarning, "; ")
+			warning := wallet.NodeKeyWarning
+			if w := wallet.NodeKeyModeWarning(m.accounts[0].NodeKey); w != "" {
+				warning = w + "; " + warning
+			}
+			m.flash = strings.TrimPrefix(m.flash+"; "+warning, "; ")
 		}
 		if m.sel >= len(m.accounts) {
 			m.sel = max(0, len(m.accounts)-1)

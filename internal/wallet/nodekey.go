@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -96,43 +97,99 @@ func ResolveNodeKey(p config.Profile, configPath, flag, cwd string) (*NodeKey, e
 	return nk, nil
 }
 
-// CheckNodeKeySafe checks the node's key file and its folder before the key is used: each owned by
-// the user the wallet runs as (or root) and writable by nobody else (no group or world write);
-// the key file a regular file, or a link whose target passes the same checks (as does the
-// target's folder). On Windows the ACLs are not checked (the wallet sets none itself).
-func CheckNodeKeySafe(private string) error {
-	paths := []string{filepath.Dir(private)}
-	st, err := os.Lstat(private)
+// ReadNodeKeySafe opens the node's key file and reads it, checking first what it opened: the file
+// and its folder owned by the user the wallet runs as (or root) and writable by nobody else (no
+// group or world write); the file a regular file, or a link whose target and the target's folder
+// pass the same checks. The file is opened first, then checked (fstat) and read through the same
+// descriptor, so a file swapped after the check is not the one read. warning is not empty when
+// other users can read the key (the node writes it 0644): it names the chmod 600 that fixes it.
+// On Windows the ACLs are not checked (the wallet sets none itself). The caller zeroes the key.
+func ReadNodeKeySafe(private string) (key ed25519.PrivateKey, warning string, err error) {
+	folders := []string{filepath.Dir(private)}
+	lst, err := os.Lstat(private)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-	target := private
-	if st.Mode()&os.ModeSymlink != 0 {
+	target := ""
+	if lst.Mode()&os.ModeSymlink != 0 {
 		if target, err = filepath.EvalSymlinks(private); err != nil {
-			return fmt.Errorf("%s is a link that leads nowhere: %w", private, err)
+			return nil, "", fmt.Errorf("%s is a link that leads nowhere: %w", private, err)
 		}
-		paths = append(paths, filepath.Dir(target))
+		folders = append(folders, filepath.Dir(target))
 	}
-	tst, err := os.Stat(target)
-	if err != nil {
-		return err
-	}
-	if !tst.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file: refused", target)
-	}
-	if err := ownedSafe(target, tst, "the node's key file", "chmod 600 "); err != nil {
-		return err
-	}
-	for _, d := range paths {
+	for _, d := range folders {
 		dst, err := os.Stat(d)
 		if err != nil {
-			return err
+			return nil, "", err
 		}
 		if err := ownedSafe(d, dst, "the node's folder", "chmod go-w "); err != nil {
-			return err
+			return nil, "", err
 		}
 	}
-	return nil
+	f, err := os.Open(private)
+	if err != nil {
+		return nil, "", err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, "", err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, "", fmt.Errorf("%s is not a regular file: refused", private)
+	}
+	if target != "" {
+		if tst, err := os.Stat(target); err != nil || !os.SameFile(st, tst) {
+			return nil, "", fmt.Errorf("%s changed while it was checked: refused", private)
+		}
+	} else if !os.SameFile(st, lst) {
+		return nil, "", fmt.Errorf("%s changed while it was checked: refused", private)
+	}
+	if err := ownedSafe(private, st, "the node's key file", "chmod 600 "); err != nil {
+		return nil, "", err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxNodeKeyFile+1))
+	defer keys.Zero(data)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) > maxNodeKeyFile {
+		return nil, "", fmt.Errorf("%s is larger than a node's key file", private)
+	}
+	if key, err = keys.ParseNodePrivate(data); err != nil {
+		return nil, "", fmt.Errorf("%s: %w", private, err)
+	}
+	return key, readableWarning(private, st), nil
+}
+
+const maxNodeKeyFile = 4096
+
+// CheckNodeKeySafe is ReadNodeKeySafe without keeping the key.
+func CheckNodeKeySafe(private string) error {
+	key, _, err := ReadNodeKeySafe(private)
+	keys.Zero(key)
+	return err
+}
+
+// NodeKeyModeWarning is ReadNodeKeySafe's warning for a key file other users can read ("" when
+// they cannot, or on Windows).
+func NodeKeyModeWarning(private string) string {
+	st, err := os.Stat(private)
+	if err != nil {
+		return ""
+	}
+	return readableWarning(private, st)
+}
+
+// NodeKeyBackups lists the backups ReplaceNodeKey and RepairNodePublic left in the node's folder
+// (NAME.bak-DATE): they hold the old key in clear.
+func NodeKeyBackups(dir string) []string {
+	var out []string
+	for _, name := range []string{keys.NodePrivateFile, keys.NodePublicFile} {
+		m, _ := filepath.Glob(filepath.Join(dir, name+".bak-*"))
+		out = append(out, m...)
+	}
+	return out
 }
 
 // NodeAccountName is the name of the node's key account: "node", or "node-key" when the key store
@@ -155,12 +212,9 @@ func (w *Wallet) NodeAccount() (*keys.File, error) {
 	if _, err := os.Lstat(w.NodeKey.Private); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	if err := CheckNodeKeySafe(w.NodeKey.Private); err != nil {
-		return nil, fmt.Errorf("%w; the node's key is not used", err)
-	}
-	key, err := keys.ReadNodeKey(w.NodeKey.Private)
+	key, warning, err := ReadNodeKeySafe(w.NodeKey.Private)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w; the node's key is not used", err)
 	}
 	defer keys.Zero(key)
 	f := &keys.File{Version: keys.FileVersion, Name: w.NodeAccountName(), Public: keys.Address(key.Public().(ed25519.PublicKey)),
@@ -168,8 +222,29 @@ func (w *Wallet) NodeAccount() (*keys.File, error) {
 	if w.NodeKeyNotice != nil && !w.noticed {
 		w.noticed = true
 		w.NodeKeyNotice(NodeKeySource(f, w.NodeKey))
+		if warning != "" {
+			w.NodeKeyNotice("warning: " + warning)
+		}
 	}
 	return f, nil
+}
+
+// OpenKey returns an account's key: the node's key read again with ReadNodeKeySafe (no password),
+// or the key file decrypted with the password. The key must still be the account's. The caller
+// zeroes it.
+func (w *Wallet) OpenKey(f *keys.File, password []byte) (ed25519.PrivateKey, error) {
+	if !f.IsNodeKey() {
+		return f.Decrypt(password)
+	}
+	key, _, err := ReadNodeKeySafe(f.NodeKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w; the node's key is not used", err)
+	}
+	if keys.Address(key.Public().(ed25519.PublicKey)) != f.Public {
+		keys.Zero(key)
+		return nil, fmt.Errorf("%s changed since the wallet read it: refused, look at the node's key", f.NodeKey)
+	}
+	return key, nil
 }
 
 // NodeKeySource says which key the node's key account is and where it comes from, shown the first
@@ -354,6 +429,9 @@ func CheckNodeKeyTarget(dir string, replace bool) (string, error) {
 		case st.Mode()&os.ModeSymlink != 0:
 			return "", fmt.Errorf("%s is a symbolic link: refused, nothing was written", path)
 		case !replace:
+			if half := halfWritten(real); half != "" {
+				return "", fmt.Errorf("%s already exists, but %s: the node would stop at its start and ask. 'account node-key repair' writes NodePublic.txt from NodePrivate.txt (the node stopped); nothing was written", path, half)
+			}
 			return "", fmt.Errorf("%s already exists: the node has a key; the wallet never overwrites it (to replace the node's identity: account export NAME --format node --out %s --replace)", path, real)
 		case !st.Mode().IsRegular():
 			return "", fmt.Errorf("%s is not a regular file: refused", path)
@@ -365,6 +443,72 @@ func CheckNodeKeyTarget(dir string, replace bool) (string, error) {
 		}
 	}
 	return real, nil
+}
+
+// halfWritten says what is wrong with NodePublic.txt next to a readable NodePrivate.txt ("missing",
+// "does not match"), "" when nothing is (or NodePrivate.txt cannot be read).
+func halfWritten(real string) string {
+	key, err := keys.ReadNodeKey(filepath.Join(real, keys.NodePrivateFile))
+	if err != nil {
+		return ""
+	}
+	defer keys.Zero(key)
+	pubPath := filepath.Join(real, keys.NodePublicFile)
+	if _, err := os.Lstat(pubPath); errors.Is(err, os.ErrNotExist) {
+		return keys.NodePublicFile + " is missing (an interrupted write?)"
+	}
+	if keys.CheckNodePublic(pubPath, key.Public().(ed25519.PublicKey)) != nil {
+		return keys.NodePublicFile + " does not match it"
+	}
+	return ""
+}
+
+// RepairNodePublic writes a missing or mismatching NodePublic.txt from the node's readable
+// NodePrivate.txt (ReadNodeKeySafe), the node stopped: what an interrupted write can leave, and
+// what makes the node stop at its start and ask on its console. A mismatching file is kept first as
+// NodePublic.txt.bak-DATE. It returns the backup ("" when none).
+func RepairNodePublic(dir string, now time.Time) (backup string, err error) {
+	real, err := nodeFolder(dir)
+	if err != nil {
+		return "", err
+	}
+	if why := NodeRunning(real); why != "" {
+		return "", fmt.Errorf("the node is running (%s): stop it first; nothing was written", why)
+	}
+	key, _, err := ReadNodeKeySafe(filepath.Join(real, keys.NodePrivateFile))
+	if err != nil {
+		return "", err
+	}
+	defer keys.Zero(key)
+	pub := key.Public().(ed25519.PublicKey)
+	pubPath := filepath.Join(real, keys.NodePublicFile)
+	st, err := os.Lstat(pubPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return "", err
+	case st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular():
+		return "", fmt.Errorf("%s is a link or not a regular file: refused, nothing was written", pubPath)
+	case keys.CheckNodePublic(pubPath, pub) == nil:
+		return "", fmt.Errorf("%s already matches the key: nothing to repair", pubPath)
+	default:
+		old, err := os.ReadFile(pubPath)
+		if err != nil {
+			return "", err
+		}
+		backup = pubPath + ".bak-" + now.Format("20060102-150405")
+		if err := WriteSecretFile(backup, old); err != nil {
+			return "", fmt.Errorf("the backup of %s: %w; nothing was written", pubPath, err)
+		}
+		if err := os.Remove(pubPath); err != nil {
+			return backup, err
+		}
+	}
+	_, pubText := keys.NodeKeyFiles(key)
+	if err := WriteSecretFile(pubPath, pubText); err != nil {
+		return backup, err
+	}
+	return backup, keys.CheckNodePublic(pubPath, pub)
 }
 
 // WriteNodeKey writes the node's key files in the node folder dir, as the node writes them (see

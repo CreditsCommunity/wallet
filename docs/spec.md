@@ -143,8 +143,9 @@ receives go to that address. Next to its node the wallet therefore uses the node
 
 - **The wallet of a node**, always by an explicit choice: `--node-key FILE` (a key file or a
   node's folder, relative to the current folder), else the node profile's `node_key` (relative to
-  the configuration file's folder: the package's `csnode/wallet.toml` has `node_key =
-  "NodePrivate.txt"`), else `$CREDITS_WALLET_NODE_KEY` (an absolute path; the node's Docker image
+  the configuration file's folder: the set-up writes `node_key = "NodePrivate.txt"` in
+  `csnode/wallet.toml` when told to use the node's key, `"off"` otherwise, and keeps a value set by
+  hand), else `$CREDITS_WALLET_NODE_KEY` (an absolute path; the node's Docker image
   sets it to `/data/keys/NodePrivate.txt`). `node_key = "off"` turns it off. It is **never guessed
   from the current folder**: a folder someone else controls (an archive, a shared folder, `/tmp`)
   could hold a planted key pair, which would become the default account, so that the address the
@@ -154,6 +155,11 @@ receives go to that address. Next to its node the wallet therefore uses the node
   owned by the user the wallet runs as (or root) and writable by nobody else (no group or world
   write: `chmod 600`, `chmod go-w`); the key file a regular file, or a link whose target and the
   target's folder pass the same checks. Otherwise the key is refused, not used, with the reason.
+  The key file is opened first, then checked (`fstat`) and read through the same descriptor. A key
+  file other users can read (the node writes it 0644) is used with a warning naming `chmod 600`.
+  `account node-key` says on Windows that the checks are not done, and lists the
+  `NodePrivate.txt.bak-*` / `NodePublic.txt.bak-*` backups (old keys in clear: to move offline and
+  delete). Signing refuses a key whose public half is not the plan's sender.
   The first time the account is read in a session the wallet says it with its address, its file
   and why it is used ("node key account node: ADDRESS, read from FILE (node_key in wallet.toml)",
   on stderr; the TUI shows the file under the address), so a substituted key is visible.
@@ -182,6 +188,10 @@ receives go to that address. Next to its node the wallet therefore uses the node
   back as the node reads them; on any failure nothing is left (the words file and the recovery file
   are removed too). The recovery file and `--words-file` are refused in the node's folder (by name
   and identity, subfolders too), as next to any key file.
+- **A half-written key** (`NodePrivate.txt` without a matching `NodePublic.txt`: the node would stop
+  at its start and ask on its console, and a node without one hangs): `node-key new` says so and
+  points to `account node-key repair`, which writes `NodePublic.txt` from the readable
+  `NodePrivate.txt`, the node stopped (a mismatching file kept as `NodePublic.txt.bak-DATE`).
 - **Is the node running?** The community node holds an exclusive lock on `db/.lock` (`flock`;
   `LockFileEx` on Windows) for its whole run, from before it reads its key: the wallet tries the
   same lock (read-only, released at once). It also connects to `127.0.0.1` at the `[api] port` of
@@ -194,7 +204,8 @@ receives go to that address. Next to its node the wallet therefore uses the node
   identity: the node must be stopped, the old files are first copied to
   `NAME.bak-YYYYMMDD-HHMMSS` (mode 0600, new files), then removed, then the new ones written; if
   that fails the old ones are put back. Both ask to type `export` (`replace` when a key is
-  replaced) on a terminal, or `--yes`. The wallet says that the node's identity follows its key:
+  replaced) on a terminal, or `--yes`. The `--replace` warning says to stop the node first: the
+  detection of a running node is best effort. The wallet says that the node's identity follows its key:
   its address, the delegations it received, its history as a trusted node and its rewards; a node
   started with another key is another node.
 - **Warnings**, short, once per use (the TUI's start, `account list`, `account node-key`, the

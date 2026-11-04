@@ -235,8 +235,12 @@ avvii: una cartella controllata da altri potrebbe contenere una coppia di chiavi
 e finiresti per dare in giro il suo indirizzo. Prima di usare la chiave controlla che
 `NodePrivate.txt` e la sua cartella siano tuoi (o di root) e che nessun altro possa scriverci (si
 corregge con `chmod 600 NodePrivate.txt` e `chmod go-w` sulla cartella; la configurazione guidata
-lo fa da sé), e la prima volta che la legge mostra l'indirizzo dell'account e il file da cui
-viene: controlla che siano quelli del tuo nodo.
+fa entrambe le cose quando scegli la chiave del nodo), e la prima volta che la legge mostra
+l'indirizzo dell'account e il file da cui viene: controlla che siano quelli del tuo nodo. Un file
+di chiave che altri utenti possono **leggere** viene usato, con un avviso: il nodo scrive la sua
+chiave leggibile da tutti (modo 644), quindi esegui il `chmod 600` indicato dall'avviso. Su
+Windows questi controlli non vengono fatti (`account node-key` lo dice): controlla tu Proprietà >
+Sicurezza del file.
 
 L'account `node` è il primo della lista ed è selezionato all'avvio dell'interfaccia; è segnato
 **NODE KEY** nella lista, nella schermata dell'account, in `account list` e in ogni riepilogo. Il
@@ -276,7 +280,17 @@ chiave che il nodo ha già. Per **sostituire l'identità del nodo**, ferma il no
 `NodePublic.txt.bak-DATA` (modo 600) e ti chiede di scrivere `replace`. **L'identità del nodo
 segue la sua chiave**: il suo indirizzo, le deleghe ricevute, la sua storia di nodo fidato e le
 sue ricompense appartengono alla chiave; un nodo avviato con un'altra chiave è un altro nodo.
-Conserva la copia finché non sei sicuro.
+**Ferma prima il nodo**: il wallet cerca un nodo in esecuzione (il suo `db/.lock`, la sua porta
+API, su Linux il suo processo), ma solo come protezione; un nodo avviato con altre impostazioni o
+da un altro utente non viene visto, e un nodo che resta acceso tiene la vecchia chiave fino al
+prossimo avvio. Le copie contengono la vecchia chiave in chiaro: quando sei sicuro, copiale offline
+(carta, una chiavetta USB scollegata) e cancellale dal server. `account node-key` le elenca.
+
+**Una chiave scritta a metà.** Se `NodePrivate.txt` c'è ma `NodePublic.txt` manca o non
+corrisponde (un crash durante la scrittura, un file copiato a mano), il nodo si ferma all'avvio e
+chiede sulla sua console: un nodo senza console resta bloccato. Con il nodo fermo,
+`./credits-wallet --config wallet.toml account node-key repair` scrive `NodePublic.txt` da
+`NodePrivate.txt` (un file che non corrispondeva viene conservato come `NodePublic.txt.bak-DATA`).
 
 ---
 
@@ -333,8 +347,10 @@ Scegli un profilo con `--profile test` su qualsiasi comando. `--node HOST:PORT` 
 nodo, che conta sempre come **mainnet**.
 
 La configurazione del nodo (`setup.sh` / `setup.ps1`) scrive `wallet.toml` nella cartella `csnode`
-con un profilo per il nodo che ha configurato (la sua porta API, la sua porta diag, mainnet, e
-`node_key = "NodePrivate.txt"`: la chiave del nodo è l'account `node`), e lo copia nella cartella
+con un profilo per il nodo che ha configurato (la sua porta API, la sua porta diag, mainnet e,
+quando scegli la chiave del nodo, `node_key = "NodePrivate.txt"`: la chiave del nodo è l'account
+`node`; altrimenti `node_key = "off"`, e un valore impostato a mano resta alle esecuzioni
+successive), e lo copia nella cartella
 dei dati come `config.toml` se non ce n'è ancora uno (con il percorso completo di
 `NodePrivate.txt`). Un `config.toml`
 esistente non viene mai modificato: `credits-wallet --config wallet.toml` usa invece il file della

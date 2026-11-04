@@ -1,6 +1,7 @@
 package wallet
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -516,11 +517,16 @@ func (w *Wallet) sign(p *SendPlan, password []byte) (*api.Transaction, error) {
 	if err != nil {
 		return nil, err
 	}
-	key, err := f.Decrypt(password)
+	key, err := w.OpenKey(f, password)
 	if err != nil {
 		return nil, err
 	}
 	defer keys.Zero(key)
+	// the key that signs must be the one the plan was made for (a key file or a node's key
+	// replaced in between is refused)
+	if !bytes.Equal(key[32:], p.From) {
+		return nil, fmt.Errorf("the key of %s is no longer the one the transaction was prepared for: refused, nothing was sent", p.Account)
+	}
 	switch p.Kind {
 	case KindDeploy:
 		if p.Contract == nil || p.Contract.Deploy == nil {

@@ -264,4 +264,21 @@ func TestExportNodeFormat(t *testing.T) {
 	if st, _ := os.Stat(backups[0]); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("backup mode %v", st.Mode().Perm())
 	}
+	if !strings.Contains(errOut, "STOP THE NODE FIRST") || !strings.Contains(errOut, "best effort") {
+		t.Errorf("no stop-the-node warning:\n%s", errOut)
+	}
+	// account node-key lists the backups and says to move them offline
+	out, errOut, code = runWallet2(t, "account", "node-key", "--node-key", dir)
+	if code != 0 || strings.Count(out, "backup      : ") != 2 || !strings.Contains(errOut, "move them offline") {
+		t.Fatalf("status: %d\n%s\n%s", code, out, errOut)
+	}
+	// a half-written key: node-key new points to the repair, which writes NodePublic.txt
+	os.Remove(filepath.Join(dir, "NodePublic.txt"))
+	if _, errOut, code := runWallet2(t, "account", "node-key", "new", "--out", dir, "--show-words"); code == 0 || !strings.Contains(errOut, "node-key repair") {
+		t.Fatalf("half-written: %d %s", code, errOut)
+	}
+	if out, code := runWallet(t, "account", "node-key", "repair", "--out", dir); code != 0 || !strings.Contains(out, "NodePublic.txt written") {
+		t.Fatalf("repair: %d %s", code, out)
+	}
+	checkNodeFiles(t, dir, strings.Fields(strings.Repeat("abandon ", 23)+"craft"))
 }

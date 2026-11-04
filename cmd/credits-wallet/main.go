@@ -62,6 +62,8 @@ usage: credits-wallet [global flags] [command] [arguments]
   account node-key                      the node's key account (a node's wallet: started with
                                         the node's wallet.toml, node_key in the profile, or
                                         --node-key): its file, address, the node running
+  account node-key repair [--out FOLDER] writes a missing or mismatching NodePublic.txt from the
+                                        node's NodePrivate.txt (the node stopped)
   account node-key new [--out FOLDER] [--words-file FILE | --show-words]
                                         the node has no key yet: make it from a new 24-word
                                         phrase (shown and checked as for account new) and write

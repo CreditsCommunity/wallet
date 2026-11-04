@@ -59,3 +59,17 @@ func ownedSafe(path string, st os.FileInfo, what, fix string) error {
 	}
 	return nil
 }
+
+// readableWarning is a warning for a node's key file that other users can read, with its fix.
+func readableWarning(path string, st os.FileInfo) string {
+	if st.Mode().Perm()&0o044 == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s can be read by other users of this machine (mode %v): chmod 600 %s", path, st.Mode().Perm(), path)
+}
+
+// permissionsChecked: the owner and mode checks are done on this system.
+const permissionsChecked = true
+
+// PermissionsChecked tells whether the owner and permission checks of the node's key are done here.
+func PermissionsChecked() bool { return permissionsChecked }

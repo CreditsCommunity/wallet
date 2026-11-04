@@ -72,10 +72,47 @@ func (a *app) nodeKeyStatus() error {
 	} else {
 		fmt.Fprintf(a.out, "node        : not seen running\n")
 	}
+	backups := wallet.NodeKeyBackups(nk.Dir)
+	for _, b := range backups {
+		fmt.Fprintf(a.out, "backup      : %s\n", b)
+	}
+	if len(backups) > 0 {
+		fmt.Fprintln(os.Stderr, "The backups hold old keys in clear: move them offline (paper, an offline USB key), then delete them from this machine.")
+	}
 	if f != nil {
+		if w := wallet.NodeKeyModeWarning(nk.Private); w != "" {
+			fmt.Fprintln(os.Stderr, "warning:", w)
+		}
 		fmt.Fprintln(os.Stderr, wallet.NodeKeyWarning)
 	}
+	if !wallet.PermissionsChecked() {
+		fmt.Fprintln(os.Stderr, "On Windows the wallet does not check the owner and permissions of the node's key and folder: check them yourself (Properties > Security).")
+	}
 	return ferr
+}
+
+// nodeKeyRepair writes a missing or mismatching NodePublic.txt from the node's NodePrivate.txt, the
+// node stopped (what an interrupted write leaves: the node would stop at its start and ask).
+func (a *app) nodeKeyRepair(out string) error {
+	dir := out
+	if dir == "" {
+		if a.w.NodeKey == nil {
+			return errors.New(notNodeWallet + "; or give the node's folder with --out")
+		}
+		dir = a.w.NodeKey.Dir
+	}
+	backup, err := wallet.RepairNodePublic(dir, time.Now())
+	if err != nil {
+		return err
+	}
+	if a.json {
+		return a.printJSON(map[string]any{"folder": dir, "public_file": filepath.Join(dir, keys.NodePublicFile), "backup": backup})
+	}
+	fmt.Fprintf(a.out, "%s written from %s\n", filepath.Join(dir, keys.NodePublicFile), keys.NodePrivateFile)
+	if backup != "" {
+		fmt.Fprintf(a.out, "backup      : %s (the file that did not match)\n", backup)
+	}
+	return nil
 }
 
 // nodeKeyNew makes the node's key from a new 24-word phrase and writes it in the node's folder (the
@@ -172,6 +209,11 @@ func (a *app) exportNodeFormat(name, out string, replace, yes bool) error {
 	}
 	fmt.Fprintf(os.Stderr, "This writes the key of %s (%s) in the node's format in %s.\n", f.Name, f.Public, real)
 	fmt.Fprintln(os.Stderr, wallet.NodeIdentityNote)
+	if replace {
+		fmt.Fprintln(os.Stderr, "STOP THE NODE FIRST. The wallet looks for a running node (its db/.lock, its API port, on Linux its")
+		fmt.Fprintln(os.Stderr, "process), but that is best effort: a node started with another --db-path or API port, or as another")
+		fmt.Fprintln(os.Stderr, "user, is not seen. A node that keeps running keeps the old key until its next start.")
+	}
 	if replace && current != "" {
 		fmt.Fprintf(os.Stderr, "WARNING: this REPLACES the node's key. The node's current identity (%s) stops being this node's:\n", current)
 		fmt.Fprintln(os.Stderr, "delegations to it stay with that address, and the node starts as a new node. The old files are kept as")

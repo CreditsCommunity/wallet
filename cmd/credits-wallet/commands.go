@@ -142,6 +142,8 @@ func (a *app) cmdAccount(ctx context.Context, args []string) error {
 		return a.nodeKeyStatus()
 	case sub == "node-key" && len(rest) == 1 && rest[0] == "new":
 		return a.nodeKeyNew(*outFile, *wordsFile, *showWords)
+	case sub == "node-key" && len(rest) == 1 && rest[0] == "repair":
+		return a.nodeKeyRepair(*outFile)
 	case sub == "new" && len(rest) == 1:
 		return a.accountNew(rest[0], *wordsFile, *showWords)
 	case sub == "import" && (len(rest) == 1 || len(rest) == 2):
@@ -528,7 +530,7 @@ func (a *app) accountExport(name, format, outFile string, yes bool) error {
 				return err
 			}
 		}
-		key, err := f.Decrypt(pw)
+		key, err := a.w.OpenKey(f, pw)
 		keys.Zero(pw)
 		if err != nil {
 			return err

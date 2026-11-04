@@ -225,8 +225,11 @@ wallet** and uses that key directly, as the account `node`:
 run it in: a folder someone else controls could hold a planted key pair, whose address you would
 then hand out. Before using the key it checks that `NodePrivate.txt` and its folder are yours (or
 root's) and that nobody else can write to them (fix with `chmod 600 NodePrivate.txt` and `chmod
-go-w` on the folder; the set-up does it), and the first time it reads the key it says the
-account's address and the file it comes from: check that they are your node's.
+go-w` on the folder; the set-up does both when you choose the node's key), and the first time it
+reads the key it says the account's address and the file it comes from: check that they are your
+node's. A key file other users can **read** is used, with a warning: the node writes its own key
+readable by everyone (mode 644), so run the `chmod 600` the warning shows. On Windows these checks
+are not done (`account node-key` says so): check the file's Properties > Security yourself.
 
 The account `node` is listed first and selected when the interface starts; it is marked **NODE
 KEY** in the list, on the account's screen, in `account list` and in every review. The wallet reads
@@ -265,7 +268,17 @@ account is asked; you type `export` to confirm). It never writes over a key the 
 as `NodePrivate.txt.bak-DATE` and `NodePublic.txt.bak-DATE` (mode 600) and asks you to type
 `replace`. **The node's identity follows its key**: its address, the delegations it received, its
 history as a trusted node and its rewards all belong to the key; a node started with another key is
-another node. Keep the backup until you are sure.
+another node. **Stop the node first**: the wallet looks for a running node (its `db/.lock`, its API
+port, on Linux its process), but only as a safeguard; a node started with other settings or as
+another user is not seen, and a node that keeps running keeps the old key until its next start.
+The backups hold the old key in clear: once you are sure, copy them offline (paper, an offline USB
+key) and delete them from the server. `account node-key` lists them.
+
+**A half-written key.** If `NodePrivate.txt` is there but `NodePublic.txt` is missing or does not
+match it (a crash during a write, a file copied by hand), the node stops at its start and asks on
+its console: a node without a console hangs. With the node stopped,
+`./credits-wallet --config wallet.toml account node-key repair` writes `NodePublic.txt` from
+`NodePrivate.txt` (a file that did not match is kept as `NodePublic.txt.bak-DATE`).
 
 ---
 
@@ -323,8 +336,9 @@ Choose a profile with `--profile test` on any command. `--node HOST:PORT` talks 
 which then always counts as **mainnet**.
 
 The node's set-up (`setup.sh` / `setup.ps1`) writes `wallet.toml` in the `csnode` folder with a
-profile for the node it configured (its API port, its diag port, mainnet, and `node_key =
-"NodePrivate.txt"`: the node's key is the account `node`), and copies it to the data folder as
+profile for the node it configured (its API port, its diag port, mainnet, and, when you choose the
+node's key, `node_key = "NodePrivate.txt"`: the node's key is the account `node`; otherwise
+`node_key = "off"`, and a value you set by hand is kept on later runs), and copies it to the data folder as
 `config.toml` when there is none yet (with the full path of `NodePrivate.txt`). An existing
 `config.toml` is never changed: `credits-wallet --config wallet.toml` uses the set-up's file
 instead.

@@ -1,6 +1,7 @@
 package keys
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -70,8 +71,13 @@ func readSmall(path string) ([]byte, error) {
 // ParseNodePrivate reads the content of a NodePrivate.txt as the node does. The caller zeroes the
 // key after use.
 func ParseNodePrivate(data []byte) (ed25519.PrivateKey, error) {
-	// the node's DecodeBase58 skips the spaces around the text (a "\r" of a Windows editor too)
-	secret, err := base58.Decode(strings.TrimSpace(firstLine(data)))
+	// the node's DecodeBase58 skips the spaces around the text (a "\r" of a Windows editor too);
+	// only the trimmed line is copied into a string (base58.Decode takes one)
+	line := data
+	if i := bytes.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	secret, err := base58.Decode(string(bytes.TrimSpace(line)))
 	if err != nil {
 		return nil, errors.New("not a node's key file: the first line is not base58 text")
 	}

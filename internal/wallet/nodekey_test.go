@@ -468,3 +468,86 @@ func TestAPIPort(t *testing.T) {
 		}
 	}
 }
+
+// A half-written key (NodePrivate.txt without a matching NodePublic.txt): node-key new points to
+// the repair, not to --replace; RepairNodePublic writes the public file (the node stopped), a
+// mismatching one kept as a backup.
+func TestRepairNodePublic(t *testing.T) {
+	dir := nodeDir(t)
+	os.WriteFile(filepath.Join(dir, "NodePrivate.txt"), []byte(nkSecret), 0o600)
+	if _, err := CheckNodeKeyTarget(dir, false); err == nil || !strings.Contains(err.Error(), "NodePublic.txt is missing") ||
+		!strings.Contains(err.Error(), "node-key repair") || strings.Contains(err.Error(), "--replace") {
+		t.Fatalf("half-written: %v", err)
+	}
+	if _, err := RepairNodePublic(dir, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "NodePublic.txt")); string(got) != nkAddress {
+		t.Fatalf("%q", got)
+	}
+	if _, err := RepairNodePublic(dir, time.Now()); err == nil || !strings.Contains(err.Error(), "nothing to repair") {
+		t.Fatalf("again: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "NodePublic.txt"), []byte("wrong"), 0o644)
+	if _, err := CheckNodeKeyTarget(dir, false); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("mismatch: %v", err)
+	}
+	backup, err := RepairNodePublic(dir, time.Date(2026, 11, 4, 9, 0, 0, 0, time.Local))
+	if err != nil || !strings.HasSuffix(backup, "NodePublic.txt.bak-20261104-090000") {
+		t.Fatalf("%q %v", backup, err)
+	}
+	if got, _ := os.ReadFile(backup); string(got) != "wrong" {
+		t.Fatalf("backup %q", got)
+	}
+	if b := NodeKeyBackups(dir); len(b) != 1 || b[0] != backup {
+		t.Fatalf("backups %v", b)
+	}
+	// the node running: refused
+	os.Remove(filepath.Join(dir, "NodePublic.txt"))
+	os.Mkdir(filepath.Join(dir, "db"), 0o755)
+	unlock := holdLock(t, filepath.Join(dir, "db", ".lock"))
+	defer unlock()
+	if _, err := RepairNodePublic(dir, time.Now()); err == nil || !strings.Contains(err.Error(), "the node is running") {
+		t.Fatalf("running: %v", err)
+	}
+}
+
+// A key file other users can read is used, with a warning naming chmod 600.
+func TestNodeKeyReadableWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ACLs are not checked on Windows")
+	}
+	dir := nodeDir(t)
+	key := filepath.Join(dir, "NodePrivate.txt")
+	os.WriteFile(key, []byte(nkSecret), 0o644)
+	os.Chmod(key, 0o644)
+	k, warning, err := ReadNodeKeySafe(key)
+	if err != nil || k == nil || !strings.Contains(warning, "chmod 600 "+key) {
+		t.Fatalf("%q %v", warning, err)
+	}
+	w := New(config.Default(), config.Profile{Address: config.DefaultAddress}, t.TempDir())
+	w.NodeKey = NodeKeyIn(dir, "test")
+	var said []string
+	w.NodeKeyNotice = func(s string) { said = append(said, s) }
+	w.Accounts()
+	if len(said) != 2 || !strings.HasPrefix(said[1], "warning: ") {
+		t.Fatalf("%q", said)
+	}
+	os.Chmod(key, 0o600)
+	if _, warning, _ := ReadNodeKeySafe(key); warning != "" || NodeKeyModeWarning(key) != "" {
+		t.Fatalf("0600 warned: %q", warning)
+	}
+}
+
+// The key that signs must be the one the plan was made for.
+func TestSignRefusesAnotherKey(t *testing.T) {
+	dir := nodeDir(t)
+	os.WriteFile(filepath.Join(dir, "NodePrivate.txt"), []byte(nkSecret), 0o600)
+	w := New(config.Default(), config.Profile{Address: config.DefaultAddress}, t.TempDir())
+	w.NodeKey = NodeKeyIn(dir, "test")
+	other := newKey(t)
+	p := &SendPlan{Kind: KindTransfer, Account: "node", NodeKey: true, From: other.Public().(ed25519.PublicKey), To: other.Public().(ed25519.PublicKey)}
+	if _, err := w.sign(p, nil); err == nil || !strings.Contains(err.Error(), "no longer the one") {
+		t.Fatalf("%v", err)
+	}
+}
