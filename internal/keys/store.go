@@ -63,6 +63,9 @@ type File struct {
 	// place (the wallet of a node): not in the store, not encrypted, no password. "" for an
 	// account of the store.
 	NodeKey string `json:"-"`
+	// NodeKeyEncrypted: the node's key file is encrypted by the node (--encryptkey): its password
+	// opens it, and Public comes from the NodePublic.txt next to it until then.
+	NodeKeyEncrypted bool `json:"-"`
 }
 
 // IsNodeKey tells whether the account is the node's own key, read from the node's folder.
@@ -144,11 +147,20 @@ func Encrypt(name string, key ed25519.PrivateKey, password []byte, params KDFPar
 }
 
 // Decrypt opens a key file with its password and checks the key against the recorded public key.
-// The node's key (IsNodeKey) is read from the node's folder instead, where it is in clear: no
-// password. The caller zeroes the returned key after use (keys.Zero).
+// The node's key (IsNodeKey) is read from the node's folder instead, where it is in clear (no
+// password), or encrypted by the node (the node's password). The caller zeroes the returned key
+// after use (keys.Zero).
 func (f *File) Decrypt(password []byte) (ed25519.PrivateKey, error) {
 	if f.IsNodeKey() {
-		key, err := ReadNodeKey(f.NodeKey)
+		data, err := readSmall(f.NodeKey)
+		if err != nil {
+			return nil, err
+		}
+		if !f.NodeKeyEncrypted {
+			password = nil
+		}
+		key, err := OpenNodePrivate(data, password)
+		Zero(data)
 		if err != nil {
 			return nil, err
 		}

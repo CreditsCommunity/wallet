@@ -122,6 +122,7 @@ func TestCopyOwnAddress(t *testing.T) {
 	m := testModel(t)
 	f := &keys.File{Name: "main", Public: pasteAddr}
 	m.Update(accountsMsg{files: []*keys.File{f}})
+	m.unlocked = &wallet.Unlocked{Account: f}
 	var buf strings.Builder
 	copyTo = &buf
 	defer func() { copyTo = os.Stderr }()

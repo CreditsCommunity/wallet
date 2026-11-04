@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -98,6 +99,9 @@ type Config struct {
 	Nodes map[string]*Profile `toml:"nodes"`
 	// HistoryPage is the number of transactions per history page.
 	HistoryPage int `toml:"history_page"`
+	// LockAfterMinutes locks the terminal interface after that many minutes without a key press
+	// (nil: DefaultLockAfterMinutes; 0: never).
+	LockAfterMinutes *int `toml:"lock_after_minutes"`
 
 	Path string `toml:"-"` // where it was read from ("" when the defaults are used)
 }
@@ -108,6 +112,9 @@ const Example = `# credits-wallet configuration
 node = "local"
 # transactions per history page
 history_page = 20
+# the terminal interface locks after this many minutes without a key press (default 10); 0 never
+# locks: then whoever reaches this terminal can sign with the unlocked account
+lock_after_minutes = 10
 
 # a node profile: the API address (HOST:PORT) and its network.
 # network = "mainnet" (the default: full confirmation before sending), "testnet" or "private"
@@ -133,6 +140,20 @@ network = "mainnet"
 #                                        # must then report it, or nothing is sent)
 # require_network_uuid = true            # optional: send only when the node confirms its network
 `
+
+// DefaultLockAfterMinutes is the inactivity after which the terminal interface locks.
+const DefaultLockAfterMinutes = 10
+
+// maxLockAfterMinutes bounds lock_after_minutes (a day).
+const maxLockAfterMinutes = 24 * 60
+
+// LockAfter is the inactivity after which the terminal interface locks (0: never).
+func (c *Config) LockAfter() time.Duration {
+	if c.LockAfterMinutes == nil {
+		return DefaultLockAfterMinutes * time.Minute
+	}
+	return time.Duration(*c.LockAfterMinutes) * time.Minute
+}
 
 // Default is the configuration without a file: the local node, mainnet.
 func Default() *Config {
@@ -192,6 +213,9 @@ func Parse(text, path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: unknown settings: %s", path, strings.Join(keys, ", "))
 	}
 	c.Path = path
+	if c.LockAfterMinutes != nil && (*c.LockAfterMinutes < 0 || *c.LockAfterMinutes > maxLockAfterMinutes) {
+		return nil, fmt.Errorf("%s: lock_after_minutes = %d: expected 0 (never) to %d", path, *c.LockAfterMinutes, maxLockAfterMinutes)
+	}
 	if c.HistoryPage <= 0 {
 		c.HistoryPage = 20
 	}

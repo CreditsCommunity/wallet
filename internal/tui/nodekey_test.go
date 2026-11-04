@@ -33,7 +33,27 @@ func nodeWalletModel(t *testing.T, withKey bool) (*model, string) {
 	m := newModel(w)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.Update(m.loadAccounts()())
+	if withKey {
+		unlockSelected(t, m, "")
+	}
 	return m, dir
+}
+
+// unlockSelected unlocks the account selected on the unlock screen with pw ("": none asked).
+func unlockSelected(t *testing.T, m *model, pw string) {
+	t.Helper()
+	cmd := press(m, tea.KeyEnter)
+	if pw != "" {
+		typeText(m, pw)
+		cmd = press(m, tea.KeyEnter)
+	}
+	if cmd == nil {
+		t.Fatalf("nothing to unlock: %q", m.lock.note)
+	}
+	m.Update(cmd())
+	if m.unlocked == nil {
+		t.Fatalf("not unlocked: %q", m.lock.note)
+	}
 }
 
 func fits80x24(t *testing.T, name, view string) {
@@ -101,7 +121,7 @@ func TestTUINodeKeyGenerate(t *testing.T) {
 	if m.current() != nil {
 		t.Fatal("an account without a key")
 	}
-	if v := strings.Join(strings.Fields(strings.ReplaceAll(m.View(), "│", " ")), " "); !strings.Contains(v, "has no key yet") || !strings.Contains(v, "[g] make the node's key") {
+	if v := strings.Join(strings.Fields(strings.ReplaceAll(m.View(), "│", " ")), " "); !strings.Contains(v, "has none yet") || !strings.Contains(v, "[g] make the node's key") {
 		t.Fatalf("main:\n%s", v)
 	}
 	typeText(m, "g")
@@ -162,7 +182,14 @@ func TestTUINodeKeyGenerate(t *testing.T) {
 	}
 	press(m, tea.KeyEnter)
 	m.Update(m.loadAccounts()())
-	if f := m.current(); f == nil || !f.IsNodeKey() || f.Public != string(pub) {
+	if m.unlocked != nil || m.screen != nil {
+		t.Fatal("not on the unlock screen after the key was made")
+	}
+	if f := m.selected(); f == nil || !f.IsNodeKey() || f.Public != string(pub) {
 		t.Fatalf("the new key is not the account: %+v", f)
+	}
+	unlockSelected(t, m, "")
+	if f := m.current(); f == nil || f.Public != string(pub) {
+		t.Fatalf("unlocked: %+v", f)
 	}
 }

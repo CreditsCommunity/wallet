@@ -91,6 +91,31 @@ I binari sono riproducibili: lo stesso tag compilato di nuovo dà gli stessi fil
 
    La riga in alto mostra la rete (MAINNET in rosso) e il nodo. `?` mostra i tasti, `q` esce.
    Ogni funzione esiste anche come comando (`credits-wallet help`).
+4. **Sblocca un account.** L'interfaccia si apre sulla schermata di sblocco: nomi e indirizzi
+   degli account, nient'altro. Scegline uno con le frecce, premi Invio e scrivi la sua password;
+   solo allora vedi saldo, cronologia, token e contratti. Vedi
+   [Sbloccare e bloccare](#sbloccare-e-bloccare).
+
+### Sbloccare e bloccare
+
+- **Una password per sessione.** Sbloccato un account, nell'interfaccia invii, deleghe e chiamate
+  ai contratti non chiedono più la password; su mainnet scrivi comunque `send` sul riepilogo
+  completo. La riga di comando è diversa: ogni comando chiede la password quando firma.
+- **Blocca** con `l`; **cambia account** con `a` (il wallet prima blocca, poi chiede la password
+  dell'altro account). Dopo aver creato o importato un account il wallet torna anch'esso alla
+  schermata di sblocco, sul nuovo account.
+- **Blocco automatico**: dopo 10 minuti senza tasti premuti il wallet si blocca da solo (mai mentre
+  una transazione è in viaggio). Si cambia con `lock_after_minutes = N` in cima a `config.toml`;
+  `0` non blocca mai: chi arriva al tuo terminale (una sessione SSH lasciata aperta, uno schermo
+  non bloccato) può firmare con l'account sbloccato. Tienilo breve sulle macchine raggiungibili da
+  altri.
+- Una password sbagliata dice solo che l'account non si è potuto sbloccare; ogni tentativo
+  sbagliato di fila aggiunge una breve attesa (2 s, poi 4, 8, fino a 30 s).
+- Da sbloccata, la chiave resta in memoria protetta dallo swap e fuori dai core dump, e viene
+  azzerata quando il wallet si blocca o esce. Se il sistema lo rifiuta ("the key could not be
+  locked in memory: it may reach swap"), usa uno swap cifrato. Alcune copie un programma Go non
+  può cancellarle (quello che la firma calcola dalla chiave, la password digitata): disattiva i
+  core dump sulle macchine che custodiscono fondi.
 
 In Docker il wallet gira dentro il container del nodo, con i suoi dati nel volume `/data`
 (`/data/wallet`); imposta `CREDITS_API=on` in `.env` (il wallet parla con l'API del nodo). Con il
@@ -113,7 +138,8 @@ Nell'interfaccia premi `n`; da riga di comando:
 ```
 
 1. Scegli una **password**. Cifra il file della chiave su questa macchina (Argon2id e
-   XChaCha20-Poly1305). Viene chiesta a ogni transazione.
+   XChaCha20-Poly1305). L'interfaccia la chiede per sbloccare l'account; i comandi, a ogni
+   transazione.
 2. Il wallet mostra **una sola volta** la **frase di recupero di 24 parole**. Scrivila su carta,
    in ordine.
 3. Riscrivi le tre parole che ti chiede.
@@ -245,8 +271,9 @@ Sicurezza del file.
 L'account `node` è il primo della lista ed è selezionato all'avvio dell'interfaccia; è segnato
 **NODE KEY** nella lista, nella schermata dell'account, in `account list` e in ogni riepilogo. Il
 wallet legge `NodePrivate.txt` dove lo legge il nodo: la chiave **non viene copiata**
-nell'archivio delle chiavi del wallet e **non viene cifrata** (al nodo serve il file in chiaro),
-quindi per firmare non viene chiesta una password; su mainnet scrivi comunque `send`. `account
+nell'archivio delle chiavi del wallet e **non viene cifrata** dal wallet (al nodo serve il suo
+file), quindi una chiave in chiaro non chiede password, né allo sblocco né per firmare; su mainnet
+scrivi comunque `send`. `account
 node-key` mostra il file, l'indirizzo, se `NodePublic.txt` corrisponde e se il nodo è in
 esecuzione. (Se l'archivio ha già un account di nome `node`, da un'importazione precedente, la
 chiave del nodo si chiama `node-key` e l'altro mantiene il suo nome.)
@@ -254,6 +281,29 @@ chiave del nodo si chiama `node-key` e l'altro mantiene il suo nome.)
 > **La chiave del nodo resta in chiaro sul server**, perché il nodo ne ha bisogno: i CS che vi
 > tieni sono esposti quanto il server. Tienici solo quello che serve al nodo (il suo stake), e i
 > risparmi in un account separato (`account new`).
+
+**Una chiave cifrata dal nodo.** Se il nodo è stato avviato con `--encryptkey`, o al primo avvio
+hai scelto "[1] Encrypt with password", `NodePrivate.txt` è cifrato con la password del nodo. Il
+wallet lo apre con quella stessa password: nella schermata di sblocco dell'interfaccia, e da riga
+di comando quando un comando firma (funziona anche `--password-file`). Fino ad allora l'account
+`node` mostra l'indirizzo di `NodePublic.txt`, segnato "encrypted by the node", e il wallet
+controlla che la chiave aperta sia proprio quella; finché non la sblocchi, `account list`, `account
+address` e la schermata della chiave trovata segnano l'indirizzo "(from NodePublic.txt, unverified
+until unlocked)". L'apertura richiede qualche secondo e **1 GiB di memoria libera**, come nel nodo:
+con meno, il wallet rifiuta con "the node's key needs 1 GiB of free memory to open (as the node
+does)" (chiudi qualcosa, o aprila su una macchina con più memoria). Il wallet non scrive mai la chiave aperta da nessuna parte e rifiuta di
+esportarla in chiaro. Tutti i nodi usano lo stesso salt per questa cifratura: scegli una password
+lunga.
+
+**Una chiave nella cartella in cui avvii il wallet.** Se avvii l'interfaccia in una cartella che
+contiene `NodePrivate.txt` (il tuo `csnode`, per esempio) e non è configurata nessuna chiave del
+nodo, il wallet lo dice nella prima schermata con l'indirizzo e il percorso completo della chiave,
+e chiede: `u` usala per questa sessione, `r` usala e ricordala (scrive `node_key` con il percorso
+completo nel tuo profilo in `config.toml`, lasciando invariato tutto il resto), `i` ignorala, `x`
+ignorala e non chiedere più per quel file. Non la usa mai da solo, e la rifiuta quando altri utenti
+possono scrivere nel file o nella sua cartella. Controlla l'indirizzo prima di sceglierla. I comandi
+stampano solo un suggerimento: `This folder holds a node key: to use it, --node-key
+NodePrivate.txt`.
 
 **Il nodo non ha ancora una chiave.** Una cartella nuova del nodo non ha `NodePrivate.txt`; il nodo
 ne creerebbe una al primo avvio facendoti domande sulla sua console. Creala invece con il wallet,
@@ -359,7 +409,8 @@ configurazione guidata.
 ### Il controllo della rete
 
 Mainnet è il default: il wallet la presume, a meno che il profilo dica `testnet` o `private`. Su
-mainnet le schermate sono rosse e ogni transazione ti chiede di scrivere `send` e poi la password.
+mainnet le schermate sono rosse e ogni transazione ti chiede di scrivere `send` (e, da riga di
+comando, la password).
 
 Un nodo della community dalla release community.17 in poi **dice anche su quale rete si trova**,
 tramite la sua API diagnostica (`[api] diag_port`, 9088 nei pacchetti). Prima di ogni transazione il
@@ -399,7 +450,7 @@ comando:
 
 Il riepilogo mostra il destinatario per intero, l'importo, la commissione prevista (circa 0.0087 CS),
 la **commissione massima (max fee)** firmata (1 CS: il massimo che il nodo può addebitare) e se il
-nodo ha confermato la rete. Su mainnet scrivi `send`, poi la password. Il wallet segue la
+nodo ha confermato la rete. Su mainnet scrivi `send` (da riga di comando segue la password). Il wallet segue la
 transazione finché non è in un blocco.
 
 - Controlla **l'intero** indirizzo del destinatario, non solo le prime e le ultime lettere.
@@ -577,6 +628,7 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
   firmata su una rete di test può essere riutilizzata (replay) su mainnet da chi gestisce o osserva quel nodo
   di test. Non usare mai altrove un account che contiene CS su mainnet. Dichiara i nodi di test come
   `network = "testnet"` (o `private`) nel loro profilo.
+- **Blocca il wallet** (`l`) prima di lasciare il terminale, e tieni breve `lock_after_minutes`.
 - **La chiave del nodo è in chiaro sul server** (al nodo serve così): tienici solo quello che
   serve al nodo, e i risparmi in un account separato, con le sue 24 parole su carta.
 - **Invia prima una piccola somma** a un nuovo destinatario, e controlla che sia arrivata, prima
@@ -602,7 +654,11 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
 | "not confirmed by the node" | Il nodo non dice la sua rete: è un nodo ufficiale, una release più vecchia, oppure la porta diag è disattivata (`diag_port=0`) o su un'altra porta (`diag` nel profilo). Decide la configurazione; controlla che la rete del profilo sia giusta. |
 | "MISMATCH" / il wallet rifiuta di inviare | La rete del profilo e quella del nodo differiscono: sei sul nodo sbagliato o sul profilo sbagliato. Correggi il profilo; non forzare mai. |
 | "wrong password" | Riprova. Password dimenticata: importa di nuovo l'account dalle sue 24 parole. |
-| "the node's key file is encrypted by the node" | Il nodo è stato avviato con `--encryptkey` (o al primo avvio è stata scelta una password): solo il nodo può aprire quella chiave. Usa un account separato, o rendi di nuovo in chiaro la chiave con il nodo. |
+| "the node's key file is encrypted by the node" | Il nodo è stato avviato con `--encryptkey` (o al primo avvio è stata scelta una password): scrivi la password del nodo (nella schermata di sblocco, o quando il comando la chiede; `--password-file` negli script). |
+| "the node's key needs 1 GiB of free memory to open" | Aprire una chiave cifrata dal nodo richiede 1 GiB, come nel nodo: libera memoria e riprova. |
+| "could not unlock" | La password è sbagliata (o il file della chiave è danneggiato). Aspetta i secondi indicati e riprova; per l'account `node` di una chiave cifrata è la password del nodo. |
+| "is encrypted by the node and NodePublic.txt does not give its address" | `NodePublic.txt` manca o è danneggiato: neanche il nodo partirebbe. Ripristinalo da un backup o con il nodo. |
+| "This folder holds a node key" | Hai lanciato un comando in una cartella con `NodePrivate.txt`: il wallet non la usa se non aggiungi `--node-key NodePrivate.txt` (o imposti `node_key`). |
 | "the node is running" (`node-key new`, `--format node`) | Ferma prima il nodo: il wallet non scrive mai la chiave del nodo mentre è in esecuzione. |
 | "NodePrivate.txt already exists" | Il nodo ha una chiave: il wallet non ci scrive mai sopra. Per sostituire di proposito l'identità del nodo: `account export NOME --format node --out CARTELLA --replace`. |
 | Manca l'account `node` | Il wallet non è il wallet del nodo: avvialo con `--config wallet.toml` nella cartella `csnode`, o imposta `node_key` nel profilo (oppure `--node-key FILE`). |

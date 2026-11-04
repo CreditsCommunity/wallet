@@ -6,7 +6,8 @@
 # made here; the last node's key is made by the wallet itself (account node-key new: the node's
 # format, proven by the node starting with it and taking part as a trusted node); then runs the
 # wallet's commands against node 1's API: status, account import and new, the node's key as an
-# account (signing without a password, refusals while a node runs or holds a key),
+# account (signing without a password, refusals while a node runs or holds a key; then the key
+# encrypted by the node itself with --encryptkey, signed from with the node's password),
 # balance, send (with user data), delegate (with and without a time limit), delegations, undelegate,
 # history (from node 1, and from node 2 as a remote history node), the network identity from node 1's
 # diagnostic API, and with CONTRACTS=1 the smart contracts with the wallet itself: its templates
@@ -240,8 +241,10 @@ done
 log "network up: block $(jq -r .last_block <<< "$st")"
 expect "network      : PRIVATE" status
 # the last node runs with the key the wallet made: it names it as its own in the first round table
-for _ in $(seq 1 30); do grep -q "$NODEKEY (me)" "$LAST/node.log" && break; sleep 1; done
-grep -q "$NODEKEY (me)" "$LAST/node.log" || fail "node $NODES does not run with the key the wallet made"
+# (only the node that sends the bootstrap table lists it: "(me)" in its own log, or the key in
+# another node's list, which it learnt from node $NODES)
+for _ in $(seq 1 30); do grep -qE "NODE>  - $NODEKEY( \(me\))?$" "$WORK"/n*/node.log && break; sleep 1; done
+grep -qE "NODE>  - $NODEKEY( \(me\))?$" "$WORK"/n*/node.log || fail "node $NODES does not run with the key the wallet made"
 log "node $NODES runs with the key the wallet made ($NODEKEY), a confidant of the first round table"
 
 # the network identity (node 1's diagnostic API): a community node from release community.17 reports
@@ -426,6 +429,68 @@ done
 [ -n "$st" ] || { tail -n 20 "$LAST/stdout.log"; fail "node $NODES did not start with the exported key"; }
 grep -q "No suitable keys\|Bad private key\|PUBLIC key file" "$LAST/stdout.log" && fail "node $NODES asked about its key"
 log "export --format node --replace: node $NODES runs with bob's key"
+
+# the node's key encrypted by the node itself: the last node stopped and started again with
+# --encryptkey, its console answered on stdin ("p" for a password, then the password twice), so the
+# node writes NodePrivate.txt encrypted with its own code; the wallet then signs from it with the
+# node's password, refuses a wrong one, and the node starts again from the file, opening it with the
+# same password
+NODEPW=$WORK/node-password
+echo "node e2e pw" > "$NODEPW" && chmod 600 "$NODEPW"
+# start_node with its console answered: "p" (a password, read by std::cin), then, once the node
+# asks "Enter password:" (std::cin has taken the "p"), the lines of $2 (read by getchar: std::cin
+# would otherwise buffer them away)
+start_node_typed() {
+    local before
+    before=$(grep -c "Enter password:" "$WORK/n$1/stdout.log" 2>/dev/null || true)
+    (cd "$WORK/n$1" && exec "$NODE_BIN" --db-path db --config-file config.ini ${3:-} < <(
+        printf p
+        for _ in $(seq 1 600); do
+            [ "$(grep -c "Enter password:" stdout.log 2>/dev/null || true)" -gt "${before:-0}" ] && break
+            sleep 0.1
+        done
+        printf '%s' "$2") >> stdout.log 2>&1) &
+    PIDS+=($!)
+}
+stop_last() {  # the last node, until it is gone (with its executor it may take a while)
+    kill "${PIDS[-1]}"
+    for _ in $(seq 1 120); do kill -0 "${PIDS[-1]}" 2>/dev/null || break; sleep 1; done
+    kill -9 "${PIDS[-1]}" 2>/dev/null || true
+    wait "${PIDS[-1]}" 2>/dev/null || true
+}
+wait_api() {
+    for _ in $(seq 1 60); do
+        st=$("$WALLET" status --node "127.0.0.1:$(api_port "$NODES")" --json 2>/dev/null || true)
+        kill -0 "${PIDS[-1]}" 2>/dev/null || break   # the new node exited
+        jq -e '.last_block' <<< "$st" >/dev/null 2>&1 && return 0
+        sleep 2
+    done
+    tail -n 20 "$LAST/stdout.log"; fail "node $NODES did not start: $1"
+}
+stop_last
+start_node_typed "$NODES" "node e2e pw
+node e2e pw
+" --encryptkey
+wait_api "with --encryptkey"
+grep -q "has been encrypted successfully" "$LAST/node.log" "$LAST/stdout.log" || { tail -n 30 "$LAST/stdout.log"; fail "the node did not encrypt its key"; }
+len=$(python3 -c 'import base58, sys; print(len(base58.b58decode(open(sys.argv[1]).read().split("\n")[0].strip())))' "$LAST/NodePrivate.txt")
+[ "$len" = 88 ] || fail "NodePrivate.txt is $len bytes, not the node's encrypted 88"
+expect "encrypted by the node" account list --profile nodekey
+[ "$("$WALLET" account address --profile nodekey)" = "$BOB" ] || fail "the encrypted node key's address"
+expect "sent 2 CS to $BOB" send master "$BOB" 2 --yes   # bob's key is the node's now
+out=$("$WALLET" send node "$ALICE" 1 --yes --profile nodekey --password-file "$PW" 2>&1) && { echo "$out"; fail "signed with a wrong node password"; }
+grep -q "wrong password" <<< "$out" || fail "wrong node password: $out"
+out=$("$WALLET" send node "$ALICE" 1.25 --data "from the node-encrypted key" --yes --profile nodekey --password-file "$NODEPW" 2>&1) || { echo "$out"; fail "send from the node-encrypted key"; }
+echo "$out" | sed 's/^/    /'
+grep -q "encrypted by the node" <<< "$out" && grep -q "sent 1.25 CS to $ALICE" <<< "$out" || fail "send from the node-encrypted key: $out"
+expect "from the node-encrypted key" history alice
+# the node opens the same file at its next start with the same password
+stop_last
+start_node_typed "$NODES" "node e2e pw
+"
+wait_api "from its encrypted key"
+grep -q "Incorrect password" "$LAST/stdout.log" && fail "the node did not open its encrypted key"
+log "the node's key encrypted by the node: the wallet signs from it with the node's password"
 
 log "PASS"
 if [ "${KEEP:-0}" = 1 ]; then

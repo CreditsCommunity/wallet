@@ -90,6 +90,31 @@ The binaries are reproducible: the same tag built again gives the same files (se
 
    The top line shows the network (MAINNET in red) and the node. `?` shows the keys, `q` quits.
    Every function also exists as a command (`credits-wallet help`).
+4. **Unlock an account.** The interface opens on the unlock screen: the accounts' names and
+   addresses, nothing else. Choose one with the arrows, press Enter and type its password; only
+   then are its balance, history, tokens and contracts shown. See
+   [Unlocking and locking](#unlocking-and-locking).
+
+### Unlocking and locking
+
+- **One password per session.** Once an account is unlocked, sending, delegating and calling
+  contracts in the interface ask no password again; on mainnet you still type `send` on the full
+  review. The command line is different: each command asks the password when it signs.
+- **Lock** with `l`; **switch account** with `a` (the wallet locks first and asks the other
+  account's password). After you create or import an account the wallet also goes back to the
+  unlock screen, on the new account.
+- **Auto-lock**: after 10 minutes without a key press the wallet locks by itself (never while a
+  transaction is on its way). Change it with `lock_after_minutes = N` at the top of `config.toml`;
+  `0` never locks, which means that whoever reaches your terminal (an SSH session left open, a
+  screen not locked) can sign with the unlocked account: keep it short on machines others can
+  reach.
+- A wrong password says only that the account could not be unlocked; each wrong try in a row adds
+  a short wait (2 s, then 4, 8, up to 30 s).
+- While unlocked, the key is kept in memory locked against swapping and out of core dumps, and is
+  zeroed when the wallet locks or quits. If the system refuses that ("the key could not be locked
+  in memory: it may reach swap"), use encrypted swap. Some copies cannot be wiped by a Go program
+  (what the signature computes from the key, the password you typed): disable core dumps on
+  machines that hold funds.
 
 In Docker the wallet runs inside the node's container, with its data on the `/data` volume
 (`/data/wallet`); set `CREDITS_API=on` in `.env` (the wallet talks to the node's API). With the
@@ -112,7 +137,8 @@ In the interface press `n`; on the command line:
 ```
 
 1. Choose a **password**. It encrypts the key file on this machine (Argon2id and
-   XChaCha20-Poly1305). It is asked for every transaction.
+   XChaCha20-Poly1305). The interface asks it to unlock the account; the commands, for every
+   transaction.
 2. The wallet shows the **24-word recovery phrase** once. Write it on paper, in order.
 3. Type back the three words it asks for.
 4. The wallet asks `Save the 24 words to a file as well? [y/N]`. **The default is no**: press
@@ -234,8 +260,8 @@ are not done (`account node-key` says so): check the file's Properties > Securit
 The account `node` is listed first and selected when the interface starts; it is marked **NODE
 KEY** in the list, on the account's screen, in `account list` and in every review. The wallet reads
 `NodePrivate.txt` where the node reads it: the key is **not copied** into the wallet's key store and
-**not encrypted** (the node needs the plain file), so no password is asked to sign with it; on
-mainnet you still type `send`. `account node-key` shows the file, the address, whether
+**not encrypted** by the wallet (the node needs its file), so a plain key asks no password, on the
+unlock screen or to sign; on mainnet you still type `send`. `account node-key` shows the file, the address, whether
 `NodePublic.txt` matches and whether the node is running. (If the key store already has an account
 named `node`, from an earlier import, the node's key is called `node-key` and the other keeps its
 name.)
@@ -243,6 +269,28 @@ name.)
 > **The node's key is kept in clear on the server**, because the node needs it: CS on it are as
 > exposed as the server. Keep on it only what the node needs (its stake), and your savings in a
 > separate account (`account new`).
+
+**A key the node encrypted.** If the node was started with `--encryptkey`, or you chose "[1]
+Encrypt with password" at its first start, `NodePrivate.txt` is encrypted with the node's password.
+The wallet opens it with that same password: on the unlock screen of the interface, and on the
+command line when a command signs (`--password-file` works too). The account `node` shows the
+address of `NodePublic.txt` until then, marked "encrypted by the node", and the wallet checks that
+the key it opens is that one; until you unlock it, `account list`, `account address` and the
+found-key screen mark the address "(from NodePublic.txt, unverified until unlocked)". Opening takes
+some seconds and **1 GiB of free memory**, as in the node: with less, the wallet refuses with
+"the node's key needs 1 GiB of free memory to open (as the node does)" (stop something, or open it
+on a machine with more memory). The
+wallet never writes the opened key anywhere, and refuses to export it in clear. Every node uses the
+same salt for this encryption, so choose a long password.
+
+**A key in the folder you start the wallet in.** When you start the interface in a folder that
+holds `NodePrivate.txt` (your `csnode`, say) and no node's key is configured, the wallet says so on
+its first screen with the key's address and full path, and asks: `u` use it for this session, `r`
+use it and remember it (it writes `node_key` with the full path into your profile in
+`config.toml`, keeping everything else), `i` ignore it, `x` ignore it and never ask again for that
+file. It never uses it by itself, and refuses it when other users can write to the file or its
+folder. Check the address before you choose it. The commands only print a hint:
+`This folder holds a node key: to use it, --node-key NodePrivate.txt`.
 
 **The node has no key yet.** A new node folder has no `NodePrivate.txt`; the node would make one at
 its first start and ask you questions on its console. Make it with the wallet instead, from a
@@ -346,7 +394,8 @@ instead.
 ### The network check
 
 Mainnet is the default: the wallet assumes it unless the profile says `testnet` or `private`. On
-mainnet the screens are red and every transaction asks you to type `send` and then the password.
+mainnet the screens are red and every transaction asks you to type `send` (and, on the command
+line, the password).
 
 A community node from release community.17 on also **says which network it is on**, through its
 diagnostic API (`[api] diag_port`, 9088 in the packages). Before every transaction the wallet asks
@@ -386,7 +435,7 @@ line:
 
 The review shows the recipient in full, the amount, the expected fee (about 0.0087 CS), the signed
 **max fee** (1 CS: the most the node may charge), and whether the node confirmed the network. On
-mainnet type `send`, then the password. The wallet follows the transaction until it is in a block.
+mainnet type `send` (on the command line the password follows). The wallet follows the transaction until it is in a block.
 
 - Check the **whole** recipient address, not only its first and last letters.
 - **Pasting the recipient.** Use your terminal's paste (Ctrl+Shift+V, right click, Cmd+V on
@@ -558,6 +607,7 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
   for: one signed on a test network can be replayed on mainnet by whoever runs or watches that test
   node. Never use an account that holds CS on mainnet anywhere else. Declare test nodes as
   `network = "testnet"` (or `private`) in their profile.
+- **Lock the wallet** (`l`) before you leave the terminal, and keep `lock_after_minutes` short.
 - **The node's key is in clear on the server** (the node needs it): keep on it only what the node
   needs, and your savings in a separate account, with its 24 words on paper.
 - **Send a small amount first** to a new recipient, and check that it arrived, before the large
@@ -582,7 +632,11 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
 | "not confirmed by the node" | The node does not tell its network: an official node, an older release, or the diag port off (`diag_port=0`) or on another port (`diag` in the profile). The configuration decides; check that the profile's network is right. |
 | "MISMATCH" / the wallet refuses to send | The profile's network and the node's differ: you are on the wrong node or the wrong profile. Fix the profile; never force it. |
 | "wrong password" | Retry. A forgotten password: import the account again from its 24 words. |
-| "the node's key file is encrypted by the node" | The node was started with `--encryptkey` (or its first start chose a password): only the node can open that key. Use a separate account, or make the node's key plain again with the node. |
+| "the node's key file is encrypted by the node" | The node was started with `--encryptkey` (or its first start chose a password): type the node's password (on the unlock screen, or when the command asks; `--password-file` in scripts). |
+| "the node's key needs 1 GiB of free memory to open" | Opening a key the node encrypted takes 1 GiB, as in the node: free some memory and try again. |
+| "could not unlock" | The password is wrong (or the key file damaged). Wait the few seconds shown and try again; for the account `node` of an encrypted key it is the node's password. |
+| "is encrypted by the node and NodePublic.txt does not give its address" | `NodePublic.txt` is missing or damaged: the node would not start either. Restore it from a backup or with the node. |
+| "This folder holds a node key" | You ran a command in a folder with `NodePrivate.txt`: the wallet does not use it unless you add `--node-key NodePrivate.txt` (or set `node_key`). |
 | "the node is running" (`node-key new`, `--format node`) | Stop the node first: the wallet never writes the node's key while it runs. |
 | "NodePrivate.txt already exists" | The node has a key: the wallet never writes over it. To replace the node's identity on purpose: `account export NAME --format node --out FOLDER --replace`. |
 | The account `node` is missing | The wallet is not the node's wallet: run it with `--config wallet.toml` in the `csnode` folder, or set `node_key` in the profile (or `--node-key FILE`). |

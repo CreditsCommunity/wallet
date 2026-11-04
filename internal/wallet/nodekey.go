@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +31,10 @@ import (
 // account list, node-key, the export to the node's format).
 const NodeKeyWarning = "The node's key is kept in clear on this server, because the node needs it: CS on it are as exposed as the server. " +
 	"Operators usually keep their stake there already: keep on it only what the node needs, and savings in a separate account."
+
+// NodeKeyEncryptedWarning is NodeKeyWarning for a key the node encrypted with its password.
+const NodeKeyEncryptedWarning = "The node's key is on this server, encrypted with the node's password (Argon2id with a salt every node shares): " +
+	"a strong password matters. Keep on it only what the node needs, and savings in a separate account."
 
 // NodeIdentityNote is said before the node's key is written or replaced.
 const NodeIdentityNote = "The node's identity follows its key: its address, the delegations it received, its history as a trusted node and its rewards all belong to the key. " +
@@ -105,6 +110,20 @@ func ResolveNodeKey(p config.Profile, configPath, flag, cwd string) (*NodeKey, e
 // other users can read the key (the node writes it 0644): it names the chmod 600 that fixes it.
 // On Windows the ACLs are not checked (the wallet sets none itself). The caller zeroes the key.
 func ReadNodeKeySafe(private string) (key ed25519.PrivateKey, warning string, err error) {
+	data, warning, err := readNodeKeyFileSafe(private)
+	if err != nil {
+		return nil, "", err
+	}
+	defer keys.Zero(data)
+	if key, err = keys.ParseNodePrivate(data); err != nil {
+		return nil, "", fmt.Errorf("%s: %w", private, err)
+	}
+	return key, warning, nil
+}
+
+// readNodeKeyFileSafe is ReadNodeKeySafe's checks and read: the file's content, plain or encrypted
+// by the node. The caller zeroes it.
+func readNodeKeyFileSafe(private string) (data []byte, warning string, err error) {
 	folders := []string{filepath.Dir(private)}
 	lst, err := os.Lstat(private)
 	if err != nil {
@@ -148,18 +167,83 @@ func ReadNodeKeySafe(private string) (key ed25519.PrivateKey, warning string, er
 	if err := ownedSafe(private, st, "the node's key file", "chmod 600 "); err != nil {
 		return nil, "", err
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxNodeKeyFile+1))
-	defer keys.Zero(data)
+	data, err = io.ReadAll(io.LimitReader(f, maxNodeKeyFile+1))
 	if err != nil {
+		keys.Zero(data)
 		return nil, "", err
 	}
 	if len(data) > maxNodeKeyFile {
+		keys.Zero(data)
 		return nil, "", fmt.Errorf("%s is larger than a node's key file", private)
 	}
-	if key, err = keys.ParseNodePrivate(data); err != nil {
-		return nil, "", fmt.Errorf("%s: %w", private, err)
+	return data, readableWarning(private, st), nil
+}
+
+// NodeKeyFileInfo is what the wallet can tell of a node's key file without its password: the
+// address (from the key, or for a key the node encrypted from the NodePublic.txt next to it), and
+// whether it is encrypted. The same checks as ReadNodeKeySafe.
+func NodeKeyFileInfo(private string) (address string, encrypted bool, warning string, err error) {
+	data, warning, err := readNodeKeyFileSafe(private)
+	if err != nil {
+		return "", false, "", err
 	}
-	return key, readableWarning(private, st), nil
+	defer keys.Zero(data)
+	secret, encrypted, err := keys.DecodeNodePrivate(data)
+	if err != nil {
+		return "", false, "", fmt.Errorf("%s: %w", private, err)
+	}
+	defer keys.Zero(secret)
+	if !encrypted {
+		key, err := keys.FromSecret(secret)
+		if err != nil {
+			return "", false, "", fmt.Errorf("%s: %w", private, err)
+		}
+		defer keys.Zero(key)
+		return keys.Address(key.Public().(ed25519.PublicKey)), false, warning, nil
+	}
+	// the address until the key is opened: NodePublic.txt, read with the same checks as the key
+	// (one that others could write would choose the address shown), unverified until unlocked
+	pubFile := filepath.Join(filepath.Dir(private), keys.NodePublicFile)
+	pubData, _, err := readNodeKeyFileSafe(pubFile)
+	var pub ed25519.PublicKey
+	if err == nil {
+		pub, err = keys.ParseNodePublic(pubData)
+	}
+	if err != nil {
+		return "", true, "", fmt.Errorf("%s is encrypted by the node and %s does not give its address (%v): the node itself would not start with them", private, pubFile, err)
+	}
+	return keys.Address(pub), true, warning, nil
+}
+
+// OpenNodeKeyFile reads the node's key file with ReadNodeKeySafe's checks and opens it: a plain
+// key, or one the node encrypted with password (keys.ErrNodeKeyPassword when it does not open,
+// keys.ErrNodeKeyEncrypted without a password). sum is the SHA-256 of the file's content, to see
+// later whether it changed. The caller zeroes the key.
+func OpenNodeKeyFile(private string, password []byte) (key ed25519.PrivateKey, sum [32]byte, err error) {
+	data, _, err := readNodeKeyFileSafe(private)
+	if err != nil {
+		return nil, sum, err
+	}
+	defer keys.Zero(data)
+	sum = sha256.Sum256(data)
+	key, err = keys.OpenNodePrivate(data, password)
+	if err != nil {
+		if errors.Is(err, keys.ErrNodeKeyPassword) || errors.Is(err, keys.ErrNodeKeyEncrypted) {
+			return nil, sum, err
+		}
+		return nil, sum, fmt.Errorf("%s: %w", private, err)
+	}
+	return key, sum, nil
+}
+
+// NodeKeyFileSum is the SHA-256 of the node's key file, read with the same checks.
+func NodeKeyFileSum(private string) ([32]byte, error) {
+	data, _, err := readNodeKeyFileSafe(private)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	defer keys.Zero(data)
+	return sha256.Sum256(data), nil
 }
 
 const maxNodeKeyFile = 4096
@@ -204,7 +288,8 @@ func (w *Wallet) NodeAccountName() string {
 }
 
 // NodeAccount is the node's key account, nil when the wallet is not a node's wallet or the node
-// has no key yet. Its key is read only to find its address, then wiped.
+// has no key yet. Its key is read only to find its address, then wiped; a key the node encrypted
+// is not opened (its address is its NodePublic.txt's, checked against the key when it is opened).
 func (w *Wallet) NodeAccount() (*keys.File, error) {
 	if w.NodeKey == nil {
 		return nil, nil
@@ -212,13 +297,11 @@ func (w *Wallet) NodeAccount() (*keys.File, error) {
 	if _, err := os.Lstat(w.NodeKey.Private); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	key, warning, err := ReadNodeKeySafe(w.NodeKey.Private)
+	address, encrypted, warning, err := NodeKeyFileInfo(w.NodeKey.Private)
 	if err != nil {
 		return nil, fmt.Errorf("%w; the node's key is not used", err)
 	}
-	defer keys.Zero(key)
-	f := &keys.File{Version: keys.FileVersion, Name: w.NodeAccountName(), Public: keys.Address(key.Public().(ed25519.PublicKey)),
-		NodeKey: w.NodeKey.Private}
+	f := &keys.File{Version: keys.FileVersion, Name: w.NodeAccountName(), Public: address, NodeKey: w.NodeKey.Private, NodeKeyEncrypted: encrypted}
 	if w.NodeKeyNotice != nil && !w.noticed {
 		w.noticed = true
 		w.NodeKeyNotice(NodeKeySource(f, w.NodeKey))
@@ -229,15 +312,22 @@ func (w *Wallet) NodeAccount() (*keys.File, error) {
 	return f, nil
 }
 
-// OpenKey returns an account's key: the node's key read again with ReadNodeKeySafe (no password),
-// or the key file decrypted with the password. The key must still be the account's. The caller
+// OpenKey returns an account's key: the node's key read again with ReadNodeKeySafe's checks (no
+// password; a key the node encrypted with the node's password), or the key file decrypted with
+// the password. The key must still be the account's. The caller
 // zeroes it.
 func (w *Wallet) OpenKey(f *keys.File, password []byte) (ed25519.PrivateKey, error) {
 	if !f.IsNodeKey() {
 		return f.Decrypt(password)
 	}
-	key, _, err := ReadNodeKeySafe(f.NodeKey)
+	if !f.NodeKeyEncrypted {
+		password = nil // a plain node key needs none
+	}
+	key, _, err := OpenNodeKeyFile(f.NodeKey, password)
 	if err != nil {
+		if errors.Is(err, keys.ErrNodeKeyPassword) || errors.Is(err, keys.ErrNodeKeyEncrypted) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("%w; the node's key is not used", err)
 	}
 	if keys.Address(key.Public().(ed25519.PublicKey)) != f.Public {

@@ -45,6 +45,7 @@ func (a *app) nodeKeyStatus() error {
 			out["missing"] = true
 		default:
 			out["address"] = f.Public
+			out["encrypted"] = f.NodeKeyEncrypted
 			if pubErr != nil {
 				out["public_file_error"] = pubErr.Error()
 			}
@@ -58,7 +59,11 @@ func (a *app) nodeKeyStatus() error {
 	case f == nil:
 		fmt.Fprintf(a.out, "key         : none yet: 'account node-key new' makes it from a 24-word phrase\n")
 	default:
-		fmt.Fprintf(a.out, "key         : %s (in clear, as the node needs it)\n", nk.Private)
+		if f.NodeKeyEncrypted {
+			fmt.Fprintf(a.out, "key         : %s (encrypted by the node: its password opens it)\n", nk.Private)
+		} else {
+			fmt.Fprintf(a.out, "key         : %s (in clear, as the node needs it)\n", nk.Private)
+		}
 		fmt.Fprintf(a.out, "account     : %s (NODE KEY, the default account)\n", f.Name)
 		fmt.Fprintf(a.out, "address     : %s\n", f.Public)
 		if pubErr != nil {
@@ -83,7 +88,11 @@ func (a *app) nodeKeyStatus() error {
 		if w := wallet.NodeKeyModeWarning(nk.Private); w != "" {
 			fmt.Fprintln(os.Stderr, "warning:", w)
 		}
-		fmt.Fprintln(os.Stderr, wallet.NodeKeyWarning)
+		if f.NodeKeyEncrypted {
+			fmt.Fprintln(os.Stderr, wallet.NodeKeyEncryptedWarning)
+		} else {
+			fmt.Fprintln(os.Stderr, wallet.NodeKeyWarning)
+		}
 	}
 	if !wallet.PermissionsChecked() {
 		fmt.Fprintln(os.Stderr, "On Windows the wallet does not check the owner and permissions of the node's key and folder: check them yourself (Properties > Security).")

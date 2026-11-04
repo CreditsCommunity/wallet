@@ -184,9 +184,16 @@ func (a *app) accountAddress(name string) error {
 		return fmt.Errorf("the key file of %q has no valid address: %w", name, err)
 	}
 	if a.json {
-		return a.printJSON(map[string]any{"name": f.Name, "address": f.Public})
+		out := map[string]any{"name": f.Name, "address": f.Public}
+		if f.NodeKeyEncrypted {
+			out["address_unverified"] = true
+		}
+		return a.printJSON(out)
 	}
 	fmt.Fprintln(a.out, f.Public)
+	if f.NodeKeyEncrypted { // on stderr: the output stays the address alone, for a pipe
+		fmt.Fprintln(os.Stderr, "address "+wallet.UnverifiedAddressNote)
+	}
 	return nil
 }
 
@@ -202,21 +209,29 @@ func (a *app) accountList() error {
 			Address string `json:"address"`
 			NodeKey string `json:"node_key,omitempty"`
 			Default bool   `json:"default,omitempty"`
+			// encrypted by the node: the node's password opens it
+			NodeKeyEncrypted bool `json:"node_key_encrypted,omitempty"`
+			// the address comes from NodePublic.txt until the key is opened
+			AddressUnverified bool `json:"address_unverified,omitempty"`
 		}
 		rows := []row{}
 		for _, f := range files {
-			rows = append(rows, row{f.Name, f.Public, f.NodeKey, f.IsNodeKey()})
+			rows = append(rows, row{f.Name, f.Public, f.NodeKey, f.IsNodeKey(), f.NodeKeyEncrypted, f.NodeKeyEncrypted})
 		}
 		return a.printJSON(rows)
 	}
 	if len(files) == 0 {
 		fmt.Fprintf(a.out, "no accounts in %s: 'account new NAME' or 'account import NAME'\n", a.w.Store.Dir)
 	}
-	nodeKey := false
+	nodeKey, nodeEncrypted := false, false
 	for _, f := range files {
 		if f.IsNodeKey() {
-			nodeKey = true
-			fmt.Fprintf(a.out, "%-20s %s  NODE KEY (default; %s, in clear)\n", f.Name, f.Public, f.NodeKey)
+			nodeKey, nodeEncrypted = true, f.NodeKeyEncrypted
+			how := "in clear"
+			if f.NodeKeyEncrypted {
+				how = "encrypted by the node: its password signs; address " + wallet.UnverifiedAddressNote
+			}
+			fmt.Fprintf(a.out, "%-20s %s  NODE KEY (default; %s, %s)\n", f.Name, f.Public, f.NodeKey, how)
 			continue
 		}
 		fmt.Fprintf(a.out, "%-20s %s\n", f.Name, f.Public)
@@ -224,7 +239,10 @@ func (a *app) accountList() error {
 	if a.w.NodeKeyMissing() {
 		fmt.Fprintf(os.Stderr, "The node in %s has no key yet: 'account node-key new' makes it from a 24-word phrase.\n", a.w.NodeKey.Dir)
 	}
-	if nodeKey {
+	switch {
+	case nodeEncrypted:
+		fmt.Fprintln(os.Stderr, wallet.NodeKeyEncryptedWarning)
+	case nodeKey:
 		fmt.Fprintln(os.Stderr, wallet.NodeKeyWarning)
 	}
 	return nil
@@ -512,6 +530,9 @@ func (a *app) accountExport(name, format, outFile string, yes bool) error {
 			return err
 		}
 	case "base58", "official":
+		if f.NodeKeyEncrypted {
+			return fmt.Errorf("%s is the node's key, encrypted by the node in %s: the wallet never writes it out in clear", f.Name, f.NodeKey)
+		}
 		if format == "official" {
 			fmt.Fprintln(os.Stderr, "WARNING: the keys JSON of the official wallets holds the secret key NOT ENCRYPTED.")
 			fmt.Fprintln(os.Stderr, "Anyone who reads the file owns the account. Use it only to move the key into an official wallet.")
@@ -660,9 +681,13 @@ func (a *app) confirmAndSend(ctx context.Context, plan *wallet.SendPlan, yes boo
 		}
 	}
 	var pw []byte
-	if !plan.NodeKey { // the node's key is in clear in the node's folder: no password
+	if plan.NeedsPassword() { // a plain node's key is in clear in the node's folder: no password
+		prompt := "Password of " + plan.Account + ": "
+		if plan.NodeKeyEncrypted {
+			prompt = "Password of the node's key (the one the node asks at its start): "
+		}
 		var err error
-		if pw, err = a.readPassword("Password of "+plan.Account+": ", false); err != nil {
+		if pw, err = a.readPassword(prompt, false); err != nil {
 			return err
 		}
 	}
@@ -768,7 +793,10 @@ func printPlan(p *wallet.SendPlan) {
 		wallet.KindCall: "Call a contract", wallet.KindPay: "Pay a contract"}
 	fmt.Fprintf(e, "%-49s%s\n", titles[p.Kind], p.Network.Label())
 	fmt.Fprintf(e, "  From     %s  %s   balance %s CS\n", p.Account, keys.Address(p.From), p.Balance.Grouped())
-	if p.NodeKey {
+	switch {
+	case p.NodeKeyEncrypted:
+		fmt.Fprintf(e, "           NODE KEY: the node's own key, encrypted by the node (its password signs)\n")
+	case p.NodeKey:
 		fmt.Fprintf(e, "           NODE KEY: the node's own key, signed from its file in clear (no password)\n")
 	}
 	switch p.Kind {

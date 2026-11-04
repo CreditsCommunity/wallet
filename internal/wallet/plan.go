@@ -176,7 +176,13 @@ type SendPlan struct {
 	Prepared     time.Time
 	// NodeKey: the sender is the node's own key, read in clear from the node's folder (no password)
 	NodeKey bool
+	// NodeKeyEncrypted: the node's key file is encrypted by the node: the node's password opens it
+	NodeKeyEncrypted bool
 }
+
+// NeedsPassword tells whether signing the plan needs a password (outside an unlocked session):
+// every account of the key store and a node's key the node encrypted; not a plain node's key.
+func (p *SendPlan) NeedsPassword() bool { return !p.NodeKey || p.NodeKeyEncrypted }
 
 // ErrNotSynced is returned when the node is not at the head of the chain.
 var ErrNotSynced = errors.New("the node is not synced")
@@ -206,7 +212,7 @@ func (w *Wallet) start(ctx context.Context, account string, kind Kind) (*SendPla
 	if err != nil {
 		return nil, err
 	}
-	return &SendPlan{Kind: kind, Account: f.Name, NodeKey: f.IsNodeKey(), From: from, MaxFee: tx.MaxFee, Balance: bal.CS, Network: w.Profile.Network,
+	return &SendPlan{Kind: kind, Account: f.Name, NodeKey: f.IsNodeKey(), NodeKeyEncrypted: f.NodeKeyEncrypted, From: from, MaxFee: tx.MaxFee, Balance: bal.CS, Network: w.Profile.Network,
 		NetworkCheck: check, Node: w.Profile.Address, Status: st}, nil
 }
 
@@ -522,6 +528,11 @@ func (w *Wallet) sign(p *SendPlan, password []byte) (*api.Transaction, error) {
 		return nil, err
 	}
 	defer keys.Zero(key)
+	return signWith(p, key)
+}
+
+// signWith signs the plan with key.
+func signWith(p *SendPlan, key ed25519.PrivateKey) (*api.Transaction, error) {
 	// the key that signs must be the one the plan was made for (a key file or a node's key
 	// replaced in between is refused)
 	if !bytes.Equal(key[32:], p.From) {
@@ -562,11 +573,24 @@ func (w *Wallet) sign(p *SendPlan, password []byte) (*api.Transaction, error) {
 // Send decrypts the key with the password, signs the planned transaction, sends it and follows it
 // until it is in a block (at most follow).
 func (w *Wallet) Send(ctx context.Context, plan *SendPlan, password []byte, follow time.Duration) (SendResult, error) {
-	res := SendResult{InnerID: plan.InnerID}
 	t, err := w.sign(plan, password)
 	if err != nil {
-		return res, err
+		return SendResult{InnerID: plan.InnerID}, err
 	}
+	return w.sendSigned(ctx, plan, t, follow)
+}
+
+// SendUnlocked is Send with the key of an unlocked session (the terminal interface): no password.
+func (w *Wallet) SendUnlocked(ctx context.Context, plan *SendPlan, u *Unlocked, follow time.Duration) (SendResult, error) {
+	t, err := u.sign(w, plan)
+	if err != nil {
+		return SendResult{InnerID: plan.InnerID}, err
+	}
+	return w.sendSigned(ctx, plan, t, follow)
+}
+
+func (w *Wallet) sendSigned(ctx context.Context, plan *SendPlan, t *api.Transaction, follow time.Duration) (SendResult, error) {
+	res := SendResult{InnerID: plan.InnerID}
 	// a connection of its own: TransactionFlow blocks until the block, the screens keep refreshing
 	sender := node.New(w.Node.Address)
 	defer sender.Close()

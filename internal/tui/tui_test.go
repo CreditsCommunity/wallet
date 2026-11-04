@@ -28,6 +28,7 @@ func TestScreensFit80x24(t *testing.T) {
 		m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 		f := &keys.File{Name: "main", Public: "u6PJ8DtQuPFnfmwHbGFULQ4u4EgjDiyYKjVEsynXq2w"}
 		m.Update(accountsMsg{files: []*keys.File{f, {Name: "savings", Public: f.Public}}})
+		m.unlocked = &wallet.Unlocked{Account: f}
 		m.Update(statusMsg{st: node.Status{LastBlock: 187210331, Round: 187210332, Synced: true, HeadTime: time.Now()}, oldest: 186699000})
 		bal, _ := amount.Parse("12345.678")
 		amt, _ := amount.Parse("12.5")
@@ -59,7 +60,11 @@ func TestScreensFit80x24(t *testing.T) {
 			"import": newAccountScreen(true), "history": newHistoryScreen(f, 20), "status": &statusScreen{}, "help": &helpScreen{},
 			"delegate": newDelegateScreen(f, false, ""), "withdraw": newDelegateScreen(f, true, f.Public),
 			"token send": newTokenSendScreen(f, f.Public), "delegations": dels, "tokens": toks, "tokens without cache": noCache, "token add": adding,
-			"token history": tokHist}
+			"token history": tokHist,
+			"found key": newFoundKeyScreen(&wallet.FoundNodeKey{Path: "/home/me/" + strings.Repeat("long/", 20) + "NodePrivate.txt", Address: f.Public, Encrypted: true,
+				Warning: "/home/me/csnode/NodePrivate.txt can be read by other users of this machine (mode -rw-r--r--): chmod 600 /home/me/csnode/NodePrivate.txt"}),
+			"found key refused": newFoundKeyScreen(&wallet.FoundNodeKey{Path: "/tmp/x/NodePrivate.txt",
+				Refused: fmt.Errorf("the node's folder /tmp/x can be written by other users (mode -rwxrwxrwx): refused, chmod go-w /tmp/x first")})}
 		for name, s := range screens {
 			m.screen = s
 			view := m.View()
