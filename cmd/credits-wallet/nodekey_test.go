@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mr-tron/base58"
+
 	"github.com/CreditsCommunity/wallet/internal/keys"
 )
 
@@ -192,8 +194,13 @@ func TestNodeKeyAccountSends(t *testing.T) {
 	// never guessed from the current folder (a planted key pair would become the default account);
 	// --node-key names it
 	t.Chdir(dir)
-	if out, code := runWallet(t, "account", "list", "--node="+fake.addr); code != 0 || strings.Contains(out, testAddr) {
+	out, errOut, code = runWallet2(t, "account", "list", "--node="+fake.addr)
+	if code != 0 || strings.Contains(out, testAddr) {
 		t.Fatalf("guessed from the current folder: %d %s", code, out)
+	}
+	// only a one-line hint on stderr
+	if strings.Count(errOut, "This folder holds a node key: to use it, --node-key NodePrivate.txt") != 1 {
+		t.Errorf("no hint:\n%s", errOut)
 	}
 	if out, code := runWallet(t, "account", "address", "--node-key", "NodePrivate.txt"); code != 0 || strings.TrimSpace(out) != testAddr {
 		t.Fatalf("--node-key: %d %s", code, out)
@@ -281,4 +288,49 @@ func TestExportNodeFormat(t *testing.T) {
 		t.Fatalf("repair: %d %s", code, out)
 	}
 	checkNodeFiles(t, dir, strings.Fields(strings.Repeat("abandon ", 23)+"craft"))
+}
+
+// The node's key encrypted by the node (--encryptkey): listed with its NodePublic.txt's address,
+// the node's password asked when a command signs (here --password-file), never exported in clear.
+func TestEncryptedNodeKeySends(t *testing.T) {
+	old := keys.NodeKDF
+	keys.NodeKDF.Time, keys.NodeKDF.MemoryKiB = 1, 64
+	defer func() { keys.NodeKDF = old }()
+	fake := startFakeNode(t)
+	home := t.TempDir()
+	t.Setenv("CREDITS_WALLET_HOME", filepath.Join(home, "data"))
+	dir := testNodeDir(t, home)
+	key, _ := keys.FromBase58(testKey)
+	enc, _ := keys.EncryptNodeKey(key, []byte("node pw"), nil)
+	os.WriteFile(filepath.Join(dir, "NodePrivate.txt"), []byte(base58.Encode(enc)), 0o600)
+	os.WriteFile(filepath.Join(dir, "NodePublic.txt"), []byte(testAddr), 0o600)
+	cfg := filepath.Join(dir, "wallet.toml")
+	os.WriteFile(cfg, []byte(fmt.Sprintf("node = \"local\"\n[nodes.local]\naddress = %q\nnetwork = \"private\"\ndiag = \"off\"\nnode_key = \"NodePrivate.txt\"\n", fake.addr)), 0o644)
+	c := "--config=" + cfg
+	out, errOut, code := runWallet2(t, "account", "list", c)
+	if code != 0 || !strings.Contains(out, testAddr+"  NODE KEY") || !strings.Contains(out, "encrypted by the node") || !strings.Contains(errOut, "encrypted with the node's password") {
+		t.Fatalf("list: %d\n%s\n%s", code, out, errOut)
+	}
+	wrong := filepath.Join(home, "wrong")
+	os.WriteFile(wrong, []byte("nope\n"), 0o600)
+	if _, errOut, code := runWallet2(t, "send", "node", toAddr, "1.5", c, "--yes", "--password-file", wrong); code == 0 || !strings.Contains(errOut, "wrong password") {
+		t.Fatalf("wrong password: %d %s", code, errOut)
+	}
+	if _, errOut, code := runWallet2(t, "send", "node", toAddr, "1.5", c, "--yes"); code == 0 {
+		t.Fatalf("sent without the node's password: %s", errOut)
+	}
+	pw := filepath.Join(home, "pw")
+	os.WriteFile(pw, []byte("node pw\n"), 0o600)
+	out, errOut, code = runWallet2(t, "send", "node", toAddr, "1.5", c, "--yes", "--password-file", pw)
+	if code != 0 || !strings.Contains(out, "sent 1.5 CS to "+toAddr) || !strings.Contains(errOut, "encrypted by the node (its password signs)") {
+		t.Fatalf("send: %d\n%s\n%s\n%s", code, out, errOut, fake.Log())
+	}
+	for _, format := range []string{"base58", "official"} {
+		if _, errOut, code := runWallet2(t, "account", "export", "node", "--format", format, c, "--yes", "--password-file", pw); code == 0 || !strings.Contains(errOut, "never writes it out in clear") {
+			t.Fatalf("export %s: %d %s", format, code, errOut)
+		}
+	}
+	if out, code := runWallet(t, "account", "node-key", c); code != 0 || !strings.Contains(out, "encrypted by the node") {
+		t.Fatalf("node-key: %d %s", code, out)
+	}
 }
