@@ -115,16 +115,18 @@ func TestChangeWalletPasswordResumable(t *testing.T) {
 					t.Fatal("no crash")
 				}
 				noCrash()
-				_, err := w.OpenWallet([]byte("old"))
+				opened, err := w.OpenWallet([]byte("old"))
 				switch step {
 				case "change:next": // wallet.key is the new one already
 					if !IsWrongPassword(err) {
 						t.Fatalf("old password after the new key: %v", err)
 					}
 				default:
-					if !errors.Is(err, ErrChangeInterrupted) {
-						t.Fatalf("old password, change interrupted: %v", err)
+					// the old password opens what is still under the old key, with a warning
+					if err != nil || opened.NextID == "" || len(opened.Warnings) != 1 || !strings.Contains(opened.Warnings[0], "OLD password") {
+						t.Fatalf("old password, change interrupted: %v %+v", err, opened)
 					}
+					opened.Lock()
 				}
 				if err := w.ChangeWalletPassword([]byte("old"), []byte("other")); err == nil {
 					t.Fatal("a second change over an interrupted one")
@@ -178,7 +180,7 @@ func TestMigrationResumable(t *testing.T) {
 	if !w.NeedsMigration() {
 		t.Fatal("no migration needed")
 	}
-	if _, err := w.OpenWallet([]byte("p1")); !errors.Is(err, ErrMigrateFirst) {
+	if _, err := w.OpenWallet([]byte("p1")); !errors.Is(err, ErrMigrateFirst) && !errors.Is(err, ErrNoWalletPassword) {
 		t.Fatalf("open: %v", err)
 	}
 	if _, err := w.CreateAccount("new", newKey(t), []byte("p1")); !errors.Is(err, ErrMigrateFirst) {
@@ -329,5 +331,186 @@ func TestNodeKeyException(t *testing.T) {
 	b, _, err := w.CollectBackup(time.Now())
 	if err != nil || len(b.Accounts) != 1 || b.Accounts[0].Name != "savings" {
 		t.Fatalf("backup: %v", err)
+	}
+}
+
+// An interrupted change opened with the OLD password: the accounts still under the old key open,
+// those under the new one say so; the change is abandoned while none is under the new key, and
+// otherwise only the new password finishes it. A planted wallet.key.next is abandoned the same way.
+func TestInterruptedChangeOldPassword(t *testing.T) {
+	for _, crash := range []string{"change:a", "change:b"} {
+		t.Run(crash, func(t *testing.T) {
+			w, _ := testWallet(t)
+			for _, n := range []string{"a", "b", "c"} {
+				w.CreateAccount(n, newKey(t), []byte("old"))
+			}
+			failAt(t, crash)
+			w.ChangeWalletPassword([]byte("old"), []byte("new"))
+			noCrash()
+			var warned []string
+			w.Warn = func(s string) { warned = append(warned, s) }
+			s, err := w.OpenWallet([]byte("old"))
+			if err != nil || s.NextID == "" {
+				t.Fatalf("%v", err)
+			}
+			defer s.Lock()
+			if len(warned) != 1 || !strings.Contains(warned[0], "remove accounts/wallet.key.next") {
+				t.Fatalf("warnings: %q", warned)
+			}
+			fc, _ := w.Store.Load("c")
+			if k, err := s.Open(fc); err != nil {
+				t.Fatalf("c, still under the old key: %v", err)
+			} else {
+				keys.Zero(k)
+			}
+			err = w.AbandonPasswordChange([]byte("old"))
+			if crash == "change:a" { // nothing under the new key yet
+				if err != nil || w.ChangeInterrupted() || !opens(t, w, "old", "a", "b", "c") {
+					t.Fatalf("abandon: %v", err)
+				}
+				if _, err := w.OpenWallet([]byte("new")); !IsWrongPassword(err) {
+					t.Fatalf("the new password after the abandon: %v", err)
+				}
+				return
+			}
+			// a is under the new key already: refused, and a says how to open it
+			if err == nil || !strings.Contains(err.Error(), "a") || !w.ChangeInterrupted() {
+				t.Fatalf("abandon with an account under the new key: %v", err)
+			}
+			fa, _ := w.Store.Load("a")
+			if _, err := s.Open(fa); err == nil || !strings.Contains(err.Error(), "NEW password") {
+				t.Fatalf("a with the old key: %v", err)
+			}
+			if err := w.AbandonPasswordChange([]byte("wrong")); !IsWrongPassword(err) {
+				t.Fatalf("abandon with a wrong password: %v", err)
+			}
+			s2, err := w.OpenWallet([]byte("new"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s2.Lock()
+			if !opens(t, w, "new", "a", "b", "c") {
+				t.Fatal("not finished")
+			}
+		})
+	}
+	// a planted wallet.key.next (under a password the user never chose)
+	w, _ := testWallet(t)
+	w.CreateAccount("a", newKey(t), []byte("mine"))
+	m, id, _ := keys.NewMasterKey()
+	cur, _ := w.Store.LoadWalletKey(false)
+	planted, _ := keys.SealWalletKey(id, m, cur.ID, make([]byte, 32), []byte("attacker"), testKDF)
+	w.Store.SaveWalletKey(planted, true, false)
+	if err := w.ChangeWalletPassword([]byte("mine"), []byte("x")); !errors.Is(err, ErrChangeInterrupted) || !strings.Contains(err.Error(), "remove accounts/wallet.key.next") {
+		t.Fatalf("change over a planted next: %v", err)
+	}
+	s, err := w.OpenWallet([]byte("mine"))
+	if err != nil || !strings.Contains(strings.Join(s.Warnings, " "), "If you never changed the password, remove accounts/wallet.key.next") {
+		t.Fatalf("planted: %v %v", err, s)
+	}
+	s.Lock()
+	if err := w.AbandonPasswordChange([]byte("mine")); err != nil || !opens(t, w, "mine", "a") {
+		t.Fatalf("abandon the planted file: %v", err)
+	}
+}
+
+// A lost wallet.key: the accounts are orphaned, said by the list, nothing new is created; the
+// backup's import replaces them (the old files kept in .orphaned) and every account opens.
+func TestOrphanedAccountsRestored(t *testing.T) {
+	lightBackupKDF(t)
+	w, home := testWallet(t)
+	addr := map[string]string{}
+	for _, n := range []string{"a", "b"} {
+		f, _ := w.CreateAccount(n, newKey(t), []byte("pw"))
+		addr[n] = f.Public
+	}
+	b, _, _ := w.CollectBackup(time.Now())
+	path := filepath.Join(home, "b.dat")
+	if err := WriteBackup(path, b, []byte("pw")); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(w.Store.WalletKeyPath()) // lost
+
+	if o := w.OrphanedAccounts(); len(o) != 2 {
+		t.Fatalf("orphaned: %v", o)
+	}
+	if _, problems, _ := w.Accounts(); len(problems) != 1 || !errors.Is(problems[0], ErrOrphaned) || !strings.Contains(problems[0].Error(), "a, b") {
+		t.Fatalf("list: %v", problems)
+	}
+	for _, try := range []func() error{
+		func() error { _, err := w.CreateAccount("c", newKey(t), []byte("pw")); return err },
+		func() error { _, err := w.CreateWalletPassword([]byte("pw")); return err },
+		func() error { _, err := w.OpenWallet([]byte("pw")); return err },
+	} {
+		if err := try(); !errors.Is(err, ErrOrphaned) || !strings.Contains(err.Error(), "backup import") {
+			t.Fatalf("refusal: %v", err)
+		}
+	}
+	data, _ := ReadBackupFile(path)
+	opened, err := OpenBackup(data, []byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, _ := opened.SourceKey([]byte("pw"))
+	plans, _ := w.PlanRestore(opened)
+	names := make([]string, len(plans))
+	for i, p := range plans {
+		if p.State != RestoreReplace || p.Existing != p.Account.Name {
+			t.Fatalf("%s: state %d", p.Account.Name, p.State)
+		}
+		names[i] = p.Existing
+	}
+	if u := w.UncoveredOrphans(plans, names); len(u) != 0 {
+		t.Fatalf("uncovered: %v", u)
+	}
+	if u := w.UncoveredOrphans(plans, []string{names[0], ""}); len(u) != 1 {
+		t.Fatalf("one left out: %v", u)
+	}
+	if err := w.PrepareReplace(plans, names); err != nil {
+		t.Fatal(err)
+	}
+	dst, err := w.CreateWalletPassword([]byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Lock()
+	results, restored, failed := w.Restore(plans, names, src, dst)
+	if restored != 2 || failed != 0 {
+		t.Fatalf("%+v", results)
+	}
+	if !opens(t, w, "pw", "a", "b") || len(w.OrphanedAccounts()) != 0 {
+		t.Fatal("the accounts do not open after the restore")
+	}
+	if runtime.GOOS != "windows" {
+		st, err := os.Stat(w.OrphanedDir())
+		if err != nil || st.Mode().Perm() != 0o700 {
+			t.Fatalf("orphaned dir: %v %v", st, err)
+		}
+		if st, err := os.Stat(filepath.Join(w.OrphanedDir(), "a.json")); err != nil || st.Mode().Perm() != 0o600 {
+			t.Fatalf("orphaned file: %v", err)
+		}
+	}
+}
+
+// A migration's copy that cannot be checked is reported when the wallet opens (Session.Warnings,
+// and w.Warn: the commands print it), and kept.
+func TestMigrationProblemsReported(t *testing.T) {
+	w, _ := testWallet(t)
+	w.CreateAccount("a", newKey(t), []byte("pw"))
+	os.MkdirAll(w.MigrationDir(), 0o700)
+	os.WriteFile(filepath.Join(w.MigrationDir(), "ghost.json"), []byte("{}"), 0o600)
+	os.WriteFile(w.Store.FilePath("ghost"), []byte("not json"), 0o600)
+	var warned []string
+	w.Warn = func(s string) { warned = append(warned, s) }
+	s, err := w.OpenWallet([]byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Lock()
+	if len(s.Warnings) != 1 || !strings.Contains(s.Warnings[0], "ghost") || len(warned) != 1 {
+		t.Fatalf("warnings: %q %q", s.Warnings, warned)
+	}
+	if _, err := os.Stat(filepath.Join(w.MigrationDir(), "ghost.json")); err != nil {
+		t.Fatal("the copy was removed")
 	}
 }

@@ -624,7 +624,8 @@ func (a *app) accountExport(name, format, outFile string, yes bool) error {
 }
 
 // exportPassword is the password of an encrypted export: by default the wallet password
-// (a copy of pw), or another one typed twice. The caller zeroes it.
+// (a copy of pw), or another one typed twice. With --password-file or without a terminal there
+// is nobody to ask: the export is under the wallet password. The caller zeroes it.
 func (a *app) exportPassword(pw []byte) ([]byte, error) {
 	same := append([]byte(nil), pw...)
 	if a.passwordFile != "" || !stdinIsTerminal() {

@@ -156,6 +156,8 @@ func (a *app) backupImport(path, suffix string, yes bool, walletPwFile string) e
 		switch {
 		case p.State == wallet.RestoreExists:
 			note = "  already here as " + p.Existing + ": skipped"
+		case p.State == wallet.RestoreReplace:
+			note = "  replaces the orphaned " + p.Existing + " (its wallet key is lost; the old file goes to accounts/.orphaned/)"
 		case p.State == wallet.RestoreNameTaken:
 			note = "  the name is another account's here"
 		case p.Old && !p.OldPasswordFound():
@@ -167,8 +169,13 @@ func (a *app) backupImport(path, suffix string, yes bool, walletPwFile string) e
 	names := make([]string, len(plans))
 	taken := map[string]bool{} // the names restored: a new name may not be one of them
 	for i, p := range plans {
-		if p.State == wallet.RestoreNew {
+		switch p.State {
+		case wallet.RestoreNew:
 			names[i] = p.Account.Name
+		case wallet.RestoreReplace:
+			names[i] = p.Existing
+		}
+		if names[i] != "" {
 			taken[names[i]] = true
 		}
 	}
@@ -228,6 +235,9 @@ func (a *app) backupImport(path, suffix string, yes bool, walletPwFile string) e
 		}
 		defer dst.Lock()
 	} else if count > 0 {
+		if u := a.w.UncoveredOrphans(plans, names); len(u) > 0 {
+			return a.w.OrphanedErr(u)
+		}
 		fmt.Fprintln(os.Stderr, "This wallet has no password yet: the backup's password becomes its wallet password.")
 	}
 	if !yes {
@@ -243,6 +253,9 @@ func (a *app) backupImport(path, suffix string, yes bool, walletPwFile string) e
 		}
 	}
 	if dst == nil && count > 0 {
+		if err := a.w.PrepareReplace(plans, names); err != nil {
+			return err
+		}
 		if dst, err = a.w.CreateWalletPassword(pw); err != nil {
 			return err
 		}

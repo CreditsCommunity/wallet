@@ -326,6 +326,10 @@ const (
 	RestoreExists
 	// RestoreNameTaken: the name is another address's here: a new name is needed.
 	RestoreNameTaken
+	// RestoreReplace: the address is here, but orphaned (under a wallet key this wallet does not
+	// have, wallet.key lost or replaced): the file here goes to accounts/.orphaned/ and the
+	// backup's copy takes its place, under its name.
+	RestoreReplace
 )
 
 // RestorePlan is an account of the backup and what the restore would do with it.
@@ -351,6 +355,10 @@ func (w *Wallet) PlanRestore(b *Backup) ([]RestorePlan, error) {
 	for _, f := range files {
 		byAddress[f.Public] = f.Name
 	}
+	orphaned := map[string]bool{}
+	for _, f := range w.OrphanedAccounts() {
+		orphaned[f.Name] = true
+	}
 	var plans []RestorePlan
 	for _, a := range b.Accounts {
 		p := RestorePlan{Account: a}
@@ -358,6 +366,8 @@ func (w *Wallet) PlanRestore(b *Backup) ([]RestorePlan, error) {
 			p.Old = f.OldPassword()
 		}
 		switch name, ok := byAddress[a.Address]; {
+		case ok && orphaned[name]:
+			p.State, p.Existing = RestoreReplace, name
 		case ok:
 			p.State, p.Existing = RestoreExists, name
 		case w.NameTaken(a.Name):
@@ -590,6 +600,27 @@ func (w *Wallet) Restore(plans []RestorePlan, names []string, src, dst *Session)
 			name = names[i]
 		}
 		switch {
+		case p.State == RestoreReplace && name != "":
+			if err := w.MoveOrphaned(p.Existing); err != nil {
+				r.Result, r.Reason = "failed", err.Error()
+				failed++
+				results = append(results, r)
+				continue
+			}
+			err := w.RestoreAccount(p, name, src, dst)
+			if err != nil && !w.Store.Exists(name) {
+				r.Result, r.Reason = "failed", err.Error()+" (the orphaned file is in "+w.OrphanedDir()+")"
+				failed++
+				results = append(results, r)
+				continue
+			} else if err != nil {
+				r.Warning = err.Error()
+			}
+			r.Result, r.Reason = "restored", "replaces the orphaned "+p.Existing+" (kept in "+w.OrphanedDir()+")"
+			if name != p.Account.Name {
+				r.RestoredAs = name
+			}
+			restored++
 		case p.State == RestoreExists:
 			r.Result, r.Reason = "skipped", "the address is already the account "+p.Existing
 			if err := w.MergeBackupLists(p.Account); err != nil {
@@ -633,3 +664,37 @@ func (w *Wallet) FreeRestoreName(name string, taken map[string]bool) error {
 	}
 	return nil
 }
+
+// PrepareReplace moves out the orphaned files the restore replaces (plans[i] restored under
+// names[i]), before a wallet password is created for a wallet whose wallet.key was lost.
+func (w *Wallet) PrepareReplace(plans []RestorePlan, names []string) error {
+	for i, p := range plans {
+		if p.State == RestoreReplace && i < len(names) && names[i] != "" {
+			if err := w.MoveOrphaned(p.Existing); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// UncoveredOrphans are the orphaned accounts the restore does not replace: a wallet without
+// wallet.key cannot take a new wallet password while they are there.
+func (w *Wallet) UncoveredOrphans(plans []RestorePlan, names []string) []*keys.File {
+	covered := map[string]bool{}
+	for i, p := range plans {
+		if p.State == RestoreReplace && i < len(names) && names[i] != "" {
+			covered[p.Existing] = true
+		}
+	}
+	var out []*keys.File
+	for _, f := range w.OrphanedAccounts() {
+		if !covered[f.Name] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// OrphanedErr is the refusal that names orphaned accounts.
+func (w *Wallet) OrphanedErr(files []*keys.File) error { return w.orphanedErr(files) }

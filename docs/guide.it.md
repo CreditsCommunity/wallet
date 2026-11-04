@@ -185,7 +185,14 @@ di comando `account address NAME` stampa solo l'indirizzo, da passare agli appun
   attuale, poi la nuova due volte. Ogni account viene cifrato di nuovo con una nuova chiave. Se il
   computer si ferma a metà, apri il wallet con la password **nuova**: completa il cambio (quella
   vecchia dice che il cambio è stato interrotto). I backup fatti prima continuano ad aprirsi con la
-  vecchia password: fanne uno nuovo.
+  vecchia password: fanne uno nuovo. Finché nessun account è sotto la nuova password puoi anche
+  abbandonare il cambio: di nuovo `P`, oppure `wallet password --abandon`, con la vecchia password.
+  Se non hai mai cambiato la password e il wallet dice che un cambio è stato interrotto, rimuovi
+  `accounts/wallet.key.next`.
+- **`wallet.key` perso o danneggiato.** Gli account risultano allora orfani e il wallet non crea
+  nulla di nuovo. Importa il tuo ultimo backup (`backup import`): li rimette ciascuno sotto la
+  password del backup e conserva i file orfani in `accounts/.orphaned/`. Senza un backup, spostali
+  altrove e importa ogni account dalle sue 24 parole.
 - **Una chiave in entrata o in uscita.** `account import NOME FILE` accetta un file di chiave
   cifrato (un'esportazione di questo o di un altro wallet): chiede la password di quel file, poi
   conserva la chiave sotto la password del wallet. `account export NOME --out main.key` chiede la

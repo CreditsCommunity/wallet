@@ -46,6 +46,7 @@ type accountScreen struct {
 	mode      pwMode
 	keyFile   *keys.File // an encrypted key file being imported
 	kfForm    *form
+	kfBusy    bool   // its password is being checked
 	nodeDir   string // the node's key is made, for the node in this folder ("": an account of the store)
 	step      accStep
 	form      *form // Name, (Secret,) Password, Repeat
@@ -62,6 +63,13 @@ type accountScreen struct {
 	note      string // after saving: "address copied"
 	savedName string // the account being saved (the form is wiped before)
 }
+
+type keyFileOpenedMsg struct {
+	key ed25519.PrivateKey
+	err error
+}
+
+func (s *accountScreen) close(*model) { s.forget() }
 
 type savedMsg struct {
 	tried    bool // the wallet password was checked (a new account while the wallet is closed)
@@ -159,6 +167,15 @@ func (s *accountScreen) forget() {
 
 func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case keyFileOpenedMsg:
+		s.kfBusy = false
+		if msg.err != nil || s.step != accKeyFilePw {
+			keys.Zero(msg.key)
+			s.err = msg.err
+			return nil
+		}
+		s.key, s.kind = msg.key, "encrypted key file"
+		return s.save(m)
 	case savedMsg:
 		if msg.tried {
 			m.pwTried(msg.err)
@@ -271,20 +288,22 @@ func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		}
 		return s.draw()
 	case accKeyFilePw:
+		if s.kfBusy {
+			return nil
+		}
 		cmd, done := s.kfForm.update(msg)
 		if !done {
 			return cmd
 		}
 		pw := []byte(s.kfForm.inputs[0].Value())
 		s.kfForm.wipe()
-		key, err := s.keyFile.Decrypt(pw)
-		keys.Zero(pw)
-		if err != nil {
-			s.err = err
-			return nil
+		s.kfBusy, s.err = true, nil
+		kf := s.keyFile
+		return func() tea.Msg { // Argon2id: not in the update loop
+			defer keys.Zero(pw)
+			key, err := kf.Decrypt(pw)
+			return keyFileOpenedMsg{key, err}
 		}
-		s.err, s.key, s.kind = nil, key, "encrypted key file"
-		return s.save(m)
 	case accWords:
 		if k, ok := msg.(tea.KeyMsg); ok && k.String() == "enter" {
 			s.positions = rand.Perm(len(s.words))[:3]
@@ -489,7 +508,11 @@ func (s *accountScreen) view(m *model) string {
 	case accKeyFilePw:
 		b.WriteString("An encrypted key file: its own password opens it, then it goes under the wallet password.\n\n")
 		b.WriteString(s.kfForm.view())
-		b.WriteString("\n" + keyHelp("Enter", "open", "Esc", "cancel") + "\n")
+		if s.kfBusy {
+			b.WriteString(stDim.Render("opening the key file…") + "\n")
+		} else {
+			b.WriteString("\n" + keyHelp("Enter", "open", "Esc", "cancel") + "\n")
+		}
 	case accCheck:
 		b.WriteString("Type back three of the words.\n\n")
 		b.WriteString(s.check.view())

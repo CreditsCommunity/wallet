@@ -172,6 +172,11 @@ func (k *WalletKey) Marshal() []byte {
 	return append(data, '\n')
 }
 
+// accountAD is an account file's associated data: the version, the wallet key's id and the public
+// key. The account's name is not bound: it is a label, and the file's name decides it (Store.List;
+// the "name" inside is not read back). Binding it would make a file renamed by hand unreadable, and
+// a swap of two files' names only swaps the labels: the address shown with each name is bound, and
+// is what the reviews show and sign from.
 func accountAD(version int, keyID, public string) []byte {
 	return []byte(fmt.Sprintf("credits-wallet key file v%d|wallet-key %s|%s", version, keyID, public))
 }
@@ -338,6 +343,9 @@ func (s Store) writeAtomic(final string, data []byte, replace bool) error {
 			return err
 		}
 	} else if err := os.Link(tmp.Name(), final); err != nil {
+		// a new file: linked to its name, which fails when the name exists; on a file system
+		// without hard links, renamed after the check above (a race with another writer is then
+		// possible: the accounts folder is the user's own, mode 0700)
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("%s already exists", final)
 		}

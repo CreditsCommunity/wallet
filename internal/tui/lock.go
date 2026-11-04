@@ -43,7 +43,9 @@ type unlockedMsg struct {
 	u       *wallet.Unlocked
 	session *wallet.Session // the wallet opened with its password (nil: it was open, or not needed)
 	moved   []string        // accounts with an old password that the wallet password opened: moved
-	err     error
+	// warnings: what opening the wallet found (an interrupted change, a migration's problems)
+	warnings []string
+	err      error
 }
 type retryMsg struct{}
 
@@ -65,7 +67,13 @@ func (m *model) lockSession(why, selectName string) {
 		m.session.Lock()
 		m.session = nil
 	}
+	m.epoch++ // the work started before is dropped when it ends (staleMsg)
 	m.lockAccount(why, selectName)
+}
+
+// addFlash adds a line to the main screen's message.
+func (m *model) addFlash(line string) {
+	m.flash = strings.TrimPrefix(m.flash+"; "+oneLine(line), "; ")
 }
 
 // lockAccount zeroes the unlocked key and forgets everything shown of the account; the interface
@@ -85,6 +93,9 @@ func (m *model) lockAccount(why, selectName string) {
 	if selectName != "" {
 		m.selectName = selectName
 		m.selectByName()
+	}
+	if c, ok := m.screen.(interface{ close(*model) }); ok {
+		c.close(m) // what the screen holds (a wallet it opened, a backup) is zeroed
 	}
 	m.screen = nil
 	m.lock.reset(why)
@@ -121,8 +132,16 @@ func (m *model) updateLock(msg tea.Msg) tea.Cmd {
 				m.session.Lock()
 			}
 			m.session = msg.session
+			m.epoch++
 			if len(msg.moved) > 0 {
-				m.flash = strings.TrimPrefix(m.flash+"; moved under the wallet password: "+strings.Join(msg.moved, ", "), "; ")
+				m.addFlash("moved under the wallet password: " + strings.Join(msg.moved, ", "))
+			}
+			for _, w := range msg.warnings {
+				m.addFlash(w)
+			}
+			if msg.err != nil { // the wallet is open, the account is not: back to the list
+				s.reset(oneLine(msg.err.Error()))
+				return m.loadAccounts()
 			}
 		}
 		if msg.err != nil {
@@ -264,17 +283,25 @@ func (s *lockScreen) open(m *model, pw []byte) tea.Cmd {
 				}
 				return unlockedMsg{err: err}
 			}
-			moved, _, _ := w.MigrateWith(ws, pw)
-			w.FinishMigration(ws)
+			warnings := append([]string(nil), ws.Warnings...)
+			var moved []string
+			if len(w.OldPasswordAccounts()) > 0 { // only when some are left
+				var err error
+				moved, _, err = w.MigrateWith(ws, pw)
+				if err != nil {
+					warnings = append(warnings, "moving the accounts with an old password: "+err.Error())
+				}
+				for _, p := range w.FinishMigration(ws) {
+					warnings = append(warnings, "the migration's copies: "+p.Error())
+				}
+				if moved == nil {
+					moved = []string{}
+				}
+			}
 			u, err := w.UnlockWith(ws, f)
-			if err != nil {
-				ws.Lock()
-				return unlockedMsg{err: err}
-			}
-			if moved == nil {
-				moved = []string{}
-			}
-			return unlockedMsg{u: u, session: ws, moved: moved}
+			// the wallet stays open even when this account does not (an interrupted change: it
+			// may be under the new password already)
+			return unlockedMsg{u: u, session: ws, moved: moved, warnings: warnings, err: err}
 		}
 		u, err := w.Unlock(f, pw)
 		return unlockedMsg{u: u, err: err}

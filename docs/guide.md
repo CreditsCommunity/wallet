@@ -179,8 +179,15 @@ own: if your terminal blocks OSC 52, hold Shift and drag over it. On the command
 - **Change it** with `P` on the main screen or `./credits-wallet wallet password`: the current
   password, then the new one twice. Every account is re-encrypted under a new key. If the computer
   stops half-way, open the wallet with the **new** password: it finishes the change (the old one
-  says the change was interrupted). Backups made before keep opening with the old password: make a
-  new one.
+  says the change was interrupted and opens only the accounts not yet moved). While no account is
+  under the new password yet, you can also abandon the change: `P` again, or `wallet password
+  --abandon`, with the old password. If you never changed the password and the wallet says a change
+  was interrupted, remove `accounts/wallet.key.next`. Backups made before keep opening with the old
+  password: make a new one.
+- **`wallet.key` lost or damaged.** The accounts are then listed as orphaned and the wallet creates
+  nothing new. Import your latest backup (`backup import`): it puts each of them back under the
+  backup's password and keeps the orphaned files in `accounts/.orphaned/`. Without a backup, move
+  them away and import each account from its 24 words.
 - **One key in or out.** `account import NAME FILE` accepts an encrypted key file (an export of
   this or another wallet): it asks that file's password, then keeps the key under the wallet
   password. `account export NAME --out main.key` asks the wallet password, then offers the exported

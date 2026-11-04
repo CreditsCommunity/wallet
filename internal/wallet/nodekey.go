@@ -367,6 +367,9 @@ func (w *Wallet) Accounts() (files []*keys.File, problems []error, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if orphans := w.OrphanedAccounts(); len(orphans) > 0 {
+		problems = append(problems, w.orphanedErr(orphans))
+	}
 	nf, nerr := w.NodeAccount()
 	if nerr != nil {
 		problems = append([]error{fmt.Errorf("the node's key: %w", nerr)}, problems...)

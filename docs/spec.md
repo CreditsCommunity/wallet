@@ -102,7 +102,9 @@ ci/release/build.sh      the reproducible release archives
   are checked and removed: an account file missing is put back from its copy, one under the wallet
   key must open with it (otherwise the copy is put back), one still under its old password is left.
   So a crash at any point leaves each account whole, under one password or the other, and the
-  migration goes on at the next start. Until the wallet password exists, new accounts, imports and
+  migration goes on at the next start. Until the next opening removes them, the copies in
+  `.migration/` are version 1 files: they still open with the account's old password (mode 0600,
+  in the user's own accounts folder). Until the wallet password exists, new accounts, imports and
   backups are refused with "choose the wallet password first".
 - **Change of the wallet password** (`wallet password`, `P` in the interface): the current
   password, the new one twice. A new master key is drawn; `wallet.key.next` (exclusive, mode 0600)
@@ -110,8 +112,33 @@ ci/release/build.sh      the reproducible release archives
   file under the previous key is re-encrypted under the new one, each replaced atomically; then
   `wallet.key` is replaced (atomically) by the new key alone and `wallet.key.next` removed.
   Interrupted anywhere, opening the wallet with the new password finishes it (`wallet.key.next`
-  holds both keys); the old password then says "a change of the wallet password was interrupted:
-  type the NEW password". Backups already made keep opening with the old password (4.5).
+  holds both keys). The old password, while `wallet.key.next` is there, opens the wallet on the
+  old key with a warning: the accounts still under it open, those already under the new key say
+  that the new password is needed; "if you never changed the password, remove
+  accounts/wallet.key.next" is added (a stale or planted file). `wallet password --abandon` (and
+  `P` in the interface, which then offers it) removes `wallet.key.next` with the old password,
+  only while no account is under the new key; otherwise the new password is needed to finish.
+  Another change waits until the interrupted one is finished or abandoned. Backups already made
+  keep opening with the old password (4.5).
+- **Orphaned accounts.** An account file under a wallet key that is neither `wallet.key`'s nor
+  that of a change in progress (`wallet.key` lost, damaged or replaced) is orphaned: nothing here
+  opens it. The list reports them by name; a new wallet password, a new account and an import are
+  refused while they are there, the message naming them and pointing to `backup import`. The
+  import of a backup that holds them replaces them (4.5, "replace"): each orphaned file is moved
+  to `accounts/.orphaned/` (mode 0700, files 0600, an older one kept), then the backup's copy is
+  written under the importing wallet's key, with the same name.
+- **Warnings of the opening.** What opening the wallet finds (an interrupted change, problems of a
+  migration's copies, the moves of accounts with an old password made at unlock) is printed by
+  the commands on stderr ("warning: …") and shown by the interface on its main line.
+- **Retry delay.** The interface delays the next try of a wrong wallet password (6, "Unlock"). The
+  commands have none: each attempt is a process of its own, with Argon2id's cost; that is no
+  faster than guessing offline from a copy of `wallet.key`, which the delay cannot prevent either.
+  The defence is the password's strength.
+- **The account's name is not bound** to an account file of version 2 (its associated data binds
+  the version, the wallet key's id and the public key): the name is a label taken from the file's
+  name (the "name" inside is not read back). Binding it would make a file renamed by hand
+  unreadable; swapping two files' names swaps only the labels, while the address shown with each
+  name, which every review shows and signs from, is bound.
 - The commands decrypt the secret key only to sign, hold it in memory as briefly as possible and
   zero it after use. The terminal interface keeps the key of the account it unlocked for the
   session (6, "Unlock"): in memory of its own outside Go's heap (`mmap`, `VirtualAlloc`), locked
@@ -129,7 +156,9 @@ ci/release/build.sh      the reproducible release archives
   (core dumps are off: 4.2 above).
 - Key files are written whole to a temporary file (mode 0600), synced, then linked to their name:
   never half-written, never replacing an existing account (a migration or a change of password
-  replaces an account's file atomically, by rename). Files whose KDF parameters are outside
+  replaces an account's file atomically, by rename). On a file system without hard links a new
+  file (an account, `wallet.key`) is renamed to its name after a check that the name is free:
+  another writer could then come in between, in the user's own accounts folder (mode 0700). Files whose KDF parameters are outside
   time 1-16, memory 64 MiB-1 GiB, parallelism 1-32 are refused (more costs too much to open; less
   was not written by the wallet). Unreadable key files are reported, not skipped.
 - New keys come from `crypto/rand` (the operating system's CSPRNG); a new account shows its 24-word
@@ -174,8 +203,9 @@ ci/release/build.sh      the reproducible release archives
   wallets' JSON are encrypted under it directly. An account file of version 2 belongs to another
   wallet's `wallet.key` and is refused (export it from that wallet, or use the 24 words).
   `account export NAME` (the encrypted format) asks the wallet password, then the exported file's
-  password: by default the wallet password (Enter or `w`), or another one typed twice (`o`); the
-  file is a key file of version 1 (its own salt), importable by any wallet. `base58`, `official` and
+  password: by default the wallet password (Enter or `w`), or another one typed twice (`o`); with
+  `--password-file` or without a terminal there is nobody to ask, and the export is under the
+  wallet password. The file is a key file of version 1 (its own salt), importable by any wallet. `base58`, `official` and
   `node` ask the wallet password and are otherwise unchanged.
 
 ### 4.3 The node's key files
@@ -407,7 +437,10 @@ later). A wallet whose own accounts still have passwords each is refused until i
 wallet lists the backup's accounts (name and
 address) with what it will do, then asks "Restore N accounts? [y/N]" (CLI: `--yes` skips it, and
 without a terminal it is required). An account whose address is already in the wallet (the node's
-key included) is skipped and reported; its token and contract list entries the wallet lacks are
+key included) is skipped and reported, unless it is orphaned (4.2): then the backup's copy
+**replaces** it, the orphaned file moved to `accounts/.orphaned/`, shown and confirmed as the other
+states (a wallet without `wallet.key` takes the backup's password only when the backup replaces
+every orphaned account); its token and contract list entries the wallet lacks are
 merged. A name taken by another address needs a new name: `--rename-suffix S` (the name plus S),
 or on a terminal a name typed for each (Enter skips the account); the TUI asks it in a field;
 without either, the account is skipped. Each account is written by the key store's writer (4.2:
@@ -800,7 +833,7 @@ tries while the delay runs ("wait N s before the next try").
 Unlocked, signing asks no password again (the user's choice); on MAINNET the review still asks to
 type `send`, and shows everything as before. `l` locks the wallet (the master key and the account's
 key zeroed); `a` switches account (the account's key zeroed, the wallet stays open);
-the session locks by itself after `lock_after_minutes` (top level of `config.toml`, default 10;
+the session (the open wallet too, when no account is unlocked) locks by itself after `lock_after_minutes` (top level of `config.toml`, default 10;
 `0` never locks: then anyone at the terminal can sign with the unlocked account) without a key
 press or click, but never while a transaction is on its way. After an account is created or
 imported (or the node's key made), the account that was open is locked and the unlock screen comes

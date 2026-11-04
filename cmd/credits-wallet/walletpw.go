@@ -57,6 +57,7 @@ func (a *app) walletPasswordForNewAccount() ([]byte, error) {
 func (a *app) cmdWallet(_ context.Context, args []string) error {
 	fs := newFlagSet(a, "wallet")
 	newPwFile := fs.String("new-password-file", "", "password: the new password from FILE")
+	abandon := fs.Bool("abandon", false, "password: abandon an interrupted change (with the old password)")
 	pos, err := a.commandArgs(fs, args, 1)
 	if err != nil {
 		return err
@@ -66,6 +67,17 @@ func (a *app) cmdWallet(_ context.Context, args []string) error {
 		return a.walletStatus()
 	case len(pos) == 1 && pos[0] == "migrate":
 		return a.walletMigrate()
+	case len(pos) == 1 && pos[0] == "password" && *abandon:
+		pw, err := a.readPassword("Old wallet password: ", false)
+		if err != nil {
+			return err
+		}
+		defer keys.Zero(pw)
+		if err := a.w.AbandonPasswordChange(pw); err != nil {
+			return err
+		}
+		fmt.Fprintln(a.out, "the interrupted change is abandoned: the wallet password is the old one")
+		return nil
 	case len(pos) == 1 && pos[0] == "password":
 		return a.walletChangePassword(*newPwFile)
 	}

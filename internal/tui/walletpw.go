@@ -39,6 +39,8 @@ type migrateScreen struct {
 }
 
 type migratedMsg struct {
+	epoch   int
+	tried   bool // the wallet password was checked (it existed)
 	session *wallet.Session
 	moved   []string
 	left    []*keys.File
@@ -46,8 +48,9 @@ type migratedMsg struct {
 }
 
 type migratedOneMsg struct {
-	name string
-	err  error
+	epoch int
+	name  string
+	err   error
 }
 
 func (m *model) newMigrateScreen() *migrateScreen {
@@ -67,6 +70,17 @@ func (m *model) newMigrateScreen() *migrateScreen {
 }
 
 func (s *migrateScreen) title() string { return "One password for the wallet" }
+
+// close zeroes the wallet the screen opened, unless it is the model's.
+func (s *migrateScreen) close(m *model) {
+	if s.form != nil {
+		s.form.wipe()
+	}
+	if s.session != nil && s.session != m.session {
+		s.session.Lock()
+	}
+	s.session = nil
+}
 
 func (s *migrateScreen) nextAccount() {
 	if len(s.left) == 0 {
@@ -102,14 +116,17 @@ func (s *migrateScreen) finish(m *model) tea.Cmd {
 func (s *migrateScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case migratedMsg:
-		if !s.choose {
+		if msg.tried {
 			m.pwTried(msg.err)
 		}
-		if msg.err != nil {
+		if msg.err != nil && msg.session == nil {
 			s.step, s.err = migPassword, wrongPassword(msg.err)
 			return nil
 		}
-		s.session, s.moved, s.left, s.err = msg.session, msg.moved, msg.left, nil
+		s.session, s.moved, s.left, s.err = msg.session, msg.moved, msg.left, msg.err
+		for _, w := range msg.session.Warnings {
+			m.addFlash(w)
+		}
 		s.nextAccount()
 		return nil
 	case migratedOneMsg:
@@ -155,7 +172,7 @@ func (s *migrateScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		}
 		s.form.wipe()
 		s.step, s.err = migWorking, nil
-		w, choose := m.w, s.choose
+		w, choose, epoch := m.w, s.choose, m.epoch
 		return func() tea.Msg {
 			defer keys.Zero(pw)
 			var ws *wallet.Session
@@ -166,10 +183,10 @@ func (s *migrateScreen) update(m *model, msg tea.Msg) tea.Cmd {
 				ws, err = w.OpenWallet(pw)
 			}
 			if err != nil {
-				return migratedMsg{err: err}
+				return migratedMsg{epoch: epoch, tried: !choose, err: err}
 			}
 			moved, left, err := w.MigrateWith(ws, pw)
-			return migratedMsg{session: ws, moved: moved, left: left, err: err}
+			return migratedMsg{epoch: epoch, tried: !choose, session: ws, moved: moved, left: left, err: err}
 		}
 	case migAccount:
 		cmd, done := s.form.update(msg)
@@ -189,10 +206,10 @@ func (s *migrateScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			sess = m.session
 		}
 		s.step = migWorking
-		w := m.w
+		w, epoch := m.w, m.epoch
 		return func() tea.Msg {
 			defer keys.Zero(pw)
-			return migratedOneMsg{name: f.Name, err: w.MigrateAccount(sess, f, pw)}
+			return migratedOneMsg{epoch: epoch, name: f.Name, err: w.MigrateAccount(sess, f, pw)}
 		}
 	case migDone:
 		if _, ok := msg.(tea.KeyMsg); ok {
@@ -251,13 +268,16 @@ func (s *migrateScreen) view(m *model) string {
 // ---- change of the wallet password -----------------------------------------------------------------
 
 type passwordScreen struct {
-	form *form
-	busy bool
-	done bool
-	err  error
+	form      *form
+	abandon   bool // a change was interrupted: it is abandoned here (with the old password)
+	abandoned bool
+	busy      bool
+	done      bool
+	err       error
 }
 
 type passwordChangedMsg struct {
+	epoch   int
 	session *wallet.Session
 	err     error
 }
@@ -265,6 +285,17 @@ type passwordChangedMsg struct {
 func newPasswordScreen() *passwordScreen {
 	return &passwordScreen{form: newForm("Current", "New", "Repeat").secret(0).secret(1).secret(2)}
 }
+
+// newPasswordScreenFor is the change of password, or, when a change was interrupted, its
+// abandon (with the old password: possible while no account is under the new key yet).
+func (m *model) newPasswordScreenFor() *passwordScreen {
+	if m.w.ChangeInterrupted() {
+		return &passwordScreen{abandon: true, form: newForm("Old pw").secret(0)}
+	}
+	return newPasswordScreen()
+}
+
+func (s *passwordScreen) close(*model) { s.form.wipe() }
 
 func (s *passwordScreen) title() string { return "Change the wallet password" }
 
@@ -277,11 +308,18 @@ func (s *passwordScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			s.err = wrongPassword(msg.err)
 			return nil
 		}
+		if msg.session == nil { // abandoned: the wallet as it was
+			s.done, s.abandoned, s.err = true, true, nil
+			return nil
+		}
 		// the wallet's key changed: the session goes on with the new one
 		if m.session != nil {
 			m.session.Lock()
 		}
 		m.session, s.done, s.err = msg.session, true, nil
+		for _, w := range msg.session.Warnings {
+			m.addFlash(w)
+		}
 		return nil
 	case tea.KeyMsg:
 		if s.busy {
@@ -300,6 +338,16 @@ func (s *passwordScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		s.err = err
 		return nil
 	}
+	if s.abandon {
+		old := []byte(s.form.inputs[0].Value())
+		s.form.wipe()
+		s.busy, s.err = true, nil
+		w, epoch := m.w, m.epoch
+		return func() tea.Msg {
+			defer keys.Zero(old)
+			return passwordChangedMsg{epoch: epoch, err: w.AbandonPasswordChange(old)}
+		}
+	}
 	old, pw, again := []byte(s.form.inputs[0].Value()), []byte(s.form.inputs[1].Value()), []byte(s.form.inputs[2].Value())
 	s.form.wipe()
 	s.form.setFocus(0)
@@ -312,21 +360,30 @@ func (s *passwordScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	s.busy, s.err = true, nil
-	w := m.w
+	w, epoch := m.w, m.epoch
 	return func() tea.Msg {
 		defer keys.Zero(old)
 		defer keys.Zero(pw)
 		if err := w.ChangeWalletPassword(old, pw); err != nil {
-			return passwordChangedMsg{err: err}
+			return passwordChangedMsg{epoch: epoch, err: err}
 		}
 		ws, err := w.OpenWallet(pw)
-		return passwordChangedMsg{session: ws, err: err}
+		return passwordChangedMsg{epoch: epoch, session: ws, err: err}
 	}
 }
 
 func (s *passwordScreen) view(m *model) string {
 	var b strings.Builder
 	switch {
+	case s.abandoned:
+		b.WriteString(stOK.Render("✓ the interrupted change is abandoned: the wallet password is the old one") + "\n")
+		b.WriteString(stDim.Render("any key: back") + "\n")
+	case s.abandon && !s.busy:
+		b.WriteString("A change of the wallet password was interrupted. Type the OLD password to abandon it\n")
+		b.WriteString("(possible while no account is under the new password yet), or lock (l) and open\n")
+		b.WriteString("the wallet with the NEW password, which finishes it.\n\n")
+		b.WriteString(s.form.view())
+		b.WriteString("\n" + keyHelp("Enter", "abandon the change", "Esc", "cancel") + "\n")
 	case s.done:
 		b.WriteString(stOK.Render("✓ wallet password changed: every account is under a new wallet key") + "\n")
 		b.WriteString(stWarn.Render(wallet.BackupOldPasswordNote) + "\n")
@@ -383,4 +440,51 @@ func wrongPassword(err error) error {
 		return wallet.ErrUnlock
 	}
 	return err
+}
+
+// stale drops the end of work started before the wallet was locked (epoch): a wallet it opened
+// is zeroed, never installed; a wrong wallet password it found still counts (pwTried).
+func stale(m *model, msg tea.Msg) bool {
+	var epoch int
+	var carried []*wallet.Session
+	switch msg := msg.(type) {
+	case passwordChangedMsg:
+		epoch, carried = msg.epoch, []*wallet.Session{msg.session}
+		if epoch != m.epoch {
+			m.pwTried(msg.err)
+		}
+	case migratedMsg:
+		epoch, carried = msg.epoch, []*wallet.Session{msg.session}
+		if epoch != m.epoch && msg.tried {
+			m.pwTried(msg.err)
+		}
+	case migratedOneMsg:
+		epoch = msg.epoch
+	case backupDstMsg:
+		epoch, carried = msg.epoch, []*wallet.Session{msg.dst}
+		if epoch != m.epoch {
+			m.pwTried(msg.err)
+		}
+	case backupOpenedMsg:
+		epoch, carried = msg.epoch, []*wallet.Session{msg.src, msg.dst}
+		if epoch != m.epoch {
+			if msg.dstTried {
+				m.pwTried(msg.dstErr)
+			}
+			msg.b.Wipe()
+			wallet.WipePlans(msg.plans)
+			keys.Zero(msg.pw)
+		}
+	default:
+		return false
+	}
+	if epoch == m.epoch {
+		return false
+	}
+	for _, c := range carried {
+		if c != m.session {
+			c.Lock()
+		}
+	}
+	return true
 }

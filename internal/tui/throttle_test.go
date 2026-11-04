@@ -130,3 +130,47 @@ func errText(err error) string {
 	}
 	return err.Error()
 }
+
+// The wallet open with no account unlocked (after a) still locks after lock_after_minutes: the
+// master key opens every account.
+func TestAutoLockClosesTheWallet(t *testing.T) {
+	m, c, _ := lockModel(t)
+	tryPassword(t, m, "main-pw")
+	typeText(m, "a")
+	if m.unlocked != nil || m.session == nil {
+		t.Fatal("a: the account unlocked, or the wallet closed")
+	}
+	sess := m.session
+	c.add(11 * time.Minute)
+	m.Update(tickMsg{})
+	if m.session != nil || !sess.Locked() {
+		t.Fatal("the wallet stayed open past lock_after_minutes")
+	}
+}
+
+// Work that ends after the wallet was locked is dropped: the wallet it opened is zeroed, never
+// installed.
+func TestStaleWorkDropped(t *testing.T) {
+	m, _, _ := lockModel(t)
+	tryPassword(t, m, "main-pw")
+	s := newPasswordScreen()
+	m.screen = s
+	s.form.inputs[0].SetValue("main-pw")
+	s.form.inputs[1].SetValue("another password")
+	s.form.inputs[2].SetValue("another password")
+	s.form.setFocus(2)
+	cmd := press(m, tea.KeyEnter)
+	if cmd == nil {
+		t.Fatal("no change started")
+	}
+	m.lockSession("locked", "") // the auto-lock, while the change runs
+	msg := cmd()
+	changed, ok := msg.(passwordChangedMsg)
+	if !ok || changed.session == nil {
+		t.Fatalf("%T %+v", msg, msg)
+	}
+	m.Update(msg)
+	if m.session != nil || !changed.session.Locked() {
+		t.Fatal("a wallet opened by stale work was installed")
+	}
+}

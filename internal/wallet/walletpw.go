@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
+	"time"
 
 	"github.com/CreditsCommunity/wallet/internal/keys"
 )
@@ -24,15 +26,66 @@ var (
 	ErrMigrateFirst = errors.New("this wallet's accounts still have a password each: choose the wallet password first ('credits-wallet wallet migrate', or start the terminal interface)")
 	// ErrNoWalletPassword: no account yet, no wallet password yet.
 	ErrNoWalletPassword = errors.New("the wallet has no password yet: it is chosen with the first account")
-	// ErrChangeInterrupted: a change of the wallet password was interrupted, and the old password
-	// was typed.
-	ErrChangeInterrupted = errors.New("a change of the wallet password was interrupted: type the NEW password, which finishes it")
+	// ErrChangeInterrupted: a change of the wallet password was interrupted (wallet.key.next is
+	// there): another change waits until it is finished or abandoned.
+	ErrChangeInterrupted = errors.New("a change of the wallet password was interrupted: open the wallet with the NEW password to finish it, or abandon it ('wallet password --abandon', or P in the interface, with the old password); if you never changed the password, remove accounts/wallet.key.next")
+	// ErrOrphaned: account files under a wallet key this wallet does not have.
+	ErrOrphaned = errors.New("accounts under a wallet key this wallet does not have")
 )
+
+// orphanedErr names the orphaned accounts and the way out.
+func (w *Wallet) orphanedErr(files []*keys.File) error {
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		names = append(names, f.Name)
+	}
+	return fmt.Errorf("%w (accounts/wallet.key lost or replaced): %s; restore them with 'backup import FILE.dat', or move them out of %s and import their 24 words; nothing is created meanwhile",
+		ErrOrphaned, strings.Join(names, ", "), w.Store.Dir)
+}
+
+// OrphanedAccounts are the account files under a wallet key that is neither wallet.key's nor
+// that of a change in progress (wallet.key.next): wallet.key was lost, damaged or replaced, and
+// nothing here opens them.
+func (w *Wallet) OrphanedAccounts() []*keys.File {
+	ids := map[string]bool{}
+	if k, err := w.Store.LoadWalletKey(false); err == nil {
+		ids[k.ID] = true
+	}
+	if n, err := w.Store.LoadWalletKey(true); err == nil {
+		ids[n.ID] = true
+	}
+	files, _, _ := w.Store.List()
+	var out []*keys.File
+	for _, f := range files {
+		if f.UnderWalletKey() && !ids[f.KeyID] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// countUnder counts the account files under the wallet key id.
+func (w *Wallet) countUnder(id string) (n int, names []string) {
+	files, _, _ := w.Store.List()
+	for _, f := range files {
+		if f.UnderWalletKey() && f.KeyID == id {
+			n++
+			names = append(names, f.Name)
+		}
+	}
+	return n, names
+}
 
 // Session is the wallet unlocked.
 type Session struct {
 	master *keys.LockedKey
 	ID     string // the wallet key's id
+	// NextID: opened with the OLD password while a change is interrupted, the new key's id (the
+	// accounts already under it do not open in this session).
+	NextID string
+	// Warnings: what opening the wallet found (a change interrupted, problems of a migration's
+	// copies); the commands print them, the interface shows them.
+	Warnings []string
 }
 
 // Lock zeroes the master key. Safe on nil and twice.
@@ -62,6 +115,9 @@ func newSession(id string, master []byte) *Session {
 func (s *Session) Open(f *keys.File) (key ed25519.PrivateKey, err error) {
 	if s.Locked() {
 		return nil, keys.ErrLocked
+	}
+	if s.NextID != "" && f.KeyID == s.NextID {
+		return nil, fmt.Errorf("%s is already under the new wallet password of the interrupted change: open the wallet with the NEW password, which finishes the change", f.Name)
 	}
 	err = s.master.UseSecret(func(m []byte) error {
 		key, err = f.DecryptWithMaster(m, s.ID)
@@ -107,6 +163,9 @@ func (w *Wallet) CreateWalletPassword(password []byte) (*Session, error) {
 	if w.HasWalletPassword() {
 		return nil, errors.New("the wallet already has a password")
 	}
+	if orphans := w.OrphanedAccounts(); len(orphans) > 0 {
+		return nil, w.orphanedErr(orphans)
+	}
 	master, id, err := keys.NewMasterKey()
 	if err != nil {
 		return nil, err
@@ -124,10 +183,28 @@ func (w *Wallet) CreateWalletPassword(password []byte) (*Session, error) {
 }
 
 // OpenWallet opens the wallet with its password. An interrupted change of password is finished
-// here with the new password; the old one says ErrChangeInterrupted. An interrupted migration is
-// checked and its copies removed (FinishMigration).
+// here with the new password; the old password opens the accounts still under the old key, with a
+// warning (Session.NextID, Session.Warnings; AbandonPasswordChange). An interrupted migration is
+// checked and its copies removed (FinishMigration); its problems are in Session.Warnings. The
+// warnings also go to w.Warn when it is set (the commands print them).
 func (w *Wallet) OpenWallet(password []byte) (*Session, error) {
 	defer debug.FreeOSMemory() // Argon2id's working memory
+	s, err := w.openWallet(password)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range w.FinishMigration(s) {
+		s.Warnings = append(s.Warnings, "the migration's copies: "+p.Error())
+	}
+	if w.Warn != nil {
+		for _, warning := range s.Warnings {
+			w.Warn(warning)
+		}
+	}
+	return s, nil
+}
+
+func (w *Wallet) openWallet(password []byte) (*Session, error) {
 	if next, err := w.Store.LoadWalletKey(true); err == nil {
 		master, previous, err := next.Open(password)
 		if err == nil {
@@ -136,20 +213,36 @@ func (w *Wallet) OpenWallet(password []byte) (*Session, error) {
 			if err := w.finishChange(next.ID, master, next.PreviousID, previous, password); err != nil {
 				return nil, fmt.Errorf("finishing the change of the wallet password: %w", err)
 			}
-			s := newSession(next.ID, master)
-			w.FinishMigration(s)
-			return s, nil
+			return newSession(next.ID, master), nil
 		}
-		if cur, err := w.Store.LoadWalletKey(false); err == nil {
-			if m, _, err := cur.Open(password); err == nil {
-				keys.Zero(m)
-				return nil, ErrChangeInterrupted
-			}
+		cur, err := w.Store.LoadWalletKey(false)
+		if err != nil {
+			return nil, keys.ErrWalletPassword
 		}
-		return nil, keys.ErrWalletPassword
+		m, _, err := cur.Open(password)
+		if err != nil {
+			return nil, err
+		}
+		// the OLD password: the accounts still under the old key open, the others wait for the
+		// new password; wallet.key.next may also be planted or stale
+		defer keys.Zero(m)
+		s := newSession(cur.ID, m)
+		s.NextID = next.ID
+		n, names := w.countUnder(next.ID)
+		warning := "a change of the wallet password was interrupted, and this is the OLD password: "
+		if n == 0 {
+			warning += "every account still opens with it. Finish the change by opening the wallet with the NEW password, or abandon it ('wallet password --abandon', or P in the interface)."
+		} else {
+			warning += fmt.Sprintf("%d accounts (%s) are already under the new password and open only with it: open the wallet with the NEW password to finish the change.", n, strings.Join(names, ", "))
+		}
+		s.Warnings = append(s.Warnings, warning+" If you never changed the password, remove accounts/wallet.key.next.")
+		return s, nil
 	}
 	k, err := w.Store.LoadWalletKey(false)
 	if errors.Is(err, os.ErrNotExist) {
+		if orphans := w.OrphanedAccounts(); len(orphans) > 0 {
+			return nil, w.orphanedErr(orphans)
+		}
 		if w.NeedsMigration() {
 			return nil, ErrMigrateFirst
 		}
@@ -163,9 +256,40 @@ func (w *Wallet) OpenWallet(password []byte) (*Session, error) {
 		return nil, err
 	}
 	defer keys.Zero(master)
-	s := newSession(k.ID, master)
-	w.FinishMigration(s)
-	return s, nil
+	return newSession(k.ID, master), nil
+}
+
+// ChangeInterrupted tells whether a change of the wallet password was interrupted.
+func (w *Wallet) ChangeInterrupted() bool {
+	_, err := os.Lstat(w.Store.WalletKeyNextPath())
+	return err == nil
+}
+
+// AbandonPasswordChange removes wallet.key.next of an interrupted change, with the OLD password
+// (it must open wallet.key), when no account is under the new key yet; otherwise only the new
+// password finishes the change.
+func (w *Wallet) AbandonPasswordChange(old []byte) error {
+	defer debug.FreeOSMemory()
+	next, err := w.Store.LoadWalletKey(true)
+	if errors.Is(err, os.ErrNotExist) {
+		return errors.New("no change of the wallet password to abandon")
+	}
+	if err != nil {
+		return err
+	}
+	cur, err := w.Store.LoadWalletKey(false)
+	if err != nil {
+		return err
+	}
+	m, _, err := cur.Open(old)
+	if err != nil {
+		return err
+	}
+	keys.Zero(m)
+	if n, names := w.countUnder(next.ID); n > 0 {
+		return fmt.Errorf("%d accounts (%s) are already under the new password: the change cannot be abandoned, open the wallet with the NEW password to finish it", n, strings.Join(names, ", "))
+	}
+	return os.Remove(w.Store.WalletKeyNextPath())
 }
 
 // crashAt, in tests, fails a step of a change of password or a migration (a crash there).
@@ -403,6 +527,9 @@ func (w *Wallet) CreateAccountIn(s *Session, name string, key ed25519.PrivateKey
 // account, a new wallet password (the caller asked it twice). A wallet whose accounts still have
 // their own passwords is migrated first.
 func (w *Wallet) OpenForNewAccount(password []byte) (*Session, error) {
+	if orphans := w.OrphanedAccounts(); len(orphans) > 0 {
+		return nil, w.orphanedErr(orphans)
+	}
 	if w.HasWalletPassword() {
 		return w.OpenWallet(password)
 	}
@@ -464,4 +591,30 @@ func (w *Wallet) UnlockWith(s *Session, f *keys.File) (*Unlocked, error) {
 		return w.Unlock(f, nil)
 	}
 	return nil, errors.New("this account has a password of its own")
+}
+
+// OrphanedDir keeps the account files a restore replaced because their wallet key was lost.
+func (w *Wallet) OrphanedDir() string { return filepath.Join(w.Store.Dir, ".orphaned") }
+
+// MoveOrphaned moves an orphaned account file out of the store, into OrphanedDir (mode 0700, the
+// file 0600; an older one there is kept, the new one gets the time in its name).
+func (w *Wallet) MoveOrphaned(name string) error {
+	src := w.Store.FilePath(name)
+	if _, err := os.Lstat(src); errors.Is(err, os.ErrNotExist) {
+		return nil // moved already
+	}
+	if err := os.MkdirAll(w.OrphanedDir(), 0o700); err != nil {
+		return err
+	}
+	_ = os.Chmod(w.OrphanedDir(), 0o700)
+	dst := filepath.Join(w.OrphanedDir(), name+".json")
+	if _, err := os.Lstat(dst); err == nil {
+		dst = filepath.Join(w.OrphanedDir(), name+"-"+time.Now().UTC().Format("20060102-150405")+".json")
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return err
+	}
+	_ = os.Chmod(dst, 0o600)
+	syncDir(w.Store.Dir)
+	return nil
 }

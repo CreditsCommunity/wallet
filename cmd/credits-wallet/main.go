@@ -113,7 +113,7 @@ usage: credits-wallet [global flags] [command] [arguments]
   wallet migrate                        move the accounts that still have a password each under
                                         the wallet password (chosen now when there is none: it
                                         may be one of theirs); each other password asked once
-  wallet password [--new-password-file FILE]
+  wallet password [--new-password-file FILE] | wallet password --abandon
                                         change the wallet password: every account re-encrypted
                                         under a new wallet key (an interrupted change finishes
                                         when the wallet is opened with the new password)
@@ -239,6 +239,8 @@ func (a *app) open() error {
 	}
 	// the node's key account is said with its address and file the first time it is read
 	a.w.NodeKeyNotice = func(s string) { fmt.Fprintln(os.Stderr, s) }
+	// what opening the wallet finds (an interrupted change, a migration's problems)
+	a.w.Warn = func(s string) { fmt.Fprintln(os.Stderr, "warning:", echo.Terminal(s)) }
 	// a node's key in the current folder is never used by itself: the interface offers it, the
 	// commands say how to use it
 	a.found = wallet.FindLocalNodeKey(cwd, dir, a.w.NodeKey, wallet.NodeKeyExplicitlyOff(p, a.nodeKey))
@@ -370,6 +372,7 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 			return err
 		}
 		a.w.NodeKeyNotice = nil // the interface shows it on its own screen
+		a.w.Warn = nil          // and the warnings of the wallet's opening
 		return tui.Run(a.w, a.dataDir, a.found)
 	case "status":
 		return a.cmdStatus(ctx, args)

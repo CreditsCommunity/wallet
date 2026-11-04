@@ -226,8 +226,9 @@ func keyFileIn(dir string) (string, error) {
 	return "", nil
 }
 
-// isKeyFile tells whether a small file holds a key: a wallet key file, the official keys JSON, or
-// a base58 secret key of 64 bytes.
+// isKeyFile tells whether a small file holds a key: a wallet key file (with a password of its
+// own, or under the wallet key), the wallet key (wallet.key), the official keys JSON, or a base58
+// secret key of 64 bytes.
 func isKeyFile(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -250,14 +251,16 @@ func isKeyFile(path string) bool {
 		KDF        struct {
 			Name string `json:"name"`
 		} `json:"kdf"`
-		Key struct {
+		KeyID string `json:"key_id"` // an account file under the wallet key (version 2)
+		ID    string `json:"id"`     // the wallet key itself (wallet.key)
+		Key   struct {
 			Private string `json:"private"`
 		} `json:"key"`
 	}
 	if json.Unmarshal(data, &k) != nil {
 		return false
 	}
-	return (k.Ciphertext != "" && k.KDF.Name != "") || k.Key.Private != ""
+	return (k.Ciphertext != "" && (k.KDF.Name != "" || k.KeyID != "" || k.ID != "")) || k.Key.Private != ""
 }
 
 // RecoveryText is the content of the recovery file. The caller zeroes it once written.

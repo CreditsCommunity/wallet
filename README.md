@@ -106,8 +106,9 @@ The terminal interface opens **locked**: it lists the accounts' names and addres
 wallet password unlocks the wallet and the chosen account (nothing of an account is shown before).
 Signing in the session asks no password again (on mainnet you still type `send` on the full
 review); `[l]` locks the wallet, `[a]` switches account (no password while the wallet is open), and
-the wallet locks by itself after `lock_after_minutes` without a key press (top of `config.toml`,
-default 10; `0` never locks, so anyone at the terminal could sign). The account locks after another
+the wallet locks by itself (the open wallet too, with no account unlocked) after
+`lock_after_minutes` without a key press (top of `config.toml`, default 10; `0` never locks, so
+anyone at the terminal could open any account and sign). The account locks after another
 is created or imported. The commands ask the wallet password once, when they sign.
 
 In the terminal interface: `[s]` send (with an optional Data field), `[d]` delegations (`n` delegate,
@@ -154,8 +155,10 @@ deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call),
 - The wallet password opens `accounts/wallet.key`, a random master key sealed with Argon2id (3
   passes, 256 MiB, 4 threads, a random salt) and XChaCha20-Poly1305; the master key encrypts each
   account file (XChaCha20-Poly1305, a random nonce each). One derivation opens the whole wallet.
-  `wallet.key` is needed by every account: it is in every backup. There is no way to recover a
-  forgotten password: keep the 24 words. Format, migration and change of password: docs/spec.md 4.2.
+  `wallet.key` is needed by every account: it is in every backup. Lost or replaced, the accounts
+  are listed as orphaned and nothing new is created until `backup import` puts them back (the
+  orphaned files are kept in `accounts/.orphaned/`). There is no way to recover a forgotten
+  password: keep the 24 words. Format, migration and change of password: docs/spec.md 4.2.
 - `account import NAME FILE` also takes an encrypted key file (another wallet's export): its own
   password opens it, then it goes under the wallet password. `account export NAME` writes the key
   as an encrypted file of its own, under the wallet password by default or another one you type

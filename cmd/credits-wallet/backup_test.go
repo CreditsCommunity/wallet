@@ -331,3 +331,33 @@ func TestWalletPasswordAndSingleKeyCLI(t *testing.T) {
 		t.Fatalf("v2 import: %d %s", code, errOut)
 	}
 }
+
+// wallet.key lost: the accounts are orphaned; the import of the backup puts them back under the
+// backup's password, the old files in accounts/.orphaned.
+func TestBackupRestoresOrphanedCLI(t *testing.T) {
+	home, data, pwFile, addr := backupEnv(t, "main", "savings")
+	path := filepath.Join(home, "wallet.dat")
+	if _, errOut, code := runWallet2(t, "backup", "export", path, "--password-file", pwFile); code != 0 {
+		t.Fatal(errOut)
+	}
+	os.Remove(filepath.Join(data, "accounts", keys.WalletKeyFile))
+	if _, errOut, _ := runWallet2(t, "account", "list"); !strings.Contains(errOut, "main, savings") || !strings.Contains(errOut, "backup import") {
+		t.Fatalf("list: %s", errOut)
+	}
+	if _, errOut, code := runWallet2(t, "account", "new", "x", "--password-file", pwFile, "--words-file", filepath.Join(t.TempDir(), "w")); code == 0 || !strings.Contains(errOut, "backup import") {
+		t.Fatalf("new: %d %s", code, errOut)
+	}
+	out, errOut, code := runWallet2(t, "backup", "import", path, "--password-file", pwFile, "--yes")
+	if code != 0 || !strings.Contains(errOut, "replaces the orphaned main") || !strings.Contains(out, "restored: 2") {
+		t.Fatalf("import: %d\n%s\n%s", code, out, errOut)
+	}
+	for _, n := range []string{"main", "savings"} {
+		k, err := openKey(data, n, "wallet pw")
+		if err != nil || keys.Address(k.Public().(ed25519.PublicKey)) != addr[n] {
+			t.Fatalf("%s: %v", n, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(data, "accounts", ".orphaned", "main.json")); err != nil {
+		t.Fatal("the orphaned file was not kept")
+	}
+}

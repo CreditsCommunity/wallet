@@ -54,6 +54,7 @@ type model struct {
 	// the session (spec 6, "Unlock"): nil while locked, then nothing of any account is loaded
 	unlocked  *wallet.Unlocked
 	session   *wallet.Session // the wallet opened with its password (nil: closed)
+	epoch     int             // counts the wallet's openings and closings: work started before is stale
 	lock      *lockScreen
 	lockAfter time.Duration    // inactivity before the session locks (0: never)
 	lastInput time.Time        // the last key press or click
@@ -257,7 +258,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tickMsg:
-		if m.unlocked != nil && m.lockAfter > 0 && m.now().Sub(m.lastInput) >= m.lockAfter && !m.sending() {
+		// the wallet open counts, an account unlocked or not (after a, a new account, a migration,
+		// a backup's import): the master key opens every account
+		if (m.unlocked != nil || m.session != nil) && m.lockAfter > 0 && m.now().Sub(m.lastInput) >= m.lockAfter && !m.sending() {
 			m.lockSession(fmt.Sprintf("locked after %s without a key press", m.lockAfter), "")
 		}
 		return m, tea.Batch(m.loadStatus(m.oldest == 0), m.refreshCurrent(), tick())
@@ -268,6 +271,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.MouseMsg:
 		m.lastInput = m.now()
+	}
+	if stale(m, msg) {
+		return m, nil
 	}
 	if m.screen != nil {
 		return m, m.screen.update(m, msg)
@@ -305,7 +311,7 @@ func (m *model) updateMain(msg tea.Msg) tea.Cmd {
 			m.flash = "[a] another account"
 		case "P":
 			if m.w.HasWalletPassword() {
-				m.screen = newPasswordScreen()
+				m.screen = m.newPasswordScreenFor()
 			}
 		case "M":
 			if len(m.w.OldPasswordAccounts()) > 0 {
