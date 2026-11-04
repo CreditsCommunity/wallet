@@ -2,6 +2,9 @@ package wallet
 
 import (
 	"os"
+
+	"github.com/CreditsCommunity/wallet/internal/config"
+	"github.com/CreditsCommunity/wallet/internal/keys"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -102,5 +105,37 @@ func TestUserHome(t *testing.T) {
 	}
 	if p, _ := DefaultRecoveryPath("main"); p != filepath.Join(home, "credits-recovery-main.txt") {
 		t.Errorf("default path %q", p)
+	}
+}
+
+// Every kind of key file stops a recovery file or a backup: version 1, version 2 (under the
+// wallet key), wallet.key, the official JSON, a base58 secret key.
+func TestIsKeyFileKinds(t *testing.T) {
+	dir := t.TempDir()
+	w := New(config.Default(), config.Profile{}, filepath.Join(dir, "data"))
+	w.KDF = testKDF
+	w.CreateAccount("main", newKey(t), []byte("pw"))
+	v2, _ := os.ReadFile(w.Store.FilePath("main"))
+	wk, _ := os.ReadFile(w.Store.WalletKeyPath())
+	v1f, _ := keys.Encrypt("old", newKey(t), []byte("pw"), testKDF)
+	v1, _ := marshalKeyFile(v1f)
+	cases := map[string][]byte{"v1.json": v1, "v2.json": v2, "wallet.key": wk,
+		"official.json": []byte(`{"key":{"public":"x","private":"y"}}`)}
+	for name, data := range cases {
+		sub := filepath.Join(dir, strings.TrimSuffix(name, filepath.Ext(name))+"-dir")
+		os.Mkdir(sub, 0o700)
+		path := filepath.Join(sub, name)
+		os.WriteFile(path, data, 0o600)
+		if !isKeyFile(path) {
+			t.Errorf("%s is not seen as a key file", name)
+		}
+		if _, err := w.CheckBackupPath(filepath.Join(sub, "b.dat")); err == nil || !strings.Contains(err.Error(), "holds key files") {
+			t.Errorf("a backup next to %s: %v", name, err)
+		}
+	}
+	plain := filepath.Join(dir, "plain.json")
+	os.WriteFile(plain, []byte(`{"ciphertext":"x"}`), 0o600)
+	if isKeyFile(plain) {
+		t.Error("a JSON with a ciphertext alone is a key file")
 	}
 }

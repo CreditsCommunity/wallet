@@ -27,7 +27,8 @@ var ErrUnlock = errors.New("could not unlock: wrong password, or a damaged key f
 
 // IsWrongPassword tells whether err is a password that did not open the account.
 func IsWrongPassword(err error) bool {
-	return errors.Is(err, keys.ErrWrongPassword) || errors.Is(err, keys.ErrNodeKeyPassword) || errors.Is(err, ErrUnlock)
+	return errors.Is(err, keys.ErrWrongPassword) || errors.Is(err, keys.ErrNodeKeyPassword) || errors.Is(err, ErrUnlock) ||
+		errors.Is(err, keys.ErrWalletPassword)
 }
 
 // NeedsPassword tells whether an account asks a password to unlock: all but a plain node's key.
@@ -41,6 +42,16 @@ func (w *Wallet) Unlock(f *keys.File, password []byte) (*Unlocked, error) {
 	// x/crypto/argon2 does not zero it
 	defer debug.FreeOSMemory()
 	switch {
+	case f.UnderWalletKey():
+		ws, err := w.OpenWallet(password)
+		if err != nil {
+			if errors.Is(err, keys.ErrWalletPassword) {
+				return nil, ErrUnlock
+			}
+			return nil, err
+		}
+		defer ws.Lock()
+		return w.UnlockWith(ws, f)
 	case !f.IsNodeKey():
 		key, err := f.Decrypt(password)
 		if err != nil {

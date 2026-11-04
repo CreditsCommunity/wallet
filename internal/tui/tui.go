@@ -53,6 +53,8 @@ type model struct {
 
 	// the session (spec 6, "Unlock"): nil while locked, then nothing of any account is loaded
 	unlocked  *wallet.Unlocked
+	session   *wallet.Session // the wallet opened with its password (nil: closed)
+	epoch     int             // counts the wallet's openings and closings: work started before is stale
 	lock      *lockScreen
 	lockAfter time.Duration    // inactivity before the session locks (0: never)
 	lastInput time.Time        // the last key press or click
@@ -74,8 +76,9 @@ type model struct {
 	screen screen // nil: the main screen
 	flash  string // a one-line message on the main screen
 
-	nodeWarned bool // the node key's warning was shown (once)
-	memWarned  bool // the key could not be locked in memory: said once
+	nodeWarned       bool // the node key's warning was shown (once)
+	migrationOffered bool // the migration was offered at start (once)
+	memWarned        bool // the key could not be locked in memory: said once
 }
 
 func newModel(w *wallet.Wallet) *model {
@@ -200,6 +203,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case accountsMsg:
 		m.accounts, m.accErr = msg.files, msg.err
+		if m.screen == nil && m.unlocked == nil && !m.migrationOffered && m.w.NeedsMigration() {
+			// the first start after the upgrade: the wallet password is chosen, the accounts moved
+			m.migrationOffered = true
+			m.screen = m.newMigrateScreen()
+		}
 		if m.selectName != "" {
 			m.selectByName()
 		}
@@ -250,7 +258,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tickMsg:
-		if m.unlocked != nil && m.lockAfter > 0 && m.now().Sub(m.lastInput) >= m.lockAfter && !m.sending() {
+		// the wallet open counts, an account unlocked or not (after a, a new account, a migration,
+		// a backup's import): the master key opens every account
+		if (m.unlocked != nil || m.session != nil) && m.lockAfter > 0 && m.now().Sub(m.lastInput) >= m.lockAfter && !m.sending() {
 			m.lockSession(fmt.Sprintf("locked after %s without a key press", m.lockAfter), "")
 		}
 		return m, tea.Batch(m.loadStatus(m.oldest == 0), m.refreshCurrent(), tick())
@@ -261,6 +271,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.MouseMsg:
 		m.lastInput = m.now()
+	}
+	if stale(m, msg) {
+		return m, nil
 	}
 	if m.screen != nil {
 		return m, m.screen.update(m, msg)
@@ -292,18 +305,26 @@ func (m *model) updateMain(msg tea.Msg) tea.Cmd {
 		case "l":
 			m.lockSession("locked", "")
 		case "a":
-			// another account: the session locks first, its password is asked
-			m.lockSession("", "")
+			// another account: this one locks; the wallet stays open
+			m.lockAccount("", "")
 		case "up", "down", "k", "j":
-			m.flash = "[a] another account: the session locks first"
+			m.flash = "[a] another account"
+		case "P":
+			if m.w.HasWalletPassword() {
+				m.screen = m.newPasswordScreenFor()
+			}
+		case "M":
+			if len(m.w.OldPasswordAccounts()) > 0 {
+				m.screen = m.newMigrateScreen()
+			}
 		case "n":
-			m.screen = newAccountScreen(false)
+			m.screen = m.newAccountScreen(false)
 		case "g":
 			if m.w.NodeKeyMissing() {
 				m.screen = newNodeKeyScreen(m.w.NodeKey.Dir)
 			}
 		case "i":
-			m.screen = newAccountScreen(true)
+			m.screen = m.newAccountScreen(true)
 		case "b":
 			m.screen = newBackupScreen()
 		case "s":
@@ -672,7 +693,9 @@ func (helpScreen) update(m *model, msg tea.Msg) tea.Cmd {
 func (helpScreen) view(m *model) string {
 	return strings.Join([]string{
 		stTitle.Render("Main screen"),
-		"  l            lock: the password is asked again   a  another account (locks first)",
+		"  l            lock the wallet: its password is asked again    a  another account",
+		"  P            change the wallet password (every account re-encrypted)",
+		"  M            move the accounts with an old password under the wallet password",
 		"  s            send CS from the selected account (optional user data: public text)",
 		"  d            delegations: made and received; n delegate, w withdraw",
 		"  t            tokens: every token held with its contract address; s send, a add a token,",

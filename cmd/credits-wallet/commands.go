@@ -213,10 +213,12 @@ func (a *app) accountList() error {
 			NodeKeyEncrypted bool `json:"node_key_encrypted,omitempty"`
 			// the address comes from NodePublic.txt until the key is opened
 			AddressUnverified bool `json:"address_unverified,omitempty"`
+			// a password of its own: not under the wallet password yet
+			OldPassword bool `json:"old_password,omitempty"`
 		}
 		rows := []row{}
 		for _, f := range files {
-			rows = append(rows, row{f.Name, f.Public, f.NodeKey, f.IsNodeKey(), f.NodeKeyEncrypted, f.NodeKeyEncrypted})
+			rows = append(rows, row{f.Name, f.Public, f.NodeKey, f.IsNodeKey(), f.NodeKeyEncrypted, f.NodeKeyEncrypted, f.OldPassword()})
 		}
 		return a.printJSON(rows)
 	}
@@ -232,6 +234,10 @@ func (a *app) accountList() error {
 				how = "encrypted by the node: its password signs; address " + wallet.UnverifiedAddressNote
 			}
 			fmt.Fprintf(a.out, "%-20s %s  NODE KEY (default; %s, %s)\n", f.Name, f.Public, f.NodeKey, how)
+			continue
+		}
+		if f.OldPassword() {
+			fmt.Fprintf(a.out, "%-20s %s  old password (not under the wallet password yet: 'wallet migrate')\n", f.Name, f.Public)
 			continue
 		}
 		fmt.Fprintf(a.out, "%-20s %s\n", f.Name, f.Public)
@@ -263,12 +269,15 @@ func (a *app) accountNew(name, wordsFile string, showWords bool) error {
 	if !stdinIsTerminal() && wordsFile == "" && !showWords {
 		return errors.New("no terminal to show the seed phrase on: add --words-file FILE (or --show-words to print it); nothing was created")
 	}
+	if a.w.NeedsMigration() {
+		return wallet.ErrMigrateFirst
+	}
 	p, err := a.newPhrase(name, wordsFile, showWords, "")
 	if err != nil {
 		return err
 	}
 	defer p.wipe()
-	pw, err := a.readPassword("Password for the key file: ", true)
+	pw, err := a.walletPasswordForNewAccount()
 	if err != nil {
 		return err
 	}
@@ -473,8 +482,11 @@ func (a *app) accountImport(name, file string) error {
 	if err := keys.ValidName(name); err != nil {
 		return err
 	}
-	if a.w.Store.Exists(name) {
+	if a.w.NameTaken(name) {
 		return fmt.Errorf("an account named %q already exists", name)
+	}
+	if a.w.NeedsMigration() {
+		return wallet.ErrMigrateFirst
 	}
 	var text string
 	if file != "" {
@@ -490,12 +502,29 @@ func (a *app) accountImport(name, file string) error {
 			return err
 		}
 	}
-	key, kind, err := keys.ParseSecret(text)
-	if err != nil {
+	var key ed25519.PrivateKey
+	var kind string
+	var err error
+	if kf, ok := keys.EncryptedKeyFile(text); ok {
+		// an encrypted key file: its own password opens it, then it goes under the wallet password
+		if kf.UnderWalletKey() {
+			return errors.New("this account file is encrypted under another wallet's password (its wallet.key): export it from that wallet with 'account export NAME' (an encrypted file of its own), or import its 24 words")
+		}
+		kpw, err := a.readPassword("Password of the key file: ", false)
+		if err != nil {
+			return err
+		}
+		key, err = kf.Decrypt(kpw)
+		keys.Zero(kpw)
+		if err != nil {
+			return err
+		}
+		kind = "encrypted key file"
+	} else if key, kind, err = keys.ParseSecret(text); err != nil {
 		return err
 	}
 	defer keys.Zero(key)
-	pw, err := a.readPassword("Password for the key file: ", true)
+	pw, err := a.walletPasswordForNewAccount()
 	if err != nil {
 		return err
 	}
@@ -525,7 +554,24 @@ func (a *app) accountExport(name, format, outFile string, yes bool) error {
 		if f.IsNodeKey() {
 			return fmt.Errorf("%s is the node's key, kept in clear in %s, not in the key store: 'account import NAME %s' makes an encrypted copy", f.Name, f.NodeKey, f.NodeKey)
 		}
-		data, err = os.ReadFile(a.w.Store.FilePath(f.Name))
+		if f.OldPassword() {
+			// not migrated: its file is already a key file of its own, under its old password
+			if data, err = os.ReadFile(a.w.Store.FilePath(f.Name)); err != nil {
+				return err
+			}
+			break
+		}
+		pw, err := a.readPassword(passwordPrompt(f), false)
+		if err != nil {
+			return err
+		}
+		defer keys.Zero(pw)
+		filePw, err := a.exportPassword(pw)
+		if err != nil {
+			return err
+		}
+		data, err = a.w.ExportEncrypted(f, pw, filePw)
+		keys.Zero(filePw)
 		if err != nil {
 			return err
 		}
@@ -547,7 +593,7 @@ func (a *app) accountExport(name, format, outFile string, yes bool) error {
 		}
 		var pw []byte
 		if !f.IsNodeKey() {
-			if pw, err = a.readPassword("Password: ", false); err != nil {
+			if pw, err = a.readPassword(passwordPrompt(f), false); err != nil {
 				return err
 			}
 		}
@@ -575,6 +621,32 @@ func (a *app) accountExport(name, format, outFile string, yes bool) error {
 	}
 	fmt.Fprintf(os.Stderr, "written to %s (mode 600)\n", outFile)
 	return nil
+}
+
+// exportPassword is the password of an encrypted export: by default the wallet password
+// (a copy of pw), or another one typed twice. With --password-file or without a terminal there
+// is nobody to ask: the export is under the wallet password. The caller zeroes it.
+func (a *app) exportPassword(pw []byte) ([]byte, error) {
+	same := append([]byte(nil), pw...)
+	if a.passwordFile != "" || !stdinIsTerminal() {
+		return same, nil
+	}
+	ans, err := ask("Password of the exported file: [w] the wallet password (default), [o] another one: ")
+	if err != nil || ans == "" || strings.EqualFold(ans, "w") {
+		return same, nil
+	}
+	keys.Zero(same)
+	if !strings.EqualFold(ans, "o") {
+		return nil, errors.New("cancelled: nothing was written")
+	}
+	other, err := a.readPassword("Password of the exported file: ", true)
+	if err != nil {
+		return nil, err
+	}
+	if hint := wallet.PasswordHint(other); hint != "" {
+		fmt.Fprintln(os.Stderr, hint)
+	}
+	return other, nil
 }
 
 // ---- balance -----------------------------------------------------------------------------------
@@ -682,11 +754,11 @@ func (a *app) confirmAndSend(ctx context.Context, plan *wallet.SendPlan, yes boo
 	}
 	var pw []byte
 	if plan.NeedsPassword() { // a plain node's key is in clear in the node's folder: no password
-		prompt := "Password of " + plan.Account + ": "
-		if plan.NodeKeyEncrypted {
-			prompt = "Password of the node's key (the one the node asks at its start): "
+		f, err := a.w.LoadAccount(plan.Account)
+		if err != nil {
+			return err
 		}
-		var err error
+		prompt := passwordPrompt(f)
 		if pw, err = a.readPassword(prompt, false); err != nil {
 			return err
 		}

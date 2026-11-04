@@ -14,23 +14,27 @@ import (
 	"github.com/CreditsCommunity/wallet/internal/keys"
 )
 
-// The backup (spec 4.5): every account of the key store in one file, sealed under a backup
-// password (keys.SealBackup). Inside, each account's key file exactly as stored (still encrypted
-// under the account's own password: the backup never decrypts it), its name, its address, and
-// its local token and contract lists (public data). Not inside: the node's key (it belongs to
-// the node's folder), config.toml and anything else of this machine.
+// The backup (spec 4.5): every account of the key store in one file, sealed under the wallet
+// password (keys.SealBackup). Inside, each account's file exactly as stored (under the wallet key,
+// or its old password for an account not migrated), the wallet key (wallet.key, itself under the
+// wallet password), each account's name, address and local token and contract lists (public
+// data). Not inside: the node's key (it belongs to the node's folder), config.toml and anything
+// else of this machine. On import the accounts are re-encrypted under the importing wallet's key.
 
 // BackupFormat names the content of a backup.
 const BackupFormat = "credits-wallet backup"
 
 // BackupAdvice is said after a backup is written (terminal and TUI).
-const BackupAdvice = "This file contains your accounts, each still protected by its own password and the whole file by the backup password; keep it off this computer, e.g. on a USB key."
+const BackupAdvice = "This file contains your accounts, protected by the wallet password (the whole file, and each account inside); it is only as strong as that password. Keep it off this computer, e.g. on a USB key."
 
 // BackupNotIncluded says what a backup leaves out.
 const BackupNotIncluded = "Not in the backup: the node's key (NodePrivate.txt belongs to the node's folder: keep its 24 words, or a copy of it offline) and config.toml (settings of this machine)."
 
 // BackupPasswordsNote is said on import.
-const BackupPasswordsNote = "Restored accounts keep their own passwords: the ones they had when the backup was made."
+const BackupPasswordsNote = "Restored accounts are under this wallet's password."
+
+// BackupOldPasswordNote: changing the wallet password does not touch the backups already made.
+const BackupOldPasswordNote = "Backups made before a change of the wallet password keep opening with the old password."
 
 const maxBackupAccounts = 10000
 
@@ -52,6 +56,8 @@ type Backup struct {
 	Version  int             `json:"version"`
 	Created  time.Time       `json:"created"`
 	Accounts []BackupAccount `json:"accounts"`
+	// WalletKey is the wallet's wallet.key (under the wallet password: the backup's own).
+	WalletKey []byte `json:"wallet_key,omitempty"`
 }
 
 // Wipe zeroes what the backup holds (the key files are encrypted, but nothing of them stays).
@@ -59,6 +65,7 @@ func (b *Backup) Wipe() {
 	if b == nil {
 		return
 	}
+	keys.Zero(b.WalletKey)
 	for i := range b.Accounts {
 		keys.Zero(b.Accounts[i].KeyFile)
 		keys.Zero(b.Accounts[i].Tokens)
@@ -96,11 +103,21 @@ func PasswordHint(pw []byte) string {
 // CollectBackup reads every account of the key store with its local lists. problems are the
 // key files that could not be read (not in the backup) and the lists left out.
 func (w *Wallet) CollectBackup(now time.Time) (b *Backup, problems []error, err error) {
+	if !w.HasWalletPassword() {
+		if w.NeedsMigration() {
+			return nil, nil, ErrMigrateFirst
+		}
+		return nil, nil, errors.New("no account in the key store to back up (the node's key is never in a backup)")
+	}
 	files, problems, err := w.Store.List()
 	if err != nil {
 		return nil, nil, err
 	}
-	b = &Backup{Format: BackupFormat, Version: 1, Created: now.UTC().Truncate(time.Second)}
+	wk, err := readBounded(w.Store.WalletKeyPath(), maxKeyFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	b = &Backup{Format: BackupFormat, Version: 1, Created: now.UTC().Truncate(time.Second), WalletKey: wk}
 	for _, f := range files {
 		raw, err := readBounded(w.Store.FilePath(f.Name), maxKeyFile)
 		if err != nil {
@@ -130,8 +147,19 @@ func (w *Wallet) CollectBackup(now time.Time) (b *Backup, problems []error, err 
 	return b, problems, nil
 }
 
-// WriteBackup seals the backup under the password and writes it to path with WriteSecretFile
-// (mode 0600, never over a file, never through a link). path was checked by CheckBackupPath.
+// CheckWalletPassword tells whether password is the wallet password (it opens wallet.key).
+func (w *Wallet) CheckWalletPassword(password []byte) error {
+	s, err := w.OpenWallet(password)
+	if err != nil {
+		return err
+	}
+	s.Lock()
+	return nil
+}
+
+// WriteBackup seals the backup under the password (the wallet password: the caller checked it)
+// and writes it to path with WriteSecretFile (mode 0600, never over a file, never through a link).
+// path was checked by CheckBackupPath.
 func WriteBackup(path string, b *Backup, password []byte) error {
 	plain, err := json.Marshal(b)
 	if err != nil {
@@ -211,6 +239,13 @@ func (b *Backup) check() error {
 	if len(b.Accounts) == 0 || len(b.Accounts) > maxBackupAccounts {
 		return fmt.Errorf("%d accounts", len(b.Accounts))
 	}
+	var wk *keys.WalletKey
+	if b.WalletKey != nil {
+		var err error
+		if wk, err = keys.ParseWalletKey(b.WalletKey); err != nil {
+			return err
+		}
+	}
 	names, addresses := map[string]bool{}, map[string]bool{}
 	for _, a := range b.Accounts {
 		if err := keys.ValidName(a.Name); err != nil {
@@ -232,6 +267,12 @@ func (b *Backup) check() error {
 		}
 		if f.Public != a.Address {
 			return fmt.Errorf("%s: the key file is of another address", a.Name)
+		}
+		if f.UnderWalletKey() && (wk == nil || f.KeyID != wk.ID) {
+			return fmt.Errorf("%s: under a wallet key the backup does not hold", a.Name)
+		}
+		if f.Version != keys.FileVersion && f.Version != keys.AccountFileVersion {
+			return fmt.Errorf("%s: key file version %d", a.Name, f.Version)
 		}
 		if a.Tokens != nil {
 			if _, err := parseTokenList(a.Tokens, a.Address); err != nil {
@@ -285,12 +326,20 @@ const (
 	RestoreExists
 	// RestoreNameTaken: the name is another address's here: a new name is needed.
 	RestoreNameTaken
+	// RestoreReplace: the address is here, but orphaned (under a wallet key this wallet does not
+	// have, wallet.key lost or replaced): the file here goes to accounts/.orphaned/ and the
+	// backup's copy takes its place, under its name.
+	RestoreReplace
 )
 
 // RestorePlan is an account of the backup and what the restore would do with it.
 type RestorePlan struct {
 	Account BackupAccount
 	State   RestoreState
+	// Old: the account has a password of its own in the backup (a wallet not migrated); password,
+	// once found (TryOldPassword), re-encrypts it under this wallet's password.
+	Old      bool
+	password []byte
 	// Existing is the wallet's account with that address (RestoreExists) or that name
 	// (RestoreNameTaken).
 	Existing string
@@ -306,10 +355,19 @@ func (w *Wallet) PlanRestore(b *Backup) ([]RestorePlan, error) {
 	for _, f := range files {
 		byAddress[f.Public] = f.Name
 	}
+	orphaned := map[string]bool{}
+	for _, f := range w.OrphanedAccounts() {
+		orphaned[f.Name] = true
+	}
 	var plans []RestorePlan
 	for _, a := range b.Accounts {
 		p := RestorePlan{Account: a}
+		if f, err := keys.ParseFile(a.KeyFile); err == nil {
+			p.Old = f.OldPassword()
+		}
 		switch name, ok := byAddress[a.Address]; {
+		case ok && orphaned[name]:
+			p.State, p.Existing = RestoreReplace, name
 		case ok:
 			p.State, p.Existing = RestoreExists, name
 		case w.NameTaken(a.Name):
@@ -325,10 +383,58 @@ func (w *Wallet) NameTaken(name string) bool {
 	return w.HasAccount(name) || (w.NodeKey != nil && name == w.NodeAccountName())
 }
 
+// SourceKey opens the backup's wallet key with the backup's password (nil: the backup holds
+// none, all its accounts have old passwords). The caller locks it.
+func (b *Backup) SourceKey(password []byte) (*Session, error) {
+	if b.WalletKey == nil {
+		return nil, nil
+	}
+	wk, err := keys.ParseWalletKey(b.WalletKey)
+	if err != nil {
+		return nil, err
+	}
+	master, _, err := wk.Open(password)
+	if err != nil {
+		return nil, errors.New("the backup's wallet key does not open with the backup's password: a damaged backup")
+	}
+	defer keys.Zero(master)
+	return newSession(wk.ID, master), nil
+}
+
+// TryOldPassword checks the password of an account with an old password in the backup and keeps
+// it for the restore (Argon2id once).
+func (p *RestorePlan) TryOldPassword(password []byte) bool {
+	f, err := keys.ParseFile(p.Account.KeyFile)
+	if err != nil || !f.OldPassword() {
+		return false
+	}
+	key, err := f.Decrypt(password)
+	if err != nil {
+		return false
+	}
+	keys.Zero(key)
+	keys.Zero(p.password)
+	p.password = append([]byte(nil), password...)
+	return true
+}
+
+// OldPasswordFound tells whether TryOldPassword found the account's password.
+func (p *RestorePlan) OldPasswordFound() bool { return p.password != nil }
+
+// WipePlans zeroes the passwords the plans hold.
+func WipePlans(plans []RestorePlan) {
+	for i := range plans {
+		keys.Zero(plans[i].password)
+		plans[i].password = nil
+	}
+}
+
 // RestoreAccount writes an account of the backup under name (its own, or a new one for a name
-// clash) with the key store's writer (whole, never over an account), then merges its local
-// lists. The key file is not decrypted: the account keeps its password.
-func (w *Wallet) RestoreAccount(a BackupAccount, name string) error {
+// clash), re-encrypted under this wallet's key (dst): from the backup's wallet key (src), or with
+// its old password once found; an account whose old password was not given is written as it is
+// (it keeps that password, "old password"). Then its local lists are merged.
+func (w *Wallet) RestoreAccount(p RestorePlan, name string, src, dst *Session) error {
+	a := p.Account
 	if err := keys.ValidName(name); err != nil {
 		return err
 	}
@@ -341,6 +447,28 @@ func (w *Wallet) RestoreAccount(a BackupAccount, name string) error {
 	}
 	if f.Public != a.Address {
 		return errors.New("the key file is of another address")
+	}
+	var key ed25519.PrivateKey
+	switch {
+	case f.UnderWalletKey():
+		if src == nil {
+			return errors.New("no wallet key in the backup")
+		}
+		key, err = src.Open(f)
+	case p.password != nil:
+		key, err = f.Decrypt(p.password)
+	}
+	if err != nil {
+		return err
+	}
+	if key != nil {
+		defer keys.Zero(key)
+		nf, err := dst.Encrypt(name, key)
+		if err != nil {
+			return err
+		}
+		nf.Created = f.Created
+		f = nf
 	}
 	f.Name = name
 	if err := w.Store.Save(f); err != nil {
@@ -461,9 +589,10 @@ type RestoreResult struct {
 }
 
 // Restore restores each plans[i] under names[i] ("" skips it; an account whose address is here
-// is always skipped, its local lists merged). Accounts are written one by one with the key
-// store's writer; a failure is reported and the others go on.
-func (w *Wallet) Restore(plans []RestorePlan, names []string) (results []RestoreResult, restored, failed int) {
+// is always skipped, its local lists merged), re-encrypted from the backup's key (src) under this
+// wallet's (dst). Accounts are written one by one with the key store's writer; a failure is
+// reported and the others go on.
+func (w *Wallet) Restore(plans []RestorePlan, names []string, src, dst *Session) (results []RestoreResult, restored, failed int) {
 	for i, p := range plans {
 		r := RestoreResult{Name: p.Account.Name, Address: p.Account.Address}
 		name := ""
@@ -471,6 +600,27 @@ func (w *Wallet) Restore(plans []RestorePlan, names []string) (results []Restore
 			name = names[i]
 		}
 		switch {
+		case p.State == RestoreReplace && name != "":
+			if err := w.MoveOrphaned(p.Existing); err != nil {
+				r.Result, r.Reason = "failed", err.Error()
+				failed++
+				results = append(results, r)
+				continue
+			}
+			err := w.RestoreAccount(p, name, src, dst)
+			if err != nil && !w.Store.Exists(name) {
+				r.Result, r.Reason = "failed", err.Error()+" (the orphaned file is in "+w.OrphanedDir()+")"
+				failed++
+				results = append(results, r)
+				continue
+			} else if err != nil {
+				r.Warning = err.Error()
+			}
+			r.Result, r.Reason = "restored", "replaces the orphaned "+p.Existing+" (kept in "+w.OrphanedDir()+")"
+			if name != p.Account.Name {
+				r.RestoredAs = name
+			}
+			restored++
 		case p.State == RestoreExists:
 			r.Result, r.Reason = "skipped", "the address is already the account "+p.Existing
 			if err := w.MergeBackupLists(p.Account); err != nil {
@@ -479,7 +629,7 @@ func (w *Wallet) Restore(plans []RestorePlan, names []string) (results []Restore
 		case name == "":
 			r.Result, r.Reason = "skipped", fmt.Sprintf("the name %q is another account's here", p.Account.Name)
 		default:
-			err := w.RestoreAccount(p.Account, name)
+			err := w.RestoreAccount(p, name, src, dst)
 			switch {
 			case err != nil && !w.Store.Exists(name):
 				r.Result, r.Reason = "failed", err.Error()
@@ -490,6 +640,9 @@ func (w *Wallet) Restore(plans []RestorePlan, names []string) (results []Restore
 				r.Warning = err.Error()
 			}
 			r.Result = "restored"
+			if p.Old && p.password == nil {
+				r.Reason = "its old password is kept: 'wallet migrate' moves it later"
+			}
 			if name != p.Account.Name {
 				r.RestoredAs = name
 			}
@@ -511,3 +664,37 @@ func (w *Wallet) FreeRestoreName(name string, taken map[string]bool) error {
 	}
 	return nil
 }
+
+// PrepareReplace moves out the orphaned files the restore replaces (plans[i] restored under
+// names[i]), before a wallet password is created for a wallet whose wallet.key was lost.
+func (w *Wallet) PrepareReplace(plans []RestorePlan, names []string) error {
+	for i, p := range plans {
+		if p.State == RestoreReplace && i < len(names) && names[i] != "" {
+			if err := w.MoveOrphaned(p.Existing); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// UncoveredOrphans are the orphaned accounts the restore does not replace: a wallet without
+// wallet.key cannot take a new wallet password while they are there.
+func (w *Wallet) UncoveredOrphans(plans []RestorePlan, names []string) []*keys.File {
+	covered := map[string]bool{}
+	for i, p := range plans {
+		if p.State == RestoreReplace && i < len(names) && names[i] != "" {
+			covered[p.Existing] = true
+		}
+	}
+	var out []*keys.File
+	for _, f := range w.OrphanedAccounts() {
+		if !covered[f.Name] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// OrphanedErr is the refusal that names orphaned accounts.
+func (w *Wallet) OrphanedErr(files []*keys.File) error { return w.orphanedErr(files) }

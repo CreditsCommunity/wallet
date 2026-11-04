@@ -264,8 +264,8 @@ func TestAccountsOffline(t *testing.T) {
 	if code != 0 || !strings.Contains(out, `"private":"`+testKey+`"`) {
 		t.Fatalf("export official: %d %q", code, out)
 	}
-	out, code = runWallet(t, "account", "export", "official")
-	if code != 0 || !strings.Contains(out, `"ciphertext"`) || strings.Contains(out, testKey) {
+	out, code = runWallet(t, "account", "export", "official", "--password-file", pwFile)
+	if code != 0 || !strings.Contains(out, `"ciphertext"`) || !strings.Contains(out, `"argon2id"`) || strings.Contains(out, testKey) {
 		t.Fatalf("export encrypted: %d %q", code, out)
 	}
 	if _, code = runWallet(t, "account", "export", "official", "--format", "base58", "--password-file", phraseFile); code == 0 {

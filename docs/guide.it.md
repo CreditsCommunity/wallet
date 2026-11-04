@@ -91,19 +91,23 @@ I binari sono riproducibili: lo stesso tag compilato di nuovo dà gli stessi fil
 
    La riga in alto mostra la rete (MAINNET in rosso) e il nodo. `?` mostra i tasti, `q` esce.
    Ogni funzione esiste anche come comando (`credits-wallet help`).
-4. **Sblocca un account.** L'interfaccia si apre sulla schermata di sblocco: nomi e indirizzi
-   degli account, nient'altro. Scegline uno con le frecce, premi Invio e scrivi la sua password;
-   solo allora vedi saldo, cronologia, token e contratti. Vedi
+4. **Sblocca il wallet.** L'interfaccia si apre sulla schermata di sblocco: nomi e indirizzi
+   degli account, nient'altro. Scegline uno con le frecce, premi Invio e scrivi la password del
+   wallet; solo allora vedi saldo, cronologia, token e contratti. Vedi
    [Sbloccare e bloccare](#sbloccare-e-bloccare).
 
 ### Sbloccare e bloccare
 
-- **Una password per sessione.** Sbloccato un account, nell'interfaccia invii, deleghe e chiamate
-  ai contratti non chiedono più la password; su mainnet scrivi comunque `send` sul riepilogo
-  completo. La riga di comando è diversa: ogni comando chiede la password quando firma.
-- **Blocca** con `l`; **cambia account** con `a` (il wallet prima blocca, poi chiede la password
-  dell'altro account). Dopo aver creato o importato un account il wallet torna anch'esso alla
-  schermata di sblocco, sul nuovo account.
+- **Una password per il wallet.** La password del wallet apre tutti gli account. Sbloccato il
+  wallet, invii, deleghe e chiamate ai contratti non chiedono più la password; su mainnet scrivi
+  comunque `send` sul riepilogo completo. La riga di comando è diversa: ogni comando chiede la
+  password del wallet una volta, quando firma.
+- **Blocca** con `l` (tutto il wallet); **cambia account** con `a`: torna l'elenco e, con il wallet
+  aperto, Invio apre un altro account senza password. Dopo aver creato o importato un account il
+  wallet torna anch'esso all'elenco, sul nuovo account.
+- Eccezioni: un account con una **vecchia password** (di prima della password del wallet, non
+  ancora spostato) chiede quella password; la chiave del nodo cifrata dal nodo chiede **la password
+  del nodo**; una chiave del nodo in chiaro non ne chiede.
 - **Blocco automatico**: dopo 10 minuti senza tasti premuti il wallet si blocca da solo (mai mentre
   una transazione è in viaggio). Si cambia con `lock_after_minutes = N` in cima a `config.toml`;
   `0` non blocca mai: chi arriva al tuo terminale (una sessione SSH lasciata aperta, uno schermo
@@ -137,9 +141,10 @@ Nell'interfaccia premi `n`; da riga di comando:
 ./credits-wallet account new main
 ```
 
-1. Scegli una **password**. Cifra il file della chiave su questa macchina (Argon2id e
-   XChaCha20-Poly1305). L'interfaccia la chiede per sbloccare l'account; i comandi, a ogni
-   transazione.
+1. Il primo account ti chiede di scegliere la **password del wallet**, due volte (se è corta
+   compare un suggerimento). Protegge tutti gli account di questo wallet; gli account successivi
+   vengono cifrati con essa senza chiederla di nuovo (l'interfaccia la chiede per sbloccare il
+   wallet; i comandi, una volta ciascuno).
 2. Il wallet mostra **una sola volta** la **frase di recupero di 24 parole**. Scrivila su carta,
    in ordine.
 3. Riscrivi le tre parole che ti chiede.
@@ -160,6 +165,41 @@ di comando `account address NAME` stampa solo l'indirizzo, da passare agli appun
 ./credits-wallet account address main | pbcopy                       # macOS
 .\credits-wallet.exe account address main | clip                     # Windows
 ```
+
+### La password del wallet
+
+- Una sola password apre tutti gli account del wallet. Sblocca `accounts/wallet.key`, una chiave
+  casuale che cifra ogni file di account: lo sblocco costa un secondo qualunque sia il numero di
+  account. `wallet.key` serve a tutti gli account: copialo insieme a loro (un backup lo contiene
+  sempre).
+- **Un wallet di una versione precedente** (una password per account) chiede, al primo avvio
+  dell'interfaccia, di scegliere la password del wallet; può essere una delle password dei tuoi
+  account, e gli account che la hanno passano subito sotto di essa. Poi la password di ogni altro
+  account viene chiesta una volta. Lasciala vuota per un account di cui non hai la password: tiene
+  la vecchia password, è segnato "old password", si apre ancora con quella password e si sposta più
+  tardi con `M` (o `wallet migrate` da riga di comando). Durante lo spostamento i vecchi file sono
+  conservati in `accounts/.migration/` (modo 600) e rimossi alla fine; un'interruzione in qualsiasi
+  momento lascia ogni account utilizzabile, e l'avvio successivo completa il lavoro. Finché la
+  password del wallet non esiste, nuovi account, importazioni e backup sono rifiutati.
+- **Cambiarla**: `P` nella schermata principale o `./credits-wallet wallet password`: la password
+  attuale, poi la nuova due volte. Ogni account viene cifrato di nuovo con una nuova chiave. Se il
+  computer si ferma a metà, apri il wallet con la password **nuova**: completa il cambio (quella
+  vecchia dice che il cambio è stato interrotto). I backup fatti prima continuano ad aprirsi con la
+  vecchia password: fanne uno nuovo. Finché nessun account è sotto la nuova password puoi anche
+  abbandonare il cambio: di nuovo `P`, oppure `wallet password --abandon`, con la vecchia password.
+  Se non hai mai cambiato la password e il wallet dice che un cambio è stato interrotto, rimuovi
+  `accounts/wallet.key.next`.
+- **`wallet.key` perso o danneggiato.** Gli account risultano allora orfani e il wallet non crea
+  nulla di nuovo. Importa il tuo ultimo backup (`backup import`): li rimette ciascuno sotto la
+  password del backup e conserva i file orfani in `accounts/.orphaned/`. Senza un backup, spostali
+  altrove e importa ogni account dalle sue 24 parole.
+- **Una chiave in entrata o in uscita.** `account import NOME FILE` accetta un file di chiave
+  cifrato (un'esportazione di questo o di un altro wallet): chiede la password di quel file, poi
+  conserva la chiave sotto la password del wallet. `account export NOME --out main.key` chiede la
+  password del wallet, poi propone la password del file esportato: Invio usa la password del
+  wallet, `o` ti fa scrivere un'altra password.
+- `./credits-wallet wallet` dice se la password del wallet è impostata e quali account hanno
+  ancora una vecchia password.
 
 ### La frase di recupero
 
@@ -217,8 +257,8 @@ con le sole parole su una riga).
 | Cosa | Come | Nota |
 |---|---|---|
 | La frase | su carta | ripristina tutto, senza la password |
-| Il file di backup | `backup export ~/wallet.dat` (oppure `b`, `e`) | tutti gli account in un file, cifrato due volte; vedi sotto |
-| Il file della chiave | `account export main --out main.key` | copia cifrata; serve la password |
+| Il file di backup | `backup export ~/wallet.dat` (oppure `b`, `e`) | tutti gli account in un file, sotto la password del wallet; vedi sotto |
+| Il file della chiave | `account export main --out main.key` | copia cifrata di una chiave; serve la sua password |
 | La cartella dei dati | copiala | file delle chiavi (cifrati), configurazione, elenchi locali di contratti e token |
 
 La cartella dei dati è `~/.credits-wallet` su Linux e macOS, `%APPDATA%\credits-wallet` su Windows,
@@ -241,29 +281,31 @@ macchina:
 Nell'interfaccia premi `b` (nella schermata di sblocco o in quella principale), poi `e` per
 esportare o `i` per importare.
 
-- **Cosa contiene**: il file della chiave di ogni account esattamente com'è salvato (ancora cifrato
-  con **la sua password**: il backup non lo decifra mai), il suo nome e indirizzo, e i suoi elenchi
-  locali di token e contratti. **Non contiene**: la chiave del nodo (`NodePrivate.txt` appartiene
+- **Cosa contiene**: il file di ogni account com'è salvato e `wallet.key`, i nomi e gli indirizzi, e
+  gli elenchi locali di token e contratti. **Non contiene**: la chiave del nodo (`NodePrivate.txt` appartiene
   alla cartella del nodo: conserva le sue 24 parole, o una copia del file offline) e `config.toml`
   (impostazioni di questa macchina).
-- **La password del backup.** La scegli all'esportazione e la scrivi due volte; cifra l'intero
-  file (Argon2id e XChaCha20-Poly1305, come i file delle chiavi), così senza di essa il file non
-  rivela nemmeno i nomi o gli indirizzi. Non può essere vuota; sotto i 12 caratteri il wallet mostra
-  un suggerimento. Usane una lunga, o alcune parole senza legami tra loro.
+- **La sua password è la password del wallet.** L'esportazione chiede solo la password del wallet
+  e cifra con essa l'intero file (Argon2id e XChaCha20-Poly1305), così senza di essa il file non
+  rivela nemmeno i nomi o gli indirizzi. **Il backup è forte solo quanto la password del wallet.**
+  Cambiare la password del wallet non cifra di nuovo i backup già fatti: continuano ad aprirsi con
+  la vecchia password (fai un nuovo backup dopo un cambio).
 - **Dove.** Un file nuovo (mai sopra un file esistente, mai attraverso un link, modo 600). Come per
   il file di recupero, il wallet rifiuta la sua cartella dei dati, la cartella del nodo e ogni
   cartella che contiene file di chiavi. Scritto il file, il wallet mostra il percorso e il numero di
-  account, e avverte che il file contiene i tuoi account, ciascuno ancora protetto dalla sua
-  password e l'intero file dalla password del backup: **tienilo fuori da questo computer, per
-  esempio su una chiavetta USB.**
-- **Importazione.** Il wallet chiede la password del backup, elenca gli account del file (nomi e
-  indirizzi) e chiede `Restore N accounts? [y/N]`. Un account il cui indirizzo è già nel wallet
+  account, e avverte che il file contiene i tuoi account protetti dalla password del wallet (l'intero
+  file, e ogni account al suo interno), ed è forte solo quanto quella password: **tienilo fuori da
+  questo computer, per esempio su una chiavetta USB.**
+- **Importazione.** Il wallet chiede la password del wallet da cui viene il backup, elenca gli
+  account del file (nomi e indirizzi) e chiede `Restore N accounts? [y/N]`. Un account il cui indirizzo è già nel wallet
   viene saltato (i suoi elenchi di token e contratti vengono uniti). Un nome già usato da un altro
   indirizzo richiede un nome nuovo: il wallet lo chiede (Invio salta quell'account), oppure da riga
   di comando usa `--rename-suffix -old` (`main` diventa `main-old`). Gli script aggiungono `--yes`.
-- **Gli account ripristinati mantengono le loro password**, quelle che avevano quando è stato fatto
-  il backup: la password del backup apre il file, poi ogni account chiede la sua password come
-  prima. Conserva entrambe, o le 24 parole.
+- **Gli account ripristinati prendono la password di questo wallet.** Se è la stessa del backup non
+  viene chiesto altro; se è diversa, la password di questo wallet viene chiesta una volta (negli
+  script: `--wallet-password-file FILE`); un wallet vuoto prende come sua la password del backup.
+  Un backup di un wallet più vecchio, i cui account hanno una password ciascuno, chiede ogni
+  password una volta (Invio lascia a quell'account la sua vecchia password).
 - Una password del backup sbagliata e un file danneggiato danno lo stesso messaggio: "could not open
   the backup: wrong backup password, or a damaged file". `--json` mostra solo nomi, indirizzi e
   conteggi, mai il contenuto.
@@ -324,8 +366,10 @@ chiave del nodo si chiama `node-key` e l'altro mantiene il suo nome.)
 > risparmi in un account separato (`account new`).
 
 **Una chiave cifrata dal nodo.** Se il nodo è stato avviato con `--encryptkey`, o al primo avvio
-hai scelto "[1] Encrypt with password", `NodePrivate.txt` è cifrato con la password del nodo. Il
-wallet lo apre con quella stessa password: nella schermata di sblocco dell'interfaccia, e da riga
+hai scelto "[1] Encrypt with password", `NodePrivate.txt` è cifrato con la password del nodo. Resta
+la password del nodo, distinta dalla password del wallet: la chiave del nodo non è mai sotto la
+password del wallet (un `NodePrivate.txt` in chiaro non ne chiede). Il wallet lo apre con quella
+stessa password: nella schermata di sblocco dell'interfaccia, e da riga
 di comando quando un comando firma (funziona anche `--password-file`). Fino ad allora l'account
 `node` mostra l'indirizzo di `NodePublic.txt`, segnato "encrypted by the node", e il wallet
 controlla che la chiave aperta sia proprio quella; finché non la sblocchi, `account list`, `account
@@ -365,7 +409,7 @@ parole ripristinano la chiave: con `account import`, o con l'opzione `--seed` de
 
 **La chiave di un account come chiave del nodo.** `account export NOME --format node --out
 CARTELLA_CSNODE` scrive un account del wallet come `NodePrivate.txt` e `NodePublic.txt` del nodo
-(viene chiesta la password dell'account; scrivi `export` per confermare). Non scrive mai sopra una
+(viene chiesta la password del wallet; scrivi `export` per confermare). Non scrive mai sopra una
 chiave che il nodo ha già. Per **sostituire l'identità del nodo**, ferma il nodo e aggiungi
 `--replace`: il wallet conserva i vecchi file come `NodePrivate.txt.bak-DATA` e
 `NodePublic.txt.bak-DATA` (modo 600) e ti chiede di scrivere `replace`. **L'identità del nodo
@@ -400,7 +444,8 @@ Questo file **non è cifrato**: chi lo legge possiede l'account. Per spostarlo i
 ```
 
 oppure `i` nell'interfaccia e il percorso del file nel campo Secret. Il wallet controlla che le due
-metà appartengano alla stessa chiave, chiede una password e salva la chiave cifrata. Poi:
+metà appartengano alla stessa chiave, chiede la password del wallet (per il primo account: la
+scegli) e salva la chiave cifrata con essa. Poi:
 
 1. Controlla l'indirizzo mostrato: deve essere quello del tuo vecchio wallet.
 2. Esegui `./credits-wallet balance old`: il saldo deve essere quello che conosci.
@@ -697,6 +742,8 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
 | "not confirmed by the node" | Il nodo non dice la sua rete: è un nodo ufficiale, una release più vecchia, oppure la porta diag è disattivata (`diag_port=0`) o su un'altra porta (`diag` nel profilo). Decide la configurazione; controlla che la rete del profilo sia giusta. |
 | "MISMATCH" / il wallet rifiuta di inviare | La rete del profilo e quella del nodo differiscono: sei sul nodo sbagliato o sul profilo sbagliato. Correggi il profilo; non forzare mai. |
 | "wrong password" | Riprova. Password dimenticata: importa di nuovo l'account dalle sue 24 parole. |
+| "choose the wallet password first" | Gli account hanno ancora una password ciascuno: avvia l'interfaccia, oppure `wallet migrate`. |
+| "a change of the wallet password was interrupted" | Apri il wallet con la password NUOVA: completa il cambio. |
 | "the node's key file is encrypted by the node" | Il nodo è stato avviato con `--encryptkey` (o al primo avvio è stata scelta una password): scrivi la password del nodo (nella schermata di sblocco, o quando il comando la chiede; `--password-file` negli script). |
 | "the node's key needs 1 GiB of free memory to open" | Aprire una chiave cifrata dal nodo richiede 1 GiB, come nel nodo: libera memoria e riprova. |
 | "could not unlock" | La password è sbagliata (o il file della chiave è danneggiato). Aspetta i secondi indicati e riprova; per l'account `node` di una chiave cifrata è la password del nodo. |

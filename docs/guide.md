@@ -90,19 +90,23 @@ The binaries are reproducible: the same tag built again gives the same files (se
 
    The top line shows the network (MAINNET in red) and the node. `?` shows the keys, `q` quits.
    Every function also exists as a command (`credits-wallet help`).
-4. **Unlock an account.** The interface opens on the unlock screen: the accounts' names and
-   addresses, nothing else. Choose one with the arrows, press Enter and type its password; only
-   then are its balance, history, tokens and contracts shown. See
+4. **Unlock the wallet.** The interface opens on the unlock screen: the accounts' names and
+   addresses, nothing else. Choose one with the arrows, press Enter and type the wallet password;
+   only then are its balance, history, tokens and contracts shown. See
    [Unlocking and locking](#unlocking-and-locking).
 
 ### Unlocking and locking
 
-- **One password per session.** Once an account is unlocked, sending, delegating and calling
-  contracts in the interface ask no password again; on mainnet you still type `send` on the full
-  review. The command line is different: each command asks the password when it signs.
-- **Lock** with `l`; **switch account** with `a` (the wallet locks first and asks the other
-  account's password). After you create or import an account the wallet also goes back to the
-  unlock screen, on the new account.
+- **One password for the wallet.** The wallet password opens every account. Once the wallet is
+  unlocked, sending, delegating and calling contracts ask no password again; on mainnet you still
+  type `send` on the full review. The command line is different: each command asks the wallet
+  password once, when it signs.
+- **Lock** with `l` (the whole wallet); **switch account** with `a`: the list comes back and, the
+  wallet being open, Enter opens another account without a password. After you create or import an
+  account the wallet also goes back to the list, on the new account.
+- Exceptions: an account with an **old password** (from before the wallet password, not moved yet)
+  asks that password; the node's key encrypted by the node asks **the node's password**; a plain
+  node's key asks none.
 - **Auto-lock**: after 10 minutes without a key press the wallet locks by itself (never while a
   transaction is on its way). Change it with `lock_after_minutes = N` at the top of `config.toml`;
   `0` never locks, which means that whoever reaches your terminal (an SSH session left open, a
@@ -136,9 +140,9 @@ In the interface press `n`; on the command line:
 ./credits-wallet account new main
 ```
 
-1. Choose a **password**. It encrypts the key file on this machine (Argon2id and
-   XChaCha20-Poly1305). The interface asks it to unlock the account; the commands, for every
-   transaction.
+1. The first account asks you to choose the **wallet password**, twice (a hint appears if it is
+   short). It protects every account of this wallet; later accounts are encrypted under it without
+   asking it again (the interface asks it to unlock the wallet; the commands, once each).
 2. The wallet shows the **24-word recovery phrase** once. Write it on paper, in order.
 3. Type back the three words it asks for.
 4. The wallet asks `Save the 24 words to a file as well? [y/N]`. **The default is no**: press
@@ -157,6 +161,39 @@ own: if your terminal blocks OSC 52, hold Shift and drag over it. On the command
 ./credits-wallet account address main | pbcopy                       # macOS
 .\credits-wallet.exe account address main | clip                     # Windows
 ```
+
+### The wallet password
+
+- One password opens every account of the wallet. It unlocks `accounts/wallet.key`, a random key
+  that encrypts each account file: unlocking costs one second whatever the number of accounts.
+  `wallet.key` is needed by every account: copy it with them (a backup always has it).
+- **A wallet from an older version** (one password per account) asks, at the first start of the
+  interface, to choose the wallet password; it may be one of your accounts' passwords, and the
+  accounts that have it move under it at once. Then each other account's password is asked once.
+  Leave it empty for an account whose password you do not have: it keeps its old password, is
+  marked "old password", still opens with that password, and moves later with `M` (or `wallet
+  migrate` on the command line). During the move the old files are kept in `accounts/.migration/`
+  (mode 600) and removed at the end; a crash at any moment leaves every account usable, and the
+  next start finishes the job. Until the wallet password exists, new accounts, imports and backups
+  are refused.
+- **Change it** with `P` on the main screen or `./credits-wallet wallet password`: the current
+  password, then the new one twice. Every account is re-encrypted under a new key. If the computer
+  stops half-way, open the wallet with the **new** password: it finishes the change (the old one
+  says the change was interrupted and opens only the accounts not yet moved). While no account is
+  under the new password yet, you can also abandon the change: `P` again, or `wallet password
+  --abandon`, with the old password. If you never changed the password and the wallet says a change
+  was interrupted, remove `accounts/wallet.key.next`. Backups made before keep opening with the old
+  password: make a new one.
+- **`wallet.key` lost or damaged.** The accounts are then listed as orphaned and the wallet creates
+  nothing new. Import your latest backup (`backup import`): it puts each of them back under the
+  backup's password and keeps the orphaned files in `accounts/.orphaned/`. Without a backup, move
+  them away and import each account from its 24 words.
+- **One key in or out.** `account import NAME FILE` accepts an encrypted key file (an export of
+  this or another wallet): it asks that file's password, then keeps the key under the wallet
+  password. `account export NAME --out main.key` asks the wallet password, then offers the exported
+  file's password: Enter uses the wallet password, `o` lets you type another one.
+- `./credits-wallet wallet` says whether the wallet password is set and which accounts still have
+  an old password.
 
 ### The recovery phrase
 
@@ -208,8 +245,8 @@ warns you.
 | What | How | Note |
 |---|---|---|
 | The phrase | on paper | restores everything, without the password |
-| The backup file | `backup export ~/wallet.dat` (or `b`, `e`) | every account in one file, encrypted twice; see below |
-| The key file | `account export main --out main.key` | encrypted copy; needs the password |
+| The backup file | `backup export ~/wallet.dat` (or `b`, `e`) | every account in one file, under the wallet password; see below |
+| The key file | `account export main --out main.key` | encrypted copy of one key; needs its password |
 | The data folder | copy it | key files (encrypted), configuration, local contract and token lists |
 
 The data folder is `~/.credits-wallet` on Linux and macOS, `%APPDATA%\credits-wallet` on Windows,
@@ -231,27 +268,31 @@ One file holds every account of the wallet, ready to be imported on this or anot
 In the interface press `b` (on the unlock screen or the main screen), then `e` to export or `i` to
 import.
 
-- **What is in it**: each account's key file exactly as stored (still encrypted with **its own
-  password**: the backup never decrypts it), its name and address, and its local token and
-  contract lists. **Not in it**: the node's key (`NodePrivate.txt` belongs to the node's folder:
-  keep its 24 words, or a copy of the file offline) and `config.toml` (settings of this machine).
-- **The backup password.** You choose it at export and type it twice; it encrypts the whole file
-  (Argon2id and XChaCha20-Poly1305, as the key files), so without it the file does not even tell
-  the names or addresses. It cannot be empty; under 12 characters the wallet shows a hint. Use a
-  long one or a few unrelated words.
+- **What is in it**: each account's file as stored and `wallet.key`, the names and addresses, and
+  the local token and contract lists. **Not in it**: the node's key (`NodePrivate.txt` belongs to
+  the node's folder: keep its 24 words, or a copy of the file offline) and `config.toml` (settings
+  of this machine).
+- **Its password is the wallet password.** Export asks only the wallet password and encrypts the
+  whole file with it (Argon2id and XChaCha20-Poly1305), so without it the file does not even tell
+  the names or addresses. **The backup is only as strong as the wallet password.** Changing the
+  wallet password does not re-encrypt backups already made: they keep opening with the old
+  password (make a new backup after a change).
 - **Where.** A new file (never over an existing one, never through a link, mode 600). As for the
   recovery file, the wallet refuses its data folder, the node's folder and any folder that holds
   key files. When it is written the wallet prints the path and the number of accounts, and says:
-  *this file contains your accounts, each still protected by its own password and the whole file by
-  the backup password; keep it off this computer, e.g. on a USB key.*
-- **Import.** The wallet asks the backup password, lists the accounts in the file (names and
-  addresses) and asks `Restore N accounts? [y/N]`. An account whose address is already in the
+  *this file contains your accounts, protected by the wallet password (the whole file, and each
+  account inside); it is only as strong as that password. Keep it off this computer, e.g. on a USB
+  key.*
+- **Import.** The wallet asks the password of the wallet the backup comes from, lists the accounts
+  in the file (names and addresses) and asks `Restore N accounts? [y/N]`. An account whose address is already in the
   wallet is skipped (its token and contract lists are merged). A name already used by another
   address needs a new name: the wallet asks one (Enter skips that account), or give
   `--rename-suffix -old` on the command line (`main` becomes `main-old`). Scripts add `--yes`.
-- **Restored accounts keep their own passwords**, the ones they had when the backup was made: the
-  backup password opens the file, then each account asks its own password as before. Keep both, or
-  the 24 words.
+- **Restored accounts take this wallet's password.** If it is the same as the backup's, nothing
+  more is asked; if it differs, this wallet's password is asked once (scripts:
+  `--wallet-password-file FILE`); an empty wallet takes the backup's password as its own. A backup
+  of an older wallet, whose accounts have a password each, asks each password once (Enter keeps
+  that account's old password).
 - A wrong backup password and a damaged file say the same thing: "could not open the backup: wrong
   backup password, or a damaged file". `--json` prints only names, addresses and counts, never the
   content.
@@ -310,7 +351,9 @@ name.)
 
 **A key the node encrypted.** If the node was started with `--encryptkey`, or you chose "[1]
 Encrypt with password" at its first start, `NodePrivate.txt` is encrypted with the node's password.
-The wallet opens it with that same password: on the unlock screen of the interface, and on the
+It stays the node's password, apart from the wallet password: the node's key is never under the
+wallet password (a plain `NodePrivate.txt` needs none). The wallet opens it with that same
+password: on the unlock screen of the interface, and on the
 command line when a command signs (`--password-file` works too). The account `node` shows the
 address of `NodePublic.txt` until then, marked "encrypted by the node", and the wallet checks that
 the key it opens is that one; until you unlock it, `account list`, `account address` and the
@@ -348,8 +391,8 @@ can write to it. `--out FOLDER` names another node's folder. The 24 words restor
 `account import`, or with the node's own `--seed` option.
 
 **An account's key as the node's.** `account export NAME --format node --out CSNODE_FOLDER` writes
-an account of the wallet as the node's `NodePrivate.txt` and `NodePublic.txt` (the password of the
-account is asked; you type `export` to confirm). It never writes over a key the node has. To
+an account of the wallet as the node's `NodePrivate.txt` and `NodePublic.txt` (the wallet
+password is asked; you type `export` to confirm). It never writes over a key the node has. To
 **replace the node's identity**, stop the node, then add `--replace`: the wallet keeps the old files
 as `NodePrivate.txt.bak-DATE` and `NodePublic.txt.bak-DATE` (mode 600) and asks you to type
 `replace`. **The node's identity follows its key**: its address, the delegations it received, its
@@ -384,7 +427,8 @@ credits-wallet:
 ```
 
 or `i` in the interface and the file's path in the Secret field. The wallet checks that the two
-halves belong together, asks for a password and stores the key encrypted. Then:
+halves belong together, asks the wallet password (the first account: choose it) and stores the key
+encrypted under it. Then:
 
 1. Check the address it shows: it must be your old wallet's address.
 2. Run `./credits-wallet balance old`: the balance must be the one you know.
@@ -672,6 +716,8 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
 | "not confirmed by the node" | The node does not tell its network: an official node, an older release, or the diag port off (`diag_port=0`) or on another port (`diag` in the profile). The configuration decides; check that the profile's network is right. |
 | "MISMATCH" / the wallet refuses to send | The profile's network and the node's differ: you are on the wrong node or the wrong profile. Fix the profile; never force it. |
 | "wrong password" | Retry. A forgotten password: import the account again from its 24 words. |
+| "choose the wallet password first" | The accounts still have a password each: start the interface, or run `wallet migrate`. |
+| "a change of the wallet password was interrupted" | Open the wallet with the NEW password: it finishes the change. |
 | "the node's key file is encrypted by the node" | The node was started with `--encryptkey` (or its first start chose a password): type the node's password (on the unlock screen, or when the command asks; `--password-file` in scripts). |
 | "the node's key needs 1 GiB of free memory to open" | Opening a key the node encrypted takes 1 GiB, as in the node: free some memory and try again. |
 | "could not unlock" | The password is wrong (or the key file damaged). Wait the few seconds shown and try again; for the account `node` of an encrypted key it is the node's password. |

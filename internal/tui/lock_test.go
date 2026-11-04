@@ -36,7 +36,7 @@ func balanceMsg(name string) accountDataMsg {
 	return accountDataMsg{name: name, bal: node.Balance{CS: bal}}
 }
 
-// lockModel: a wallet with two accounts of the store (main: "main-pw", savings: "other"), locked.
+// lockModel: a wallet with two accounts of the store under the wallet password "main-pw", locked.
 func lockModel(t *testing.T) (*model, *clock, map[string]string) {
 	t.Helper()
 	home := t.TempDir()
@@ -45,9 +45,9 @@ func lockModel(t *testing.T) (*model, *clock, map[string]string) {
 	w := wallet.New(config.Default(), config.Profile{Name: "local", Address: "127.0.0.1:1", Network: config.Mainnet}, filepath.Join(home, ".credits-wallet"))
 	w.KDF = lightKDF()
 	addr := map[string]string{}
-	for name, pw := range map[string]string{"main": "main-pw", "savings": "other"} {
+	for _, name := range []string{"main", "savings"} {
 		m, _ := keys.NewMasterSeed()
-		f, err := w.CreateAccount(name, keys.DeriveKey(&m), []byte(pw))
+		f, err := w.CreateAccount(name, keys.DeriveKey(&m), []byte("main-pw"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,25 +154,33 @@ func TestUnlockFlow(t *testing.T) {
 	if m.unlocked != nil || !u.Locked() || len(m.balances) != 0 || m.selected().Name != "main" {
 		t.Fatal("not locked by l")
 	}
-	if v := m.View(); strings.Contains(v, "12,345") || !strings.Contains(v, "Unlock an account") {
+	if v := m.View(); strings.Contains(v, "12,345") || !strings.Contains(v, "Unlock the wallet") || m.session != nil {
 		t.Fatalf("after l:\n%s", v)
 	}
-	// switch: a locks first, then another account with its own password
+	// switch: a locks the account, the wallet stays open: another account asks no password
 	tryPassword(t, m, "main-pw")
 	u = m.unlocked
 	typeText(m, "a")
-	if m.unlocked != nil || !u.Locked() {
-		t.Fatal("a did not lock")
+	if m.unlocked != nil || !u.Locked() || m.session == nil {
+		t.Fatal("a did not lock the account, or closed the wallet")
+	}
+	if v := m.View(); !strings.Contains(v, "Choose an account") {
+		t.Fatalf("picker:\n%s", v)
 	}
 	press(m, tea.KeyDown)
-	tryPassword(t, m, "main-pw") // main's password does not open savings
-	if m.unlocked != nil {
-		t.Fatal("savings opened with main's password")
+	cmd := press(m, tea.KeyEnter)
+	if cmd == nil || m.lock.step != lockOpening {
+		t.Fatalf("a password was asked with the wallet open: %d", m.lock.step)
 	}
-	c.add(time.Minute)
-	tryPassword(t, m, "other")
+	runCmd(m, cmd)
 	if m.current() == nil || m.current().Name != "savings" {
 		t.Fatalf("savings: %q", m.lock.note)
+	}
+	// l closes the wallet: its master key zeroed
+	sess := m.session
+	typeText(m, "l")
+	if m.session != nil || !sess.Locked() {
+		t.Fatal("l left the wallet open")
 	}
 }
 
@@ -240,11 +248,10 @@ func TestLockedAfterCreation(t *testing.T) {
 	u := m.unlocked
 	typeText(m, "n")
 	s := m.screen.(*accountScreen)
+	if len(s.form.inputs) != 1 {
+		t.Fatalf("the wallet is open, yet the form asks a password: %v", s.form.labels)
+	}
 	typeText(m, "third")
-	press(m, tea.KeyEnter)
-	typeText(m, "pw3")
-	press(m, tea.KeyEnter)
-	typeText(m, "pw3")
 	press(m, tea.KeyEnter)
 	words := append([]string(nil), s.words...)
 	press(m, tea.KeyEnter)
@@ -256,8 +263,8 @@ func TestLockedAfterCreation(t *testing.T) {
 	if s.step != accSaved || s.err != nil {
 		t.Fatalf("saved: %v", s.err)
 	}
-	if m.unlocked != nil || !u.Locked() {
-		t.Fatal("the session stayed open after the creation")
+	if m.unlocked != nil || !u.Locked() || m.session == nil {
+		t.Fatal("the account stayed unlocked after the creation, or the wallet closed")
 	}
 	if v := m.View(); strings.Contains(v, "Balance") {
 		t.Errorf("saved:\n%s", v)
@@ -267,9 +274,13 @@ func TestLockedAfterCreation(t *testing.T) {
 	if m.screen != nil || m.unlocked != nil || m.selected() == nil || m.selected().Name != "third" {
 		t.Fatalf("not the unlock screen on the new account: %T %v", m.screen, m.selected())
 	}
-	tryPassword(t, m, "pw3")
+	runCmd(m, press(m, tea.KeyEnter)) // the wallet is open: no password
 	if m.current() == nil || m.current().Name != "third" {
 		t.Fatal("the new account does not unlock")
+	}
+	f, _ := m.w.Store.Load("third")
+	if !f.UnderWalletKey() {
+		t.Fatal("the new account is not under the wallet password")
 	}
 }
 
