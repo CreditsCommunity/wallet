@@ -156,7 +156,7 @@ the node reads only printable ASCII (32-126) from its console, 3 to 128 characte
 encrypts. The node can also use a file's content as the password ("f"); the wallet asks only for a
 typed password. `NodePublic.txt` stays plain. The wallet decrypts it in Go (`keys.DecryptNodeKey`:
 `golang.org/x/crypto/argon2`, `chacha20`, `poly1305`; both formats), never writes the decrypted key anywhere and
-never encrypts a node's key itself. Argon2id takes 1 GiB, and an allocation that fails ends the
+never encrypts a node's key itself (the tests write the node's format with `internal/keys/keystest`). Argon2id takes 1 GiB, and an allocation that fails ends the
 process (the terminal left raw): before deriving, the wallet checks the free memory (Linux
 `MemAvailable` of `/proc/meminfo`, else `sysinfo`; Windows `GlobalMemoryStatusEx`; macOS only the
 physical memory, `hw.memsize`, as it reports no available figure and swaps rather than kills) and

@@ -2,11 +2,9 @@ package keys
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
-	"fmt"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20"
@@ -30,7 +28,8 @@ import (
 //
 //	file = base58(salt (16 random bytes) || nonce (8 random bytes) || ciphertext and tag (64 + 16))
 //
-// The node reads both and never rewrites a legacy file by itself.
+// The node reads both and never rewrites a legacy file by itself. The wallet only opens them; the
+// tests write them with package keystest.
 //
 // crypto_aead_chacha20poly1305 is the original construction (not the IETF one): a 64-bit nonce and
 // a 64-bit block counter; the Poly1305 key is the first 32 bytes of block 0, the text is encrypted
@@ -165,46 +164,4 @@ func decryptNodeKey(sealed, fileKey []byte) (ed25519.PrivateKey, error) {
 		return nil, ErrNodeKeyPassword
 	}
 	return key, nil
-}
-
-// EncryptNodeKey is what the node writes for a new encryption (--encryptkey), decoded: the salted
-// format, with a random salt and nonce. The wallet never writes it (it never encrypts the node's key
-// file); the tests use it to prove the round trip with the node's code.
-func EncryptNodeKey(key ed25519.PrivateKey, password []byte) ([]byte, error) {
-	if len(key) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("a secret key is 64 bytes, got %d", len(key))
-	}
-	head := make([]byte, nodeSaltSize+nodeNonceSize)
-	if _, err := rand.Read(head); err != nil {
-		return nil, err
-	}
-	if err := checkNodeKDFMemory(); err != nil {
-		return nil, err
-	}
-	fileKey := nodeFileKey(password, head[:nodeSaltSize])
-	defer Zero(fileKey)
-	sealed, err := encryptNodeKey(key, fileKey, head[nodeSaltSize:])
-	if err != nil {
-		return nil, err
-	}
-	return append(head[:nodeSaltSize], sealed...), nil
-}
-
-// encryptNodeKey seals the key: nonce || ciphertext || tag (both formats past their salt).
-func encryptNodeKey(key ed25519.PrivateKey, fileKey, nonce []byte) ([]byte, error) {
-	if len(nonce) != nodeNonceSize {
-		return nil, errors.New("the node's nonce is 8 bytes")
-	}
-	c, polyKey, err := chachaOriginal(fileKey, nonce)
-	if err != nil {
-		return nil, err
-	}
-	defer Zero(polyKey)
-	out := make([]byte, nodeNonceSize+nodeSealed)
-	copy(out, nonce)
-	ct := out[nodeNonceSize : nodeNonceSize+ed25519.PrivateKeySize]
-	c.XORKeyStream(ct, key)
-	tag := nodeTag(polyKey, ct)
-	copy(out[nodeNonceSize+ed25519.PrivateKeySize:], tag[:])
-	return out, nil
 }

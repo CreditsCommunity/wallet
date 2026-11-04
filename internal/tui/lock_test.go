@@ -14,6 +14,7 @@ import (
 	"github.com/CreditsCommunity/wallet/internal/amount"
 	"github.com/CreditsCommunity/wallet/internal/config"
 	"github.com/CreditsCommunity/wallet/internal/keys"
+	"github.com/CreditsCommunity/wallet/internal/keys/keystest"
 	"github.com/CreditsCommunity/wallet/internal/node"
 	"github.com/CreditsCommunity/wallet/internal/wallet"
 )
@@ -280,7 +281,7 @@ func TestTUIEncryptedNodeKey(t *testing.T) {
 	defer func() { keys.NodeKDF = old }()
 	m, dir := nodeWalletModel(t, false)
 	key, _ := keys.FromBase58(nodeSecret)
-	enc, _ := keys.EncryptNodeKey(key, []byte("node pw"))
+	enc, _ := keystest.EncryptNodeKey(key, []byte("node pw"), keys.NodeKDF.Time, keys.NodeKDF.MemoryKiB)
 	os.WriteFile(filepath.Join(dir, keys.NodePrivateFile), []byte(base58.Encode(enc)), 0o600)
 	address := keys.Address(key.Public().(ed25519.PublicKey))
 	os.WriteFile(filepath.Join(dir, keys.NodePublicFile), []byte(address), 0o600)
