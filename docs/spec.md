@@ -82,6 +82,37 @@ ci/release/build.sh      the reproducible release archives
   phrase once on the terminal and asks the user to type back three of its words. The phrase never
   goes to the output (nor `--json`) by default; without a terminal the command needs
   `--words-file FILE` (created, mode 0600) or `--show-words`.
+- The recovery file: on a terminal, after the check, without `--json`, `--words-file` or
+  `--show-words` (CLI), and in the TUI's account creation, the wallet asks "Save the 24 words to a
+  file as well? [y/N]"; the default is no. On yes it proposes `<home>/credits-recovery-<name>.txt`
+  (home: `%USERPROFILE%` on Windows; elsewhere `$HOME` if the effective user owns it, otherwise the
+  effective user's home from the password database, so `sudo` without `-H` never puts it in another
+  user's home; `config.DataDir` uses the same rule, and the wallet warns when `$HOME` is not the
+  effective user's or when it runs as root) and accepts another path (`~/` expanded). Refused, with the question repeated (three
+  tries, then no file): an existing file or a symbolic link at the path, a folder that does not
+  exist or cannot be listed, a path in the data folder or the accounts folder (by name, then by
+  identity: `os.SameFile` against every ancestor of the folder as typed and as resolved, which
+  covers links, Windows junctions, bind mounts and case-insensitive file systems), a folder that
+  holds, or is below a folder that holds, key files: `NodePrivate*`/`NodePublic*`, and by content
+  (files up to 16 KiB, the first 4096 of a folder, links followed) wallet key files whatever their
+  name, the official wallets' keys JSON, a base58 64-byte secret key. Rationale: the key files are encrypted under the
+  password; the words beside them would bypass it. The file holds the account name, address, date
+  (UTC), the 24 numbered words and a one-line warning. It is written by the same writer as
+  `--words-file` and `account export --out`. On Linux an unnamed file (`O_TMPFILE`, mode 0600) in
+  the target folder, written and synced, then named with `linkat` through `/proc/self/fd` (fails
+  if anything exists there): nothing is left by a crash. Elsewhere, or without `O_TMPFILE`,
+  `PATH.partial` created exclusively and kept open, written and synced, then hard-linked to the
+  name (a leftover `.partial`, from a crash, makes the next write refuse and is documented as to
+  delete); without hard links, `O_CREAT|O_EXCL`. After naming, the file at the path must be the
+  open one (`os.SameFile` with its descriptor), or it is removed and the write fails (a swap by
+  another user in a shared folder); on Windows the mode is not applied and a path
+  outside `%USERPROFILE%` gets a warning. The file is written before the key file and removed if
+  the account cannot be saved. The words never go to the logs, an error message or the JSON; the
+  buffer holding the file's content is zeroed after writing and the slices of words are cleared
+  (`clear`; Go strings cannot be wiped). At start-up the wallet makes itself non-dumpable
+  (`prctl(PR_SET_DUMPABLE, 0)`, Linux) and sets `RLIMIT_CORE` to 0 (Linux, macOS), best effort. Afterwards the wallet prints the full
+  path and "This file holds your account in clear: copy it to paper or an offline USB key, then
+  delete it from this computer." (the TUI shows the same).
 
 ## 5. Functions
 
@@ -364,7 +395,30 @@ A pruned node keeps only recent blocks, so the history of an account may not be 
 ## 6. Terminal interface
 
 Keyboard first (arrows, Tab, Enter, Esc, `?` for help), mouse where the terminal supports it, light
-and dark themes following the terminal. Mock-ups (80 columns):
+and dark themes following the terminal.
+
+Addresses in and out:
+
+- **Copy.** `y` copies the selected account's own address (main screen, and the screen after an
+  account is created or imported), as `y` copies a token's address: OSC 52 (wrapped for tmux or
+  screen), which reaches the local clipboard over SSH; only a valid base58 address is ever copied;
+  a short note says so. The address is also printed whole, alone on its line, for terminals that
+  block OSC 52 (Shift+drag). CLI: `account address NAME` prints the address alone (`--json`:
+  name and address), to pipe into `xclip`, `pbcopy` or `clip`.
+- **Paste.** The terminal's paste reaches the interface as a bracketed paste (one key message,
+  `Paste` set). In a form: the text is trimmed (spaces, newlines) and a leading `credits:` removed.
+  If it is a base58 32-byte address it replaces the field's value, and a line under the field shows
+  it with its first and last 6 characters highlighted (bold, underlined) to compare with the
+  source (clipboard hijacking); the review highlights the recipient, node, token and contract the
+  same way. In an address-only field (send To, delegate Node, token Token and To, token add,
+  contract address) anything else is refused, the field unchanged; the refusal shows only the
+  length of the pasted text (it may be a secret key or a phrase pasted by mistake) and goes when
+  the field loses focus. In a free field (contract arguments) other text is inserted without
+  control characters. A paste into a secret field (password, imported key) is passed on unchanged
+  and never shown. The wallet never reads the clipboard itself: the text inputs' Ctrl+V (which
+  runs external programs) is disabled.
+
+Mock-ups (80 columns):
 
 ```
 ┌ credits-wallet ─────────────────────────── MAINNET ─ node 127.0.0.1:9090 ✓ synced ┐

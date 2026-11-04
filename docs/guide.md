@@ -112,20 +112,66 @@ In the interface press `n`; on the command line:
    XChaCha20-Poly1305). It is asked for every transaction.
 2. The wallet shows the **24-word recovery phrase** once. Write it on paper, in order.
 3. Type back the three words it asks for.
+4. The wallet asks `Save the 24 words to a file as well? [y/N]`. **The default is no**: press
+   Enter and the words are only on your paper. See [The recovery file](#the-recovery-file).
 
 The account's address (its public key, base58) is shown; give it to whoever sends you CS.
+
+**Copying your address.** On the main screen, and after creating or importing an account, `y`
+copies the account's full address to the clipboard (OSC 52: it works over SSH too, to the
+clipboard of the computer you are sitting at). The address is also shown whole on a line of its
+own: if your terminal blocks OSC 52, hold Shift and drag over it. On the command line
+`account address NAME` prints the address alone, to pipe into the clipboard:
+
+```sh
+./credits-wallet account address main | xclip -selection clipboard   # Linux (X11; wl-copy on Wayland)
+./credits-wallet account address main | pbcopy                       # macOS
+.\credits-wallet.exe account address main | clip                     # Windows
+```
 
 ### The recovery phrase
 
 - The 24 words **are** the account: anyone who has them can spend everything in it, from any
   wallet, with no password. Nobody can recover the account without them.
-- Write them on paper, never in a file, an e-mail, a chat, a photo or a password manager in the
-  cloud. Keep the paper where fire and water cannot reach it, ideally in two places.
+- Write them on paper, never in an e-mail, a chat, a photo or a password manager in the
+  cloud. A file only as a passage, see below. Keep the paper where fire and water cannot reach it, ideally in two places.
 - The wallet clears the screen afterwards, but a terminal's scrollback, tmux/screen or a session
   log may keep the words: close the terminal window, and clear the scrollback of a long-lived
   session.
 - The phrase is the same format as the node's: `account import NAME` and typing the 24 words
   restores the account, on this or another machine.
+
+### The recovery file
+
+If you answer `y` to the question after the check (on the command line or in the interface), the
+wallet also writes the 24 words to a file:
+
+- By default `~/credits-recovery-NAME.txt` (on Windows `%USERPROFILE%\credits-recovery-NAME.txt`);
+  type another path if you prefer (Enter keeps the default; `~/` stands for your home folder).
+- The file holds the account name, its address, the date, the 24 numbered words and a warning. It
+  is created new, readable by you only (mode 600; on Windows the user profile's own permissions),
+  and never replaces an existing file or follows a symbolic link. On Linux it appears whole or not
+  at all. On macOS and Windows the wallet first writes `credits-recovery-NAME.txt.partial` next to
+  it and renames it when complete: if the computer crashes or loses power during those few
+  milliseconds, **delete the `.partial` file** (it holds the words). The wallet refuses to write
+  while one is there.
+- **It is never kept next to the keys.** A path in the wallet's data folder, or in a folder that
+  holds key files, or is below one, is refused and the wallet asks again. Key files are wallet key
+  files and encrypted exports, `NodePrivate.txt` and its copies, a base58 secret key
+  (`export --format base58`), the official wallets' keys JSON, and links to any of them. A folder
+  the wallet cannot list is refused too. The data folder is recognised even under another name (a
+  link, a junction, a different case on macOS). Whoever copies the data folder gets the encrypted key files, which
+  still need your password; with the words beside them the password would protect nothing.
+- **Move it off the machine.** The wallet then says: *This file holds your account in clear: copy
+  it to paper or an offline USB key, then delete it from this computer.* Do that now: a file left
+  on the computer can be read by malware, by a backup service, or by anyone who gets the disk.
+
+The question is not asked with `--json`, with `--words-file` or `--show-words`, or without a
+terminal: scripts keep using `--words-file FILE` (the same writer, the words alone on one line).
+
+Under `sudo`, the wallet uses the home of the user it runs as for both its data folder and this
+file. If `$HOME` belongs to someone else (`sudo` without `-H`), or the wallet runs as root, it
+warns you.
 
 ### Backups
 
@@ -267,6 +313,13 @@ The review shows the recipient in full, the amount, the expected fee (about 0.00
 mainnet type `send`, then the password. The wallet follows the transaction until it is in a block.
 
 - Check the **whole** recipient address, not only its first and last letters.
+- **Pasting the recipient.** Use your terminal's paste (Ctrl+Shift+V, right click, Cmd+V on
+  macOS) in the recipient field, and in every field that takes an address (a node to delegate to,
+  a token, a contract). Spaces, line breaks and a leading `credits:` are removed; anything that is
+  not an address (base58 of 32 bytes) is refused and the field stays as it was. The pasted address
+  is shown with its first and last 6 characters highlighted: compare them, and the rest, with where
+  you copied it from. Some malware replaces addresses in the clipboard with its own. The wallet
+  never reads the clipboard by itself (Ctrl+V does nothing in its fields).
 - The Data text is **public**: anyone can read it on the chain.
 - If the wallet says "sent, but … check history later", **do not send again** before the history
   shows whether the first one arrived.
@@ -456,6 +509,7 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
 | "the executor lost the errors" when compiling | The node's contract executor did not return the error lines; fix the source with an IDE or update the node's executor. |
 | "sent, but … check history later" | Do not send again. Check `history` in a minute: the transaction is in a block, or it expired and you can send again. |
 | Garbled screen | Use a terminal with UTF-8 and at least 80×24 (Windows Terminal on Windows). |
+| Pasting an address says "not a CREDITS address" | What was pasted is not a whole address: copy it again, all of it. If the address you copied is right and the paste differs, something on this computer changed the clipboard: do not send. |
 | `y` copies nothing | Your terminal does not support OSC 52 (or tmux needs `set -g set-clipboard on`): hold Shift and drag over the address to select it. |
 | macOS: "cannot be opened" | `xattr -d com.apple.quarantine credits-wallet` (or `xattr -dr com.apple.quarantine csnode` for the whole package). |
 | Docker: the accounts are gone | The data folder must be on the volume: the image sets `CREDITS_WALLET_HOME=/data/wallet`; run the wallet with `docker exec` in the container that has the volume. |

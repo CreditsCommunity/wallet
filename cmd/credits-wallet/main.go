@@ -45,11 +45,15 @@ usage: credits-wallet [global flags] [command] [arguments]
   account new <name> [--words-file FILE | --show-words]
                                         create an account; on a terminal its 24-word phrase is
                                         shown once and checked; without one, the phrase goes to
-                                        FILE (new, mode 600) or, with --show-words, the output
+                                        FILE (new, mode 600) or, with --show-words, the output;
+                                        on a terminal it offers to save it to a file as well
+                                        (default no; never in the data folder)
   account import <name> [file]          import a secret key (base58), a 24-word phrase or the
                                         official wallets' keys JSON; asks for it without a file
   account export <name> [--format encrypted|base58|official] [--out FILE]
   account list                          the accounts and their addresses
+  account address <name>                the account's address alone (to pipe into xclip -sel c,
+                                        pbcopy or clip)
   balance [account|address...]          CS balances (all accounts without arguments)
   send <account> <to> <amount> [--data TEXT] [--yes] [--wait SECONDS]
                                         sign and send CS, with optional user data (a text,
@@ -189,6 +193,9 @@ func (a *app) open() error {
 		return err
 	}
 	a.w = wallet.New(cfg, p, dir)
+	if w := config.HomeWarning(); w != "" && os.Getenv("CREDITS_WALLET_HOME") == "" {
+		fmt.Fprintln(os.Stderr, "warning:", w) // the data folder is in that home
+	}
 	for _, warning := range config.PermissionWarnings(dir) {
 		fmt.Fprintln(os.Stderr, "warning:", warning)
 	}
@@ -212,6 +219,7 @@ func writeJSON(w io.Writer, v any, indent string) error {
 }
 
 func main() {
+	hardenProcess()
 	os.Exit(run(os.Args[1:]))
 }
 

@@ -100,14 +100,23 @@ deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call),
    paper: they are shown once on the terminal (never in the output, `--json` included), you type
    three of them back, and they restore the account (`account import NAME` and type them). The
    screen is cleared afterwards, but a terminal's scrollback, tmux/screen or a session log may keep
-   them. Without a terminal (scripts) `account new` needs `--words-file FILE` (a new file, mode 600)
-   or `--show-words` (the words in the output).
+   them. After the check the wallet asks whether to save the words to a file as well (default
+   **no**): the file goes to `~/credits-recovery-NAME.txt` or a path you type, never in the data
+   folder or a folder holding key files (the words beside the encrypted keys would make the
+   password useless), mode 600, never overwriting; copy it to paper or an offline USB key and
+   delete it from the computer. Without a terminal (scripts) `account new` needs
+   `--words-file FILE` (a new file, mode 600) or `--show-words` (the words in the output).
    Or import an existing key: a base58 key, the keys JSON of the official web and desktop wallets
    (delete the plain file afterwards), or the node's `NodePrivate.txt` / 24-word phrase. **Never
    delete the node's `NodePrivate.txt`** (the node needs it); importing it makes the node's key a
    spending key kept in clear on the server, so keep funds in a separate account.
-4. Send: the wallet shows the recipient, the amount and the fee; on mainnet it asks you to type
-   `send`, then the password.
+   `y` in the interface copies the account's address (OSC 52, over SSH too; it is also shown whole
+   on its own line for Shift+drag), and `account address NAME` prints it alone for `xclip`,
+   `pbcopy` or `clip`.
+4. Send: paste the recipient with the terminal's paste (Ctrl+Shift+V, right click): it is trimmed,
+   a leading `credits:` is dropped, anything but an address is refused, and the address is shown
+   with its first and last 6 characters highlighted to compare with the source. The review shows
+   the recipient, the amount and the fee; on mainnet it asks you to type `send`, then the password.
 
 ### Accounts and files
 

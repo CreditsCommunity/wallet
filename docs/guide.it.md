@@ -113,20 +113,73 @@ Nell'interfaccia premi `n`; da riga di comando:
 2. Il wallet mostra **una sola volta** la **frase di recupero di 24 parole**. Scrivila su carta,
    in ordine.
 3. Riscrivi le tre parole che ti chiede.
+4. Il wallet chiede `Save the 24 words to a file as well? [y/N]` (salvare le 24 parole anche in un
+   file?). **Il default è no**: premi Invio e le parole restano solo sul tuo foglio. Vedi
+   [Il file di recupero](#il-file-di-recupero).
 
 Viene mostrato l'indirizzo dell'account (la sua chiave pubblica, in base58): dallo a chi ti invia CS.
+
+**Copiare il tuo indirizzo.** Nella schermata principale, e dopo aver creato o importato un
+account, `y` copia negli appunti l'indirizzo completo dell'account (OSC 52: funziona anche via SSH,
+verso gli appunti del computer che stai usando). L'indirizzo è anche mostrato per intero su una riga
+a sé: se il tuo terminale blocca OSC 52, tieni premuto Shift e trascina per selezionarlo. Da riga
+di comando `account address NAME` stampa solo l'indirizzo, da passare agli appunti:
+
+```sh
+./credits-wallet account address main | xclip -selection clipboard   # Linux (X11; wl-copy su Wayland)
+./credits-wallet account address main | pbcopy                       # macOS
+.\credits-wallet.exe account address main | clip                     # Windows
+```
 
 ### La frase di recupero
 
 - Le 24 parole **sono** l'account: chi le ha può spendere tutto quello che contiene, da qualsiasi
   wallet, senza password. Senza di esse nessuno può recuperare l'account.
-- Scrivile su carta, mai in un file, in una e-mail, in una chat, in una foto o in un gestore di
-  password nel cloud. Tieni il foglio dove fuoco e acqua non arrivano, meglio se in due posti.
+- Scrivile su carta, mai in una e-mail, in una chat, in una foto o in un gestore di password nel
+  cloud. Un file solo di passaggio, vedi sotto. Tieni il foglio dove fuoco e acqua non arrivano, meglio se in due posti.
 - Il wallet poi pulisce lo schermo, ma lo scrollback di un terminale, tmux/screen o il log di una
   sessione possono conservare le parole: chiudi la finestra del terminale e pulisci lo scrollback
   di una sessione che resta aperta a lungo.
 - La frase ha lo stesso formato di quella del nodo: `account import NAME` e scrivere le 24 parole
   ripristina l'account, su questa o su un'altra macchina.
+
+### Il file di recupero
+
+Se alla domanda dopo la verifica rispondi `y` (da riga di comando o nell'interfaccia), il wallet
+scrive le 24 parole anche in un file:
+
+- Di default `~/credits-recovery-NOME.txt` (su Windows `%USERPROFILE%\credits-recovery-NOME.txt`);
+  se preferisci scrivi un altro percorso (Invio tiene quello proposto; `~/` è la tua cartella home).
+- Il file contiene il nome dell'account, il suo indirizzo, la data, le 24 parole numerate e un
+  avviso. Viene creato nuovo, leggibile solo da te (permessi 600; su Windows quelli del profilo
+  utente), e non sostituisce mai un file esistente né segue un collegamento simbolico. Su Linux
+  compare intero o non compare affatto. Su macOS e Windows il wallet scrive prima
+  `credits-recovery-NOME.txt.partial` lì accanto e lo rinomina quando è completo: se il computer si
+  blocca o va via la corrente in quei pochi millisecondi, **cancella il file `.partial`** (contiene
+  le parole). Finché c'è, il wallet si rifiuta di scrivere.
+- **Non sta mai accanto alle chiavi.** Un percorso nella cartella dei dati del wallet, o in una
+  cartella che contiene file di chiavi, o che sta sotto una di queste, viene rifiutato e il wallet
+  chiede di nuovo. Sono file di chiavi: i file delle chiavi del wallet e le loro esportazioni
+  cifrate, `NodePrivate.txt` e le sue copie, una chiave segreta in base58 (`export --format
+  base58`), il JSON delle chiavi dei wallet ufficiali e i collegamenti a uno di questi. Anche una
+  cartella che il wallet non riesce a leggere viene rifiutata. La cartella dei dati viene
+  riconosciuta anche sotto un altro nome (un collegamento, una junction, maiuscole diverse su
+  macOS). Chi copia la
+  cartella dei dati ottiene i file delle chiavi cifrati, che richiedono ancora la tua password; con
+  le parole lì accanto la password non proteggerebbe più nulla.
+- **Portalo via dalla macchina.** Il wallet poi dice: *This file holds your account in clear: copy
+  it to paper or an offline USB key, then delete it from this computer.* (il file contiene il tuo
+  account in chiaro: copialo su carta o su una chiavetta USB tenuta offline, poi cancellalo da
+  questo computer). Fallo subito: un file lasciato sul computer può essere letto da un malware, da
+  un servizio di backup o da chiunque metta le mani sul disco.
+
+Con `sudo` il wallet usa la home dell'utente con cui gira sia per la cartella dei dati sia per
+questo file. Se `$HOME` appartiene a un altro utente (`sudo` senza `-H`) o il wallet gira come
+root, te lo segnala.
+
+La domanda non viene fatta con `--json`, con `--words-file` o `--show-words`, né senza un
+terminale: gli script continuano a usare `--words-file FILE` (lo stesso meccanismo di scrittura,
+con le sole parole su una riga).
 
 ### Backup
 
@@ -269,6 +322,13 @@ nodo ha confermato la rete. Su mainnet scrivi `send`, poi la password. Il wallet
 transazione finché non è in un blocco.
 
 - Controlla **l'intero** indirizzo del destinatario, non solo le prime e le ultime lettere.
+- **Incollare il destinatario.** Usa l'incolla del terminale (Ctrl+Shift+V, clic destro, Cmd+V su
+  macOS) nel campo del destinatario e in ogni campo che vuole un indirizzo (un nodo a cui delegare,
+  un token, un contratto). Spazi, a capo e un `credits:` iniziale vengono tolti; tutto ciò che non è
+  un indirizzo (base58 di 32 byte) viene rifiutato e il campo resta com'era. L'indirizzo incollato è
+  mostrato con i primi e gli ultimi 6 caratteri evidenziati: confrontali, insieme al resto, con il
+  punto da cui l'hai copiato. Alcuni malware sostituiscono negli appunti gli indirizzi con i propri.
+  Il wallet non legge mai gli appunti da solo (Ctrl+V nei suoi campi non fa nulla).
 - Il testo Data è **pubblico**: chiunque può leggerlo sulla blockchain.
 - Se il wallet dice "sent, but … check history later", **non inviare di nuovo** prima che la
   cronologia mostri se il primo invio è arrivato.
@@ -464,6 +524,7 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
 | "the executor lost the errors" durante la compilazione | L'esecutore di contratti del nodo non ha restituito le righe di errore; correggi il sorgente con un IDE oppure aggiorna l'esecutore del nodo. |
 | "sent, but … check history later" | Non inviare di nuovo. Controlla `history` tra un minuto: la transazione è in un blocco, oppure è scaduta e puoi inviare di nuovo. |
 | Schermo illeggibile | Usa un terminale con UTF-8 e almeno 80×24 (Windows Terminal su Windows). |
+| Incollando un indirizzo compare "not a CREDITS address" | Quello che hai incollato non è un indirizzo completo: copialo di nuovo, per intero. Se l'indirizzo copiato è giusto e quello incollato è diverso, qualcosa su questo computer ha cambiato gli appunti: non inviare. |
 | `y` non copia nulla | Il tuo terminale non supporta OSC 52 (oppure tmux richiede `set -g set-clipboard on`): tieni premuto Shift e trascina sull'indirizzo per selezionarlo. |
 | macOS: "cannot be opened" | `xattr -d com.apple.quarantine credits-wallet` (oppure `xattr -dr com.apple.quarantine csnode` per l'intero pacchetto). |
 | Docker: gli account sono spariti | La cartella dei dati deve essere nel volume: l'immagine imposta `CREDITS_WALLET_HOME=/data/wallet`; esegui il wallet con `docker exec` nel container che ha il volume. |

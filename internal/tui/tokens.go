@@ -128,7 +128,7 @@ func (s *tokensScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			m.screen = newTokenSendScreen(s.account, "")
 		}
 	case "a":
-		s.adding = newForm("Token")
+		s.adding = newForm("Token").address(0)
 		s.adding.inputs[0].Placeholder = "the token's contract address"
 	case "y":
 		if h := s.selected(); h != nil {
@@ -157,6 +157,15 @@ func (s *tokensScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		return s.load(m)
 	}
 	return nil
+}
+
+// copyOwnAddress copies an account's own address and returns the note to show.
+func copyOwnAddress(addr string) string {
+	if _, err := keys.ParseAddress(addr); err != nil {
+		return "not an address: nothing copied"
+	}
+	copyAddress(addr)
+	return "address copied (terminals with OSC 52); or select it with Shift+drag"
 }
 
 // copyAddress asks the terminal to put text on the clipboard (OSC 52; through tmux or screen

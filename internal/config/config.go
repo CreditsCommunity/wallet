@@ -128,8 +128,8 @@ func Default() *Config {
 	return &Config{Node: "local", Nodes: map[string]*Profile{"local": {Name: "local", Address: DefaultAddress, Network: Mainnet}}, HistoryPage: 20}
 }
 
-// DataDir is the wallet's folder: $CREDITS_WALLET_HOME, or ~/.credits-wallet (Linux, macOS),
-// %APPDATA%\credits-wallet (Windows).
+// DataDir is the wallet's folder: $CREDITS_WALLET_HOME, or ~/.credits-wallet (Linux, macOS; the
+// home as UserHome finds it), %APPDATA%\credits-wallet (Windows).
 func DataDir() (string, error) {
 	if d := os.Getenv("CREDITS_WALLET_HOME"); d != "" {
 		return d, nil
@@ -140,7 +140,7 @@ func DataDir() (string, error) {
 		}
 		return "", errors.New("APPDATA is not set")
 	}
-	home, err := os.UserHomeDir()
+	home, err := UserHome()
 	if err != nil {
 		return "", err
 	}

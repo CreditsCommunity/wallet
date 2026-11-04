@@ -287,6 +287,10 @@ func (m *model) updateMain(msg tea.Msg) tea.Cmd {
 				m.screen = s
 				return s.load(m)
 			}
+		case "y":
+			if f := m.current(); f != nil {
+				m.flash = copyOwnAddress(f.Public)
+			}
 		case "S":
 			m.screen = &statusScreen{}
 			return m.loadStatus(true)
@@ -387,7 +391,8 @@ func (m *model) mainView() string {
 	rightW := max(m.width-23, 30)
 	var right strings.Builder
 	if f := m.current(); f != nil {
-		right.WriteString(stTitle.Render(f.Name) + "  " + f.Public + "\n")
+		right.WriteString(stTitle.Render(f.Name) + "  " + stDim.Render("[y] copy the address") + "\n")
+		right.WriteString(f.Public + "\n") // whole, alone on its line: it can also be selected
 		if err := m.balErr[f.Name]; err != nil {
 			right.WriteString(stBad.Render(oneLine(err.Error())) + "\n")
 		} else if b, ok := m.balances[f.Name]; ok {
@@ -424,7 +429,7 @@ func (m *model) mainView() string {
 		right.WriteString("\n" + stWarn.Render("The node is not synced: "+m.status.Why+". Sending is refused until it is.") + "\n")
 	}
 	if m.flash != "" {
-		right.WriteString("\n" + stWarn.Render(m.flash) + "\n")
+		right.WriteString("\n" + stWarn.Render(truncate(m.flash, rightW)) + "\n")
 	}
 	rightCol := lipgloss.NewStyle().Width(rightW).Render(right.String())
 	sep := lipgloss.NewStyle().Foreground(colDim).Render(strings.Repeat("│\n", max(m.height-3, 1)))
@@ -608,11 +613,13 @@ func (helpScreen) view(m *model) string {
 		"               a source compiles on the node (e edits it in $EDITOR, d deploys);",
 		"               a contract's methods: Enter reads a @Getter free or signs a call",
 		"  h            history of the selected account (e: export CSV)",
+		"  y            copy the selected account's address (or select it with Shift+drag)",
 		"  n / i        new account / import a key, a 24-word phrase or a keys JSON",
 		"  S            node status        r  refresh        q  quit",
 		"",
 		stTitle.Render("Forms"),
 		"  Tab, ↑/↓     next or previous field    Enter  next / confirm    Esc  cancel",
+		"  paste        the terminal's paste (Ctrl+Shift+V, right click): an address is checked",
 		"",
 		stTitle.Render("Safety"),
 		"  The network is shown at the top. MAINNET is assumed unless the configuration declares",
