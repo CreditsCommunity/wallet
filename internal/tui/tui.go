@@ -304,6 +304,8 @@ func (m *model) updateMain(msg tea.Msg) tea.Cmd {
 			}
 		case "i":
 			m.screen = newAccountScreen(true)
+		case "b":
+			m.screen = newBackupScreen()
 		case "s":
 			if m.current() == nil {
 				m.flash = "create or import an account first"
@@ -681,6 +683,8 @@ func (helpScreen) view(m *model) string {
 		"  h            history of the selected account (e: export CSV)",
 		"  y            copy the selected account's address (or select it with Shift+drag)",
 		"  n / i        new account / import a key, a 24-word phrase or a keys JSON",
+		"  b            backup: export every account to one .dat file (backup password), or",
+		"               import one; the node's key and config.toml are never in it",
 		"  g            a node's wallet whose node has no key yet: make the node's key",
 		"               (24 words; the account \"node\", in clear in the node's folder)",
 		"  S            node status        r  refresh        q  quit",

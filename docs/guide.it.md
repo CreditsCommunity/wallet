@@ -217,6 +217,7 @@ con le sole parole su una riga).
 | Cosa | Come | Nota |
 |---|---|---|
 | La frase | su carta | ripristina tutto, senza la password |
+| Il file di backup | `backup export ~/wallet.dat` (oppure `b`, `e`) | tutti gli account in un file, cifrato due volte; vedi sotto |
 | Il file della chiave | `account export main --out main.key` | copia cifrata; serve la password |
 | La cartella dei dati | copiala | file delle chiavi (cifrati), configurazione, elenchi locali di contratti e token |
 
@@ -226,6 +227,46 @@ delle chiavi sono in `accounts/`, leggibili solo da te.
 
 **Una password dimenticata non si può recuperare**: importa di nuovo l'account dalle sue 24 parole,
 con una nuova password (`account import main2`).
+
+### Il file di backup (.dat)
+
+Un solo file contiene tutti gli account del wallet, pronto da importare su questa o su un'altra
+macchina:
+
+```sh
+./credits-wallet backup export /media/usb/wallet-2026-11-04.dat
+./credits-wallet backup import /media/usb/wallet-2026-11-04.dat
+```
+
+Nell'interfaccia premi `b` (nella schermata di sblocco o in quella principale), poi `e` per
+esportare o `i` per importare.
+
+- **Cosa contiene**: il file della chiave di ogni account esattamente com'è salvato (ancora cifrato
+  con **la sua password**: il backup non lo decifra mai), il suo nome e indirizzo, e i suoi elenchi
+  locali di token e contratti. **Non contiene**: la chiave del nodo (`NodePrivate.txt` appartiene
+  alla cartella del nodo: conserva le sue 24 parole, o una copia del file offline) e `config.toml`
+  (impostazioni di questa macchina).
+- **La password del backup.** La scegli all'esportazione e la scrivi due volte; cifra l'intero
+  file (Argon2id e XChaCha20-Poly1305, come i file delle chiavi), così senza di essa il file non
+  rivela nemmeno i nomi o gli indirizzi. Non può essere vuota; sotto i 12 caratteri il wallet mostra
+  un suggerimento. Usane una lunga, o alcune parole senza legami tra loro.
+- **Dove.** Un file nuovo (mai sopra un file esistente, mai attraverso un link, modo 600). Come per
+  il file di recupero, il wallet rifiuta la sua cartella dei dati, la cartella del nodo e ogni
+  cartella che contiene file di chiavi. Scritto il file, il wallet mostra il percorso e il numero di
+  account, e avverte che il file contiene i tuoi account, ciascuno ancora protetto dalla sua
+  password e l'intero file dalla password del backup: **tienilo fuori da questo computer, per
+  esempio su una chiavetta USB.**
+- **Importazione.** Il wallet chiede la password del backup, elenca gli account del file (nomi e
+  indirizzi) e chiede `Restore N accounts? [y/N]`. Un account il cui indirizzo è già nel wallet
+  viene saltato (i suoi elenchi di token e contratti vengono uniti). Un nome già usato da un altro
+  indirizzo richiede un nome nuovo: il wallet lo chiede (Invio salta quell'account), oppure da riga
+  di comando usa `--rename-suffix -old` (`main` diventa `main-old`). Gli script aggiungono `--yes`.
+- **Gli account ripristinati mantengono le loro password**, quelle che avevano quando è stato fatto
+  il backup: la password del backup apre il file, poi ogni account chiede la sua password come
+  prima. Conserva entrambe, o le 24 parole.
+- Una password del backup sbagliata e un file danneggiato danno lo stesso messaggio: "could not open
+  the backup: wrong backup password, or a damaged file". `--json` mostra solo nomi, indirizzi e
+  conteggi, mai il contenuto.
 
 ### Altre importazioni
 
@@ -629,6 +670,8 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
   di test. Non usare mai altrove un account che contiene CS su mainnet. Dichiara i nodi di test come
   `network = "testnet"` (o `private`) nel loro profilo.
 - **Blocca il wallet** (`l`) prima di lasciare il terminale, e tieni breve `lock_after_minutes`.
+- **Tieni i backup fuori dalla macchina.** Un file di backup (`backup export`) è cifrato due volte,
+  ma va su una chiavetta USB o un altro disco, non accanto al wallet.
 - **La chiave del nodo è in chiaro sul server** (al nodo serve così): tienici solo quello che
   serve al nodo, e i risparmi in un account separato, con le sue 24 parole su carta.
 - **Invia prima una piccola somma** a un nuovo destinatario, e controlla che sia arrivata, prima

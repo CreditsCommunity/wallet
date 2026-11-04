@@ -282,6 +282,78 @@ receives go to that address. Next to its node the wallet therefore uses the node
   it, so CS on it are as exposed as the server; operators usually keep their stake there already:
   keep on it only what the node needs, and savings in a separate account.
 
+### 4.5 The backup file
+
+`backup export FILE.dat` (and `b` then `e` in the TUI) writes every account of the key store into
+one file; `backup import FILE.dat` (`b` then `i`) restores them. The backup never decrypts an
+account: it carries the key files as stored, each still encrypted under its own password (4.2),
+and seals all of them under a **backup password** chosen at export.
+
+**Content** (the plaintext, JSON): `{"format": "credits-wallet backup", "version": 1, "created":
+UTC time, "accounts": [{"name", "address", "key_file", "tokens", "contracts"}]}`. `key_file` is the
+account's key file byte for byte (base64 in the JSON), `tokens` and `contracts` its local lists
+(`tokens/<address>.json`, `contracts/<address>.json`, public data), absent when it has none; the
+name is the key file's name in `accounts/`. **Not included:** the node's key (`NodePrivate.txt`
+belongs to the node's folder and is never copied: 4.4), an imported copy of it apart (it is an
+encrypted account of the store), `config.toml` and any other setting of this machine. Key files the
+wallet cannot read are reported and left out; a list that is not a regular file is left out with a
+warning.
+
+**Container** (binary, all of it written by `keys.SealBackup`):
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 8 | magic `CWBACKUP` |
+| 8 | 1 | format version, 1 |
+| 9 | 1 | key derivation, 1 = Argon2id |
+| 10 | 4 | Argon2id time (passes), big-endian |
+| 14 | 4 | Argon2id memory in KiB, big-endian |
+| 18 | 1 | Argon2id threads |
+| 19 | 16 | salt, random per file |
+| 35 | 24 | nonce, random (XChaCha20-Poly1305) |
+| 59 | rest | ciphertext and its 16-byte tag |
+
+The key is Argon2id of the backup password with the key files' parameters (time 3, 256 MiB, 4
+threads) and the file's salt; the cipher XChaCha20-Poly1305; the whole 59-byte header is the
+associated data, so no byte of it (version, parameters, salt, nonce) can change without the tag
+check failing. On reading, parameters outside the key files' bounds (4.2) are refused before any
+derivation, an unknown version is refused with its number ("backup format version N is not
+supported: this wallet reads version 1"), a file without the magic is "not a credits-wallet backup
+file", and every other failure (a wrong password, a damaged or truncated file, a damaged header)
+says the same "could not open the backup: wrong backup password, or a damaged file". Files over
+64 MiB are not read; inside, at most 10,000 accounts, key files up to 16 KiB and lists up to 4 MiB,
+each name valid, each key file a wallet key file of its account's address, each list that
+account's, no name or address twice; otherwise the content is refused. The derived key and the
+plaintext buffers (the JSON, the decoded key files and lists) are zeroed after use (4.2: the
+limits of what Go can wipe apply).
+
+**Export.** The path gets the recovery file's checks (4.2): a new file, in an existing folder,
+outside the data folder, the accounts folder and the node's folder (by identity), not in or below
+a folder holding key files; the CLI names it, the TUI proposes `~/credits-wallet-backup-DATE.dat`.
+The backup password is typed twice and must not be empty; under 12 characters the wallet adds a
+hint ("a short password…"; it never refuses). With `--password-file` the first line of the file is
+the backup password. The file is written by `WriteSecretFile` (4.2: mode 0600, never over a file,
+never through a link, whole or not at all). The wallet prints the path and the number of accounts
+and says: "This file contains your accounts, each still protected by its own password and the
+whole file by the backup password; keep it off this computer, e.g. on a USB key.", and what is not
+in it (the node's key, `config.toml`).
+
+**Import.** The backup password is asked once; the wallet lists the backup's accounts (name and
+address) with what it will do, then asks "Restore N accounts? [y/N]" (CLI: `--yes` skips it, and
+without a terminal it is required). An account whose address is already in the wallet (the node's
+key included) is skipped and reported; its token and contract list entries the wallet lacks are
+merged. A name taken by another address needs a new name: `--rename-suffix S` (the name plus S),
+or on a terminal a name typed for each (Enter skips the account); the TUI asks it in a field;
+without either, the account is skipped. Each account is written by the key store's writer (4.2:
+whole, never over an account), then its lists merged (an entry already there is kept). Restored
+accounts keep their own passwords, those they had when the backup was made: the backup password
+opens the file, not the accounts.
+
+**`--json`** prints metadata only, never the content: export `{"file", "count", "accounts": [{"name",
+"address"}], "not_included", "problems"}`; import `{"file", "created", "accounts": [{"name",
+"address", "result": "restored|skipped|failed", "restored_as", "reason", "warning"}], "restored",
+"skipped", "failed"}`.
+
 ## 5. Functions
 
 ### 5.1 Node and network
@@ -660,6 +732,9 @@ back on the new account. Locking zeroes the key (4.2) and forgets the account's 
 interface zeroes it at exit too. The commands are unchanged: each one asks the password when it
 signs.
 
+The unlock screen and the main screen offer `b`, the backup (4.5): `e` export, `i` import. It
+asks no account's password: the key files go in and come back encrypted.
+
 Editing contract sources happens in the user's editor (`$EDITOR`, Notepad on Windows); the wallet shows
 the file, compiles it and reports errors.
 
@@ -671,6 +746,7 @@ credits-wallet status
 credits-wallet account new|import|export|list|address
 credits-wallet account node-key | node-key new [--out FOLDER]       # the node's key (4.4)
 credits-wallet account export <account> --format node --out FOLDER [--replace]
+credits-wallet backup export <FILE.dat> | import <FILE.dat> [--rename-suffix S] [--yes]   # 4.5
 credits-wallet balance [account]
 credits-wallet send <account> <to> <amount> [--data TEXT] [--yes]
 credits-wallet delegate <account> <node> <amount> [--until DATE] | undelegate <account> <node> <amount>
