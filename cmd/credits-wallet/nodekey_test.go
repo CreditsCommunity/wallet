@@ -301,7 +301,7 @@ func TestEncryptedNodeKeySends(t *testing.T) {
 	t.Setenv("CREDITS_WALLET_HOME", filepath.Join(home, "data"))
 	dir := testNodeDir(t, home)
 	key, _ := keys.FromBase58(testKey)
-	enc, _ := keys.EncryptNodeKey(key, []byte("node pw"), nil)
+	enc, _ := keys.EncryptNodeKey(key, []byte("node pw"))
 	os.WriteFile(filepath.Join(dir, "NodePrivate.txt"), []byte(base58.Encode(enc)), 0o600)
 	os.WriteFile(filepath.Join(dir, "NodePublic.txt"), []byte(testAddr), 0o600)
 	cfg := filepath.Join(dir, "wallet.toml")

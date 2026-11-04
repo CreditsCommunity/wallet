@@ -140,18 +140,22 @@ folder (`--private-key-file`, `--public-key-file` name others; client/config/con
 | `NodePrivate.txt` | base58 (Bitcoin alphabet) of the 64-byte ed25519 secret key, seed then public key, **no newline** | the first line (`std::getline`), `DecodeBase58` (spaces around it skipped): 64 bytes is a plain key; more is a key the node encrypted itself (`--encryptkey`, or "[1] Encrypt with password" at its first start), opened with the node's password (below); fewer: "Bad private key file", the node stops |
 | `NodePublic.txt` | base58 of the 32-byte public key, **no newline** | its first line must equal, as text, the base58 public key of `NodePrivate.txt`; otherwise the node stops and asks on its console whether to rewrite it (`f`) |
 
-**A key the node encrypted** (cscrypto `PrivateKey::getEncrypted` / `readFromEncrypted`,
-`cscrypto/src/privatekey.cpp`, libsodium 1.0.17 or later): `NodePrivate.txt` is base58 of 88 bytes,
-an 8-byte random nonce followed by `crypto_aead_chacha20poly1305_encrypt` (the original
+**A key the node encrypted**, libsodium 1.0.17 or later, in one of two formats told apart by the
+decoded length. **Legacy, 88 bytes** (older community nodes and the official node: cscrypto
+`PrivateKey::getEncrypted` / `readFromEncrypted`, `cscrypto/src/privatekey.cpp`): an 8-byte random nonce followed by `crypto_aead_chacha20poly1305_encrypt` (the original
 ChaCha20-Poly1305 with a 64-bit nonce, not the IETF one; no associated data) of the 64-byte secret
 key: 64 bytes of ciphertext and a 16-byte tag. The key is `crypto_pwhash` with `ALG_DEFAULT`
 (Argon2id v1.3), `OPSLIMIT_SENSITIVE` (4 passes), `MEMLIMIT_SENSITIVE` (1 GiB), parallelism 1, a
 32-byte output, and the **fixed** 16-byte salt `IDI NAHUY BLYAT'` that every node shares (so the
-derived key depends on the password only). The password is passed as its bytes up to the first NUL;
+derived key depends on the password only). **Salted, 104 bytes** (community nodes that encrypt with a
+random salt per file: `cs::keyfile::encrypt` / `decrypt`, `client/config/keyfilecrypt.cpp`): a
+16-byte random salt, then the same 8-byte nonce, ciphertext and tag, the key derived as above with
+the file's salt. The node writes the salted format for every new encryption, reads both, and never
+rewrites a legacy file by itself; any other length does not open. The password is passed as its bytes up to the first NUL;
 the node reads only printable ASCII (32-126) from its console, 3 to 128 characters when it
 encrypts. The node can also use a file's content as the password ("f"); the wallet asks only for a
 typed password. `NodePublic.txt` stays plain. The wallet decrypts it in Go (`keys.DecryptNodeKey`:
-`golang.org/x/crypto/argon2`, `chacha20`, `poly1305`), never writes the decrypted key anywhere and
+`golang.org/x/crypto/argon2`, `chacha20`, `poly1305`; both formats), never writes the decrypted key anywhere and
 never encrypts a node's key itself. Argon2id takes 1 GiB, and an allocation that fails ends the
 process (the terminal left raw): before deriving, the wallet checks the free memory (Linux
 `MemAvailable` of `/proc/meminfo`, else `sysinfo`; Windows `GlobalMemoryStatusEx`; macOS only the

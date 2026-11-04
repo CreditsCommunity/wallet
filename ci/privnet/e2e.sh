@@ -474,7 +474,8 @@ node e2e pw
 wait_api "with --encryptkey"
 grep -q "has been encrypted successfully" "$LAST/node.log" "$LAST/stdout.log" || { tail -n 30 "$LAST/stdout.log"; fail "the node did not encrypt its key"; }
 len=$(python3 -c 'import base58, sys; print(len(base58.b58decode(open(sys.argv[1]).read().split("\n")[0].strip())))' "$LAST/NodePrivate.txt")
-[ "$len" = 88 ] || fail "NodePrivate.txt is $len bytes, not the node's encrypted 88"
+# 88: the legacy format (fixed salt) of older nodes; 104: a random salt per file
+[ "$len" = 88 ] || [ "$len" = 104 ] || fail "NodePrivate.txt is $len bytes, not the node's encrypted 88 or 104"
 expect "encrypted by the node" account list --profile nodekey
 [ "$("$WALLET" account address --profile nodekey)" = "$BOB" ] || fail "the encrypted node key's address"
 expect "sent 2 CS to $BOB" send master "$BOB" 2 --yes   # bob's key is the node's now

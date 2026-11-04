@@ -16,8 +16,9 @@ import (
 )
 
 // node-encrypted-vectors.json: NodePrivate.txt files encrypted by the node's own code
-// (testdata/node-key-crypt.cpp encrypt, i.e. cscrypto's PrivateKey::getEncrypted with the node's
-// libsodium) and opened by it (node-key-crypt open) before they were recorded.
+// (testdata/node-key-crypt.cpp encrypt) and opened by it (node-key-crypt open) before they were
+// recorded: the first four by the legacy code (cscrypto's PrivateKey::getEncrypted, 88 bytes, the
+// fixed salt), the others by the node's salted format (cs::keyfile::encrypt, 104 bytes).
 type nodeEncVector struct {
 	Secret, Public, Password, Encrypted string
 }
@@ -35,49 +36,73 @@ func loadNodeEncVectors(t *testing.T) []nodeEncVector {
 	return v
 }
 
-// The node's encrypted files open with the node's password, and only with it; the wallet's
-// encryption with the same nonce gives the node's bytes exactly.
+// The node's encrypted files of both formats open with the node's password, and only with it; the
+// wallet's encryption with the same salt and nonce gives the node's bytes exactly.
 func TestNodeEncryptedVectors(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Argon2id with 1 GiB")
 	}
-	fileKeys := map[string][]byte{} // the salt is fixed: one derivation per password
+	legacyKeys := map[string][]byte{} // the legacy salt is fixed: one derivation per password
+	seen := map[int]int{}
 	for i, v := range loadNodeEncVectors(t) {
-		fk := fileKeys[v.Password]
-		if fk == nil {
-			fk = nodeFileKey([]byte(v.Password))
-			fileKeys[v.Password] = fk
-		}
 		raw, _ := base58.Decode(v.Encrypted)
-		key, err := decryptNodeKey(raw, fk)
+		var salt, fk []byte
+		switch len(raw) {
+		case NodeEncryptedSize:
+			if fk = legacyKeys[v.Password]; fk == nil {
+				fk = nodeFileKey([]byte(v.Password), nil)
+				legacyKeys[v.Password] = fk
+			}
+		case NodeSaltedEncryptedSize:
+			salt = raw[:nodeSaltSize]
+			fk = nodeFileKey([]byte(v.Password), salt)
+		default:
+			t.Fatalf("vector %d: %d bytes", i, len(raw))
+		}
+		first := seen[len(raw)] == 0
+		seen[len(raw)]++
+		sealed := raw[len(salt):]
+		key, err := decryptNodeKey(sealed, fk)
 		if err != nil {
 			t.Fatalf("vector %d: %v", i, err)
 		}
 		if Base58(key) != v.Secret || Address(key.Public().(ed25519.PublicKey)) != v.Public {
 			t.Errorf("vector %d: another key", i)
 		}
-		again, err := encryptNodeKey(key, fk, raw[:8])
-		if err != nil || !bytes.Equal(again, raw) {
+		again, err := encryptNodeKey(key, fk, sealed[:nodeNonceSize])
+		if err != nil || !bytes.Equal(again, sealed) {
 			t.Errorf("vector %d: the wallet's encryption differs from the node's", i)
 		}
-		if i == 0 {
-			if _, err := OpenNodePrivate([]byte(v.Encrypted), []byte(v.Password+"x")); !errors.Is(err, ErrNodeKeyPassword) {
-				t.Errorf("a wrong password: %v", err)
-			}
-			if _, err := OpenNodePrivate([]byte(v.Encrypted), nil); !errors.Is(err, ErrNodeKeyEncrypted) {
-				t.Errorf("no password: %v", err)
-			}
-			raw[20] ^= 1
-			if _, err := decryptNodeKey(raw, fk); !errors.Is(err, ErrNodeKeyPassword) {
-				t.Errorf("a changed file: %v", err)
+		if !first {
+			continue
+		}
+		if _, err := OpenNodePrivate([]byte(v.Encrypted), []byte(v.Password+"x")); !errors.Is(err, ErrNodeKeyPassword) {
+			t.Errorf("vector %d: a wrong password: %v", i, err)
+		}
+		if _, err := OpenNodePrivate([]byte(v.Encrypted), nil); !errors.Is(err, ErrNodeKeyEncrypted) {
+			t.Errorf("vector %d: no password: %v", i, err)
+		}
+		changed := append([]byte(nil), raw...)
+		changed[len(salt)+20] ^= 1
+		if _, err := decryptNodeKey(changed[len(salt):], fk); !errors.Is(err, ErrNodeKeyPassword) {
+			t.Errorf("vector %d: a changed file: %v", i, err)
+		}
+		if salt != nil {
+			changed = append([]byte(nil), raw...)
+			changed[3] ^= 1
+			if _, err := DecryptNodeKey(changed, []byte(v.Password)); !errors.Is(err, ErrNodeKeyPassword) {
+				t.Errorf("vector %d: a changed salt: %v", i, err)
 			}
 		}
+	}
+	if seen[NodeEncryptedSize] == 0 || seen[NodeSaltedEncryptedSize] == 0 {
+		t.Errorf("vectors of both formats expected: %v", seen)
 	}
 }
 
 // The round trip with the node's code: with NODE_KEY_CRYPT set to testdata/node-key-crypt.cpp
-// built against the node, a key the wallet encrypts is opened by the node's readFromEncrypted, and
-// a key the node encrypts (a new random nonce) is opened by the wallet.
+// built against the node, a key the wallet encrypts is opened by the node, and a key the node
+// encrypts (a new random salt and nonce: 104 bytes) is opened by the wallet.
 func TestNodeEncryptedRoundTripWithTheNode(t *testing.T) {
 	tool := os.Getenv("NODE_KEY_CRYPT")
 	if tool == "" {
@@ -87,7 +112,7 @@ func TestNodeEncryptedRoundTripWithTheNode(t *testing.T) {
 	pw := "round trip ~ 42"
 	// wallet -> node
 	dir := t.TempDir()
-	enc, err := EncryptNodeKey(key, []byte(pw), nil)
+	enc, err := EncryptNodeKey(key, []byte(pw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +132,9 @@ func TestNodeEncryptedRoundTripWithTheNode(t *testing.T) {
 		t.Fatalf("%s %v", out, err)
 	}
 	data, _ := os.ReadFile(p)
+	if raw, _ := base58.Decode(string(data)); len(raw) != NodeSaltedEncryptedSize {
+		t.Errorf("the node wrote %d bytes, not the salted format", len(raw))
+	}
 	got, err := OpenNodePrivate(data, []byte(pw))
 	if err != nil || Base58(got) != testSecret {
 		t.Errorf("the wallet does not open the node's encryption: %v", err)
@@ -119,11 +147,15 @@ func TestNodeEncryptedFormat(t *testing.T) {
 	defer func() { NodeKDF = old }()
 	NodeKDF.Time, NodeKDF.MemoryKiB = 1, 64
 	key, _ := FromBase58(testSecret)
-	enc, err := EncryptNodeKey(key, []byte("pw"), nil)
-	if err != nil || len(enc) != NodeEncryptedSize || NodeEncryptedSize != 88 {
+	enc, err := EncryptNodeKey(key, []byte("pw"))
+	if err != nil || len(enc) != NodeSaltedEncryptedSize || NodeSaltedEncryptedSize != 104 || NodeEncryptedSize != 88 {
 		t.Fatalf("%d bytes, %v", len(enc), err)
 	}
-	if _, enc2, _ := DecodeNodePrivate([]byte(base58.Encode(enc) + "\n")); !enc2 {
+	enc2, _ := EncryptNodeKey(key, []byte("pw"))
+	if bytes.Equal(enc[:nodeSaltSize], enc2[:nodeSaltSize]) || bytes.Equal(enc[nodeSaltSize:nodeSaltSize+nodeNonceSize], enc2[nodeSaltSize:nodeSaltSize+nodeNonceSize]) {
+		t.Error("the salt and the nonce are not random")
+	}
+	if _, encrypted, _ := DecodeNodePrivate([]byte(base58.Encode(enc) + "\n")); !encrypted {
 		t.Error("not seen as encrypted")
 	}
 	if _, err := ParseNodePrivate([]byte(base58.Encode(enc))); !errors.Is(err, ErrNodeKeyEncrypted) {
@@ -133,8 +165,25 @@ func TestNodeEncryptedFormat(t *testing.T) {
 	if err != nil || Base58(k) != testSecret {
 		t.Errorf("open: %v", err)
 	}
-	if _, err := DecryptNodeKey(enc[:87], []byte("pw")); !errors.Is(err, ErrNodeKeyPassword) {
-		t.Errorf("short: %v", err)
+	// the legacy format with the light parameters: the fixed salt, 88 bytes
+	fk := nodeFileKey([]byte("pw"), nil)
+	legacy, err := encryptNodeKey(key, fk, enc[nodeSaltSize:nodeSaltSize+nodeNonceSize])
+	if err != nil || len(legacy) != NodeEncryptedSize {
+		t.Fatalf("legacy: %d bytes, %v", len(legacy), err)
+	}
+	if k, err := DecryptNodeKey(legacy, []byte("pw")); err != nil || Base58(k) != testSecret {
+		t.Errorf("legacy open: %v", err)
+	}
+	// another salt is another key: the salted file does not open as legacy, nor with another salt
+	if _, err := DecryptNodeKey(enc[nodeSaltSize:], []byte("pw")); !errors.Is(err, ErrNodeKeyPassword) {
+		t.Errorf("salted read as legacy: %v", err)
+	}
+	for _, n := range []int{0, 64, 87, 89, 103, 105} {
+		b := make([]byte, n)
+		copy(b, enc)
+		if _, err := DecryptNodeKey(b, []byte("pw")); !errors.Is(err, ErrNodeKeyPassword) {
+			t.Errorf("%d bytes: %v", n, err)
+		}
 	}
 }
 
@@ -145,7 +194,7 @@ func TestNodeKeyMemoryCheck(t *testing.T) {
 	defer func() { memoryAvailable, NodeKDF = oldMem, oldKDF }()
 	NodeKDF.Time, NodeKDF.MemoryKiB = 1, 64
 	key, _ := FromBase58(testSecret)
-	enc, err := EncryptNodeKey(key, []byte("pw"), nil)
+	enc, err := EncryptNodeKey(key, []byte("pw"))
 	if err != nil {
 		t.Fatal(err)
 	}

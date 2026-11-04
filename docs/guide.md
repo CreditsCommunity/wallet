@@ -280,8 +280,10 @@ found-key screen mark the address "(from NodePublic.txt, unverified until unlock
 some seconds and **1 GiB of free memory**, as in the node: with less, the wallet refuses with
 "the node's key needs 1 GiB of free memory to open (as the node does)" (stop something, or open it
 on a machine with more memory). The
-wallet never writes the opened key anywhere, and refuses to export it in clear. Every node uses the
-same salt for this encryption, so choose a long password.
+wallet never writes the opened key anywhere, and refuses to export it in clear. The wallet opens
+both of the node's formats: a file the node encrypts now has its own random salt; one encrypted by
+an older node uses a salt every node shares, so choose a long password (re-encrypting it with a
+current node gives it its own salt).
 
 **A key in the folder you start the wallet in.** When you start the interface in a folder that
 holds `NodePrivate.txt` (your `csnode`, say) and no node's key is configured, the wallet says so on

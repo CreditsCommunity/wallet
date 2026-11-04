@@ -292,8 +292,9 @@ address` e la schermata della chiave trovata segnano l'indirizzo "(from NodePubl
 until unlocked)". L'apertura richiede qualche secondo e **1 GiB di memoria libera**, come nel nodo:
 con meno, il wallet rifiuta con "the node's key needs 1 GiB of free memory to open (as the node
 does)" (chiudi qualcosa, o aprila su una macchina con più memoria). Il wallet non scrive mai la chiave aperta da nessuna parte e rifiuta di
-esportarla in chiaro. Tutti i nodi usano lo stesso salt per questa cifratura: scegli una password
-lunga.
+esportarla in chiaro. Il wallet apre entrambi i formati del nodo: un file cifrato ora dal nodo ha un
+proprio salt casuale; uno cifrato da un nodo più vecchio usa un salt comune a tutti i nodi, quindi
+scegli una password lunga (cifrarlo di nuovo con un nodo attuale gli dà un salt proprio).
 
 **Una chiave nella cartella in cui avvii il wallet.** Se avvii l'interfaccia in una cartella che
 contiene `NodePrivate.txt` (il tuo `csnode`, per esempio) e non è configurata nessuna chiave del

@@ -32,7 +32,7 @@ func writeEncryptedNodeKey(t *testing.T, dir, secret, password string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc, err := keys.EncryptNodeKey(key, []byte(password), nil)
+	enc, err := keys.EncryptNodeKey(key, []byte(password))
 	if err != nil {
 		t.Fatal(err)
 	}
