@@ -54,7 +54,14 @@ type Profile struct {
 	// official node, an older community release, the diag port closed): the network must be
 	// confirmed by the node, not only declared.
 	RequireNetworkUUID bool `toml:"require_network_uuid"`
+	// NodeKey makes the wallet the node's wallet: the node's own key file (NodePrivate.txt, a
+	// path relative to the configuration file's folder), used in place as the account "node".
+	// Unset: the same when the wallet runs in a node's folder; "off": never.
+	NodeKey string `toml:"node_key"`
 }
+
+// NodeKeyOff is the value of node_key that turns the node's key account off.
+const NodeKeyOff = "off"
 
 // DiagOff is the value of diag that turns the network-identity call off.
 const DiagOff = "off"
@@ -114,6 +121,10 @@ network = "mainnet"
 # community.17 tells its network uuid; the wallet then refuses to send when it contradicts
 # "network"); default: this address's host, port 9088; "off" not to ask
 # diag = "127.0.0.1:9088"
+# the wallet of the node in this folder: its key file, used in place as the account "node" (in
+# clear on the server, as the node needs it; a path relative to this file's folder); "off" not
+# to use it; unset: used when the wallet runs in a node's folder
+# node_key = "/home/me/csnode/NodePrivate.txt"
 
 # [nodes.lab]
 # address = "10.0.0.5:9090"
@@ -209,6 +220,9 @@ func Parse(text, path string) (*Config, error) {
 			if n, err := strconv.ParseUint(p.NetworkUUID, 10, 64); err != nil || n == 0 {
 				return nil, fmt.Errorf("%s: nodes.%s.network_uuid %q: expected the uuid as a decimal number", path, name, p.NetworkUUID)
 			}
+		}
+		if strings.ContainsRune(p.NodeKey, 0) {
+			return nil, fmt.Errorf("%s: nodes.%s.node_key: not a file name", path, name)
 		}
 		switch p.Network {
 		case "":

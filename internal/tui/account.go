@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ const (
 
 type accountScreen struct {
 	importing bool
+	nodeDir   string // the node's key is made, for the node in this folder ("": an account of the store)
 	step      accStep
 	form      *form // Name, (Secret,) Password, Repeat
 	words     []string
@@ -64,7 +66,23 @@ func newAccountScreen(importing bool) *accountScreen {
 	return s
 }
 
+// newNodeKeyScreen makes the node's key from a new 24-word phrase, written in the node's folder.
+func newNodeKeyScreen(dir string) *accountScreen {
+	return &accountScreen{nodeDir: dir, form: newForm("Confirm")}
+}
+
+// name is the account's name: the form's, or "node" for the node's key.
+func (s *accountScreen) name() string {
+	if s.nodeDir != "" {
+		return wallet.NodeAccount
+	}
+	return s.form.value(0)
+}
+
 func (s *accountScreen) title() string {
+	if s.nodeDir != "" {
+		return "The node's key"
+	}
 	if s.importing {
 		return "Import an account"
 	}
@@ -99,6 +117,18 @@ func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	}
 	switch s.step {
 	case accForm:
+		if s.nodeDir != "" {
+			if k, ok := msg.(tea.KeyMsg); !ok || k.String() != "enter" {
+				return nil
+			}
+			real, err := wallet.CheckNodeKeyTarget(s.nodeDir, false)
+			if err != nil {
+				s.err = err
+				return nil
+			}
+			s.nodeDir, s.err = real, nil
+			return s.draw()
+		}
 		cmd, done := s.form.update(msg)
 		if !done {
 			return cmd
@@ -142,16 +172,7 @@ func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			s.key, s.kind = key, kind
 			return s.save(m)
 		}
-		master, err := keys.NewMasterSeed()
-		if err != nil {
-			s.err = err
-			return nil
-		}
-		s.words = keys.Words(&master)
-		s.key = keys.DeriveKey(&master)
-		keys.Zero(master[:])
-		s.step = accWords
-		return nil
+		return s.draw()
 	case accWords:
 		if k, ok := msg.(tea.KeyMsg); ok && k.String() == "enter" {
 			s.positions = rand.Perm(len(s.words))[:3]
@@ -185,7 +206,7 @@ func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		}
 		switch strings.ToLower(k.String()) {
 		case "y":
-			def, err := wallet.DefaultRecoveryPath(s.form.value(0))
+			def, err := wallet.DefaultRecoveryPath(s.name())
 			if err != nil {
 				s.err = err
 			}
@@ -204,7 +225,7 @@ func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 		if !done {
 			return cmd
 		}
-		path, err := m.w.CheckRecoveryPath(s.file.value(0))
+		path, err := m.w.CheckRecoveryPath(s.file.value(0), s.nodeDir)
 		if err != nil {
 			s.err = err
 			return nil
@@ -224,9 +245,27 @@ func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-// save encrypts the key in the background (Argon2id with 256 MiB takes about a second).
+// draw makes a new master seed: its words are shown next.
+func (s *accountScreen) draw() tea.Cmd {
+	master, err := keys.NewMasterSeed()
+	if err != nil {
+		s.err = err
+		return nil
+	}
+	s.words = keys.Words(&master)
+	s.key = keys.DeriveKey(&master)
+	keys.Zero(master[:])
+	s.step = accWords
+	return nil
+}
+
+// save encrypts the key in the background (Argon2id with 256 MiB takes about a second), or writes
+// the node's key in the node's folder.
 func (s *accountScreen) save(m *model) tea.Cmd {
 	s.step = accSaving
+	if s.nodeDir != "" {
+		return s.saveNodeKey()
+	}
 	n := len(s.form.inputs)
 	name, pw, key := s.form.value(0), []byte(s.form.inputs[n-2].Value()), s.key
 	recovery, words := s.recovery, s.words
@@ -255,10 +294,45 @@ func (s *accountScreen) save(m *model) tea.Cmd {
 	}
 }
 
+// saveNodeKey writes the node's key files (and the recovery file first, if asked).
+func (s *accountScreen) saveNodeKey() tea.Cmd {
+	dir, key, recovery, words := s.nodeDir, s.key, s.recovery, s.words
+	s.key, s.words, s.recovery = nil, nil, ""
+	return func() tea.Msg {
+		defer keys.Zero(key)
+		defer clear(words)
+		address := keys.Address(key.Public().(ed25519.PublicKey))
+		if recovery != "" {
+			data := wallet.RecoveryText(wallet.NodeAccount, address, time.Now(), words)
+			err := wallet.WriteSecretFile(recovery, data)
+			keys.Zero(data)
+			if err != nil {
+				return savedMsg{err: fmt.Errorf("the recovery file: %w; nothing was written", err)}
+			}
+		}
+		if err := wallet.WriteNodeKey(dir, key); err != nil {
+			if recovery != "" {
+				os.Remove(recovery)
+			}
+			return savedMsg{err: fmt.Errorf("%w; nothing was written", err)}
+		}
+		return savedMsg{address: address, recovery: recovery}
+	}
+}
+
 func (s *accountScreen) view(m *model) string {
 	var b strings.Builder
 	switch s.step {
 	case accForm:
+		if s.nodeDir != "" {
+			b.WriteString("The node in " + echo.Terminal(s.nodeDir) + " has no key yet.\n\n")
+			b.WriteString("The wallet makes it from a new 24-word phrase, your paper backup of the node's identity,\n")
+			b.WriteString("and writes NodePrivate.txt and NodePublic.txt there (mode 600) in the node's format:\n")
+			b.WriteString("the node uses them at its first start; the key is this wallet's account \"node\".\n\n")
+			b.WriteString(stWarn.Width(74).Render(wallet.NodeKeyWarning) + "\n")
+			b.WriteString("\n" + keyHelp("Enter", "make the key", "Esc", "cancel") + "\n")
+			break
+		}
 		b.WriteString(s.form.view())
 		if s.importing {
 			b.WriteString("\n" + stDim.Render("The secret: a base58 key (NodePrivate.txt), the node's 24-word phrase, or the") + "\n")
@@ -287,7 +361,11 @@ func (s *accountScreen) view(m *model) string {
 		b.WriteString(stDim.Render("the words are only on your paper.") + "\n")
 		b.WriteString("\n" + keyHelp("y", "save to a file", "n/Enter", "no", "Esc", "cancel") + "\n")
 	case accFilePath:
-		b.WriteString("Where to save the 24 words (a new file, outside the wallet's folder).\n")
+		if s.nodeDir != "" {
+			b.WriteString("Where to save the 24 words (a new file, outside the wallet's and the node's folders).\n")
+		} else {
+			b.WriteString("Where to save the 24 words (a new file, outside the wallet's folder).\n")
+		}
 		if w := config.HomeWarning(); w != "" {
 			b.WriteString(stWarn.Render(w) + "\n")
 		}
@@ -295,11 +373,22 @@ func (s *accountScreen) view(m *model) string {
 		b.WriteString(s.file.view())
 		b.WriteString("\n" + keyHelp("Enter", "save", "Esc", "cancel") + "\n")
 	case accSaving:
+		if s.nodeDir != "" {
+			b.WriteString(stDim.Render("writing the node's key…") + "\n")
+			break
+		}
 		b.WriteString(stDim.Render("encrypting the key file…") + "\n")
 	case accSaved:
-		if s.err == nil {
+		if s.err == nil && s.nodeDir != "" {
+			b.WriteString(stOK.Render("✓ the node's key is written") + "\n")
+			b.WriteString(echo.Terminal(filepath.Join(s.nodeDir, keys.NodePrivateFile)) + " and " + keys.NodePublicFile + " (mode 600)\n")
+			b.WriteString("address " + s.address + "  (the node's key account)\n")
+			b.WriteString(stDim.Render("The node uses this key at its next start.") + "\n")
+		} else if s.err == nil {
 			b.WriteString(stOK.Render("✓ account saved") + "\n")
 			b.WriteString("address " + s.address + "\n")
+		}
+		if s.err == nil {
 			if s.note != "" {
 				b.WriteString(stWarn.Render(s.note) + "\n")
 			}

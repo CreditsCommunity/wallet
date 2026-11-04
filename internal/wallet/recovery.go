@@ -57,13 +57,18 @@ func ExpandHome(path string) string {
 // CheckRecoveryPath checks where the recovery file may go and returns its absolute path. Refused:
 // an existing file or link at that path, a folder that does not exist or cannot be listed, a path
 // in the data folder or the accounts folder (compared by identity: links, junctions, bind mounts,
-// a case-insensitive file system), a folder (or a folder above it) holding key files.
-func (w *Wallet) CheckRecoveryPath(path string) (string, error) {
-	return CheckRecoveryPath(path, w.DataDir, w.Store.Dir)
+// a case-insensitive file system), a folder (or a folder above it) holding key files, and the
+// folder of the node whose wallet this is, or nodeDirs (a node's folder the node's key is being
+// written to: it holds no key file yet), or a folder inside them.
+func (w *Wallet) CheckRecoveryPath(path string, nodeDirs ...string) (string, error) {
+	if w.NodeKey != nil {
+		nodeDirs = append(nodeDirs, w.NodeKey.Dir)
+	}
+	return CheckRecoveryPath(path, w.DataDir, w.Store.Dir, nodeDirs...)
 }
 
 // CheckRecoveryPath is Wallet.CheckRecoveryPath with the folders given.
-func CheckRecoveryPath(path, dataDir, accountsDir string) (string, error) {
+func CheckRecoveryPath(path, dataDir, accountsDir string, nodeDirs ...string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", errors.New("no file name")
@@ -113,6 +118,33 @@ func CheckRecoveryPath(path, dataDir, accountsDir string) (string, error) {
 	if st, err := os.Stat(realDir); err != nil || !st.IsDir() {
 		return "", fmt.Errorf("%s is not an existing folder", dir)
 	}
+	// a node's folder: by name, then by identity (the node's key is written there after the words)
+	for _, n := range nodeDirs {
+		if n == "" {
+			continue
+		}
+		nAbs, err := filepath.Abs(n)
+		if err != nil {
+			continue
+		}
+		realN := nAbs
+		if r, err := filepath.EvalSymlinks(nAbs); err == nil {
+			realN = r
+		}
+		if within(dir, nAbs) || within(realDir, realN) || within(realDir, nAbs) {
+			return "", nodeFolderErr(abs, nAbs)
+		}
+		if st, err := os.Stat(nAbs); err == nil {
+			for d := realDir; ; d = filepath.Dir(d) {
+				if dst, err := os.Stat(d); err == nil && os.SameFile(dst, st) {
+					return "", nodeFolderErr(abs, nAbs)
+				}
+				if filepath.Dir(d) == d {
+					break
+				}
+			}
+		}
+	}
 	for _, start := range []string{realDir, dir} {
 		for d := start; ; d = filepath.Dir(d) {
 			if st, err := os.Stat(d); err == nil {
@@ -140,6 +172,10 @@ func CheckRecoveryPath(path, dataDir, accountsDir string) (string, error) {
 		}
 	}
 	return abs, nil
+}
+
+func nodeFolderErr(abs, folder string) error {
+	return fmt.Errorf("%s is in the node's folder %s, next to the node's key: refused, choose a folder outside it", abs, folder)
 }
 
 func dataFolderErr(abs, folder string) error {

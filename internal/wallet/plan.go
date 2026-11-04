@@ -173,6 +173,8 @@ type SendPlan struct {
 	Node         string
 	Status       node.Status
 	Prepared     time.Time
+	// NodeKey: the sender is the node's own key, read in clear from the node's folder (no password)
+	NodeKey bool
 }
 
 // ErrNotSynced is returned when the node is not at the head of the chain.
@@ -180,7 +182,7 @@ var ErrNotSynced = errors.New("the node is not synced")
 
 // start loads the sender and checks the node: synced and on the declared network.
 func (w *Wallet) start(ctx context.Context, account string, kind Kind) (*SendPlan, error) {
-	f, err := w.Store.Load(account)
+	f, err := w.LoadAccount(account)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +205,7 @@ func (w *Wallet) start(ctx context.Context, account string, kind Kind) (*SendPla
 	if err != nil {
 		return nil, err
 	}
-	return &SendPlan{Kind: kind, Account: f.Name, From: from, MaxFee: tx.MaxFee, Balance: bal.CS, Network: w.Profile.Network,
+	return &SendPlan{Kind: kind, Account: f.Name, NodeKey: f.IsNodeKey(), From: from, MaxFee: tx.MaxFee, Balance: bal.CS, Network: w.Profile.Network,
 		NetworkCheck: check, Node: w.Profile.Address, Status: st}, nil
 }
 
@@ -510,7 +512,7 @@ type SendResult struct {
 
 // sign decrypts the key with the password and signs the plan. The key is zeroed at once.
 func (w *Wallet) sign(p *SendPlan, password []byte) (*api.Transaction, error) {
-	f, err := w.Store.Load(p.Account)
+	f, err := w.LoadAccount(p.Account)
 	if err != nil {
 		return nil, err
 	}

@@ -51,9 +51,21 @@ usage: credits-wallet [global flags] [command] [arguments]
   account import <name> [file]          import a secret key (base58), a 24-word phrase or the
                                         official wallets' keys JSON; asks for it without a file
   account export <name> [--format encrypted|base58|official] [--out FILE]
+  account export <name> --format node --out <node folder> [--replace]
+                                        write the key as the node's NodePrivate.txt and
+                                        NodePublic.txt (the node's identity follows its key);
+                                        never over the node's key unless --replace, which keeps
+                                        the old files as .bak-DATE; the node must be stopped
   account list                          the accounts and their addresses
-  account address <name>                the account's address alone (to pipe into xclip -sel c,
-                                        pbcopy or clip)
+  account address [name]                the account's address alone (to pipe into xclip -sel c,
+                                        pbcopy or clip); without a name the node's key
+  account node-key                      the node's key account (a node's wallet: started with
+                                        the node's wallet.toml, node_key in the profile, or in
+                                        the node's folder): its file, address, the node running
+  account node-key new [--out FOLDER] [--words-file FILE | --show-words]
+                                        the node has no key yet: make it from a new 24-word
+                                        phrase (shown and checked as for account new) and write
+                                        it in the node's folder for the node's first start
   balance [account|address...]          CS balances (all accounts without arguments)
   send <account> <to> <amount> [--data TEXT] [--yes] [--wait SECONDS]
                                         sign and send CS, with optional user data (a text,
@@ -193,6 +205,10 @@ func (a *app) open() error {
 		return err
 	}
 	a.w = wallet.New(cfg, p, dir)
+	cwd, _ := os.Getwd()
+	if a.w.NodeKey, err = wallet.ResolveNodeKey(p, cfg.Path, cwd); err != nil {
+		return err
+	}
 	if w := config.HomeWarning(); w != "" && os.Getenv("CREDITS_WALLET_HOME") == "" {
 		fmt.Fprintln(os.Stderr, "warning:", w) // the data folder is in that home
 	}

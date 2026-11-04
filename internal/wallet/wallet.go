@@ -25,6 +25,8 @@ type Wallet struct {
 	KDF keys.KDFParams
 	// DataDir is the data folder (the local contract lists are in it).
 	DataDir string
+	// NodeKey is the node whose wallet this is (its key is the account "node"), nil otherwise.
+	NodeKey *NodeKey
 
 	historyNode *node.Client // the remote history node, when the profile names one
 
@@ -123,8 +125,8 @@ func NetworkMismatch(p config.Profile, id node.NetworkID) error {
 
 // Account resolves an account name, or failing that a base58 address (read-only use).
 func (w *Wallet) Account(nameOrAddress string) (name string, pub ed25519.PublicKey, err error) {
-	if keys.ValidName(nameOrAddress) == nil && w.Store.Exists(nameOrAddress) {
-		f, err := w.Store.Load(nameOrAddress)
+	if keys.ValidName(nameOrAddress) == nil && w.HasAccount(nameOrAddress) {
+		f, err := w.LoadAccount(nameOrAddress)
 		if err != nil {
 			return "", nil, err
 		}
@@ -141,6 +143,9 @@ func (w *Wallet) Account(nameOrAddress string) (name string, pub ed25519.PublicK
 func (w *Wallet) CreateAccount(name string, key ed25519.PrivateKey, password []byte) (*keys.File, error) {
 	if w.Store.Exists(name) {
 		return nil, fmt.Errorf("an account named %q already exists", name)
+	}
+	if w.NodeKey != nil && name == w.NodeAccountName() {
+		return nil, fmt.Errorf("%q is the name of the node's key account here: choose another name", name)
 	}
 	f, err := keys.Encrypt(name, key, password, w.KDF)
 	if err != nil {

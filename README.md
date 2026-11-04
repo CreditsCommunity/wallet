@@ -4,13 +4,14 @@ An open-source terminal wallet for the CREDITS network that runs next to a node,
 macOS: keys kept on the machine, transfers, delegations, and smart contracts compiled, deployed and
 called through the local node. No browser, no web server, no open ports.
 
-Status: **milestone 4**: accounts, key store, status, balances, transfers with optional user data,
-delegations, tokens (every token held with its contract address, also without the node's token
-cache; info, transfers), the history from the local node or a remote full node with the token
-transfers and a CSV export, smart contracts (templates, compile, deploy, methods, getters, calls,
-payments, the contract list), the network identity of community nodes, the terminal interface and
-the scriptable commands; reproducible release archives, shipped in the community node packages
-from release community.17 on. What is left for later: [docs/spec.md](docs/spec.md) §10.
+Status: **milestone 4**: accounts, key store, the node's own key as the account of a node's wallet,
+status, balances, transfers with optional user data, delegations, tokens (every token held with its
+contract address, also without the node's token cache; info, transfers), the history from the local
+node or a remote full node with the token transfers and a CSV export, smart contracts (templates,
+compile, deploy, methods, getters, calls, payments, the contract list), the network identity of
+community nodes, the terminal interface and the scriptable commands; reproducible release archives,
+shipped in the community node packages from release community.17 on. What is left for later:
+[docs/spec.md](docs/spec.md) §10.
 
 **User guide: [docs/guide.md](docs/guide.md)** (in Italian: [docs/guide.it.md](docs/guide.it.md)).
 
@@ -21,8 +22,9 @@ Part of the [CreditsCommunity](https://github.com/CreditsCommunity) projects, ne
 
 - **With the community node**: every package from release community.17 on has `credits-wallet`
   (`credits-wallet.exe` on Windows) in its `csnode` folder, next to the node, with this guide as
-  `wallet-guide.md`; the Docker image has it on the `PATH`. The node's set-up offers to create or
-  import an account.
+  `wallet-guide.md`; the Docker image has it on the `PATH`. Next to its node the wallet uses the
+  node's own key as the account `node` (below); the node's set-up offers it, or makes the node's
+  key from a 24-word phrase when the node has none yet.
 - **On its own**: the [releases](https://github.com/CreditsCommunity/wallet/releases) have an
   archive for Linux x86-64 (static), Windows x64 and macOS Apple Silicon, and `SHA256SUMS`.
 
@@ -60,6 +62,9 @@ with the packages of `testdata/requirements.txt` (pinned with hashes:
 ./credits-wallet status                # the node: last block, round, synced, network
 ./credits-wallet account new main      # a new account: write down its 24 words
 ./credits-wallet account import old ~/keys.json    # then delete the plain file
+./credits-wallet --config wallet.toml account list # in csnode: the node's key is the account "node"
+./credits-wallet account node-key new              # the node has no key yet: make it from 24 words
+./credits-wallet account export main --format node --out csnode   # an account's key as the node's
 ./credits-wallet balance               # every account
 ./credits-wallet history main --csv main.csv
 ./credits-wallet send main u6PJ8DtQuPFnfmwHbGFULQ4u4EgjDiyYKjVEsynXq2w 12.5   # SPENDS REAL CS ON MAINNET
@@ -107,9 +112,9 @@ deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call),
    delete it from the computer. Without a terminal (scripts) `account new` needs
    `--words-file FILE` (a new file, mode 600) or `--show-words` (the words in the output).
    Or import an existing key: a base58 key, the keys JSON of the official web and desktop wallets
-   (delete the plain file afterwards), or the node's `NodePrivate.txt` / 24-word phrase. **Never
-   delete the node's `NodePrivate.txt`** (the node needs it); importing it makes the node's key a
-   spending key kept in clear on the server, so keep funds in a separate account.
+   (delete the plain file afterwards), or a 24-word phrase. Next to a node, the node's own key is
+   already an account (see "The node's key" below): no import needed, and **never delete the
+   node's `NodePrivate.txt`** (the node needs it).
    `y` in the interface copies the account's address (OSC 52, over SSH too; it is also shown whole
    on its own line for Shift+drag), and `account address NAME` prints it alone for `xclip`,
    `pbcopy` or `clip`.
@@ -128,6 +133,36 @@ deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call),
 - `account export NAME` copies the encrypted file; `--format base58` prints the secret key after the
   password; `--format official` writes the official wallets' **unencrypted** keys JSON, with a
   warning.
+
+### The node's key
+
+Next to its node the wallet is **the node's wallet**: it uses the node's own key pair, in place, as
+the account `node`, listed first, the default, and marked `NODE KEY`. That is the case when it runs
+with the package's `csnode/wallet.toml` (whose profile says `node_key = "NodePrivate.txt"`), with
+`node_key` in a node profile of `config.toml`, in the node's folder, or in the node's Docker image
+(`CREDITS_WALLET_NODE_KEY`). The node's rewards and the delegations it receives go to that address,
+and operators usually keep their stake there.
+
+- `NodePrivate.txt` is read where the node reads it: never copied into the key store, never
+  encrypted (the node needs the plain file), no password asked to sign. `node_key = "off"` turns
+  it off.
+- **The node's key is kept in clear on the server**, because the node needs it: CS on it are as
+  exposed as the server. Keep on it only what the node needs, and savings in a separate account
+  (`account new`).
+- **No key yet**: `account node-key new` (or `g` in the interface) makes it from a new 24-word
+  phrase, shown and checked as for `account new`, and writes `NodePrivate.txt` and
+  `NodePublic.txt` in the node's folder, in exactly the node's format (mode 600, never over an
+  existing file, never through a link, refused while the node runs): the node uses it at its first
+  start, and its identity has a paper backup. The recovery file never goes in the node's folder.
+- **An account's key as the node's**: `account export NAME --format node --out CSNODE_FOLDER`
+  writes it in the node's format; it never overwrites the node's key. `--replace` replaces the
+  node's identity (the node stopped; the old files kept as `NodePrivate.txt.bak-DATE` and
+  `NodePublic.txt.bak-DATE`, mode 600). **The node's identity follows its key**: its address, the
+  delegations it received, its history as a trusted node and its rewards.
+- `account import NAME NodePrivate.txt` still makes an encrypted copy in the key store, but the
+  original stays in clear for the node, so the copy protects nothing more.
+- `account node-key` shows the key's file, its address, whether `NodePublic.txt` matches and
+  whether the node is running.
 
 ### Networks
 
@@ -277,7 +312,9 @@ receives the account's public address only; every history output names the sourc
 
 ## Tests and CI
 
-- `go test ./...`: signing (byte-identical to the node's samples, and for user data, delegations,
+- `go test ./...`: the node's key files byte for byte as the node writes them (with
+  `NODE_KEY_CHECK` set to `internal/keys/testdata/node-key-check.cpp` built against the node, read
+  by the node's own code), signing (byte-identical to the node's samples, and for user data, delegations,
   token calls, deploys and contract addresses to `testdata/sign-vectors.txt`, made by
   `testdata/sign-vectors.py` the way the node's `ci/testnet/fund.py`, `samples/python/token_client.py`
   and `samples/clients/python/credits_client.py` build them), key store, amounts, the network-identity
@@ -287,7 +324,10 @@ receives the account's public address only; every history output names the sourc
 - `.github/workflows/release.yml`: the release archives (below); on pull requests it only builds.
 - `.github/workflows/privnet.yml` (pull requests to main, on demand): `ci/privnet/e2e.sh` starts a
   private network of 5 community nodes with their contract executors and runs the wallet's commands
-  end to end: transfers, delegations, history, the network identity, and the contracts deployed,
+  end to end: the last node started with a key the wallet made (`account node-key new`), the node's
+  key as an account (a send signed without a password, the refusals while a node runs), the
+  export to the node's format with `--replace` (that node started again with the exported key),
+  transfers, delegations, history, the network identity, and the contracts deployed,
   called and paid with the wallet (TestToken, Counter, TipJar). The executor comes from the community release package pinned in the workflow (tag, commit and
   package SHA-256, bumped deliberately); the
   node is the release commit built with `-DCREDITS_TESTNET=ON` (the package's node is a mainnet build,

@@ -43,9 +43,13 @@ cartella `csnode`, accanto al nodo:
 
 Questa guida è nel pacchetto come `wallet-guide.md` (e `wallet-guide.it.md`).
 
-La configurazione guidata del nodo (`./setup.sh`, oppure `setup.bat` su Windows) alla fine propone
-di creare o importare un account, con un profilo del wallet per il nodo appena configurato (vedi
-la [sezione 4](#4-profili-il-nodo-locale-la-porta-diag-e-il-controllo-della-rete)).
+La configurazione guidata del nodo (`./setup.sh`, oppure `setup.bat` su Windows) scrive un profilo
+del wallet per il nodo appena configurato (`wallet.toml`, vedi la
+[sezione 4](#4-profili-il-nodo-locale-la-porta-diag-e-il-controllo-della-rete)) e, per default, fa
+della chiave del nodo l'account del wallet: se il nodo ha già una chiave la usa così com'è; se non
+ne ha ancora una, la crea subito da una frase di 24 parole (vedi
+[La chiave del nodo](#la-chiave-del-nodo-il-wallet-di-un-nodo)). Un account separato, per i
+risparmi, è l'altra scelta.
 
 ### Da solo
 
@@ -161,7 +165,8 @@ scrive le 24 parole anche in un file:
   cartella che contiene file di chiavi, o che sta sotto una di queste, viene rifiutato e il wallet
   chiede di nuovo. Sono file di chiavi: i file delle chiavi del wallet e le loro esportazioni
   cifrate, `NodePrivate.txt` e le sue copie, una chiave segreta in base58 (`export --format
-  base58`), il JSON delle chiavi dei wallet ufficiali e i collegamenti a uno di questi. Anche una
+  base58`), il JSON delle chiavi dei wallet ufficiali e i collegamenti a uno di questi. Viene
+  rifiutata anche la cartella del nodo, pure mentre il wallet vi sta creando la chiave del nodo. Anche una
   cartella che il wallet non riesce a leggere viene rifiutata. La cartella dei dati viene
   riconosciuta anche sotto un altro nome (un collegamento, una junction, maiuscole diverse su
   macOS). Chi copia la
@@ -207,13 +212,65 @@ con una nuova password (`account import main2`).
 Dopo aver importato da un file un JSON delle chiavi o una chiave base58, cancella il file in chiaro:
 la chiave è ormai nell'archivio cifrato delle chiavi.
 
-**La chiave del nodo è diversa. Non cancellare mai `csnode/NodePrivate.txt`: il nodo ne ha bisogno
-per funzionare.** Importarla rende la chiave del nodo anche una chiave di spesa, e quella chiave
-resta in chiaro sul server per il nodo: chi entra nel server può prendere i CS di quell'account. Le
-ricompense e le deleghe del nodo arrivano a quell'indirizzo, quindi può servirti vederlo nel wallet,
-ma **tieni i fondi in un account separato** (`account new`) e spostali fuori dall'account del nodo.
-La configurazione guidata del nodo crea per default un account separato; importare la chiave del
-nodo è una seconda scelta esplicita.
+Accanto a un nodo non serve importare la chiave del nodo: il wallet la usa dove si trova (sezione
+successiva). Una copia importata è cifrata nell'archivio delle chiavi, ma l'originale resta in
+chiaro per il nodo, quindi la copia non protegge niente di più. **Non cancellare mai
+`csnode/NodePrivate.txt`: il nodo ne ha bisogno per funzionare.**
+
+### La chiave del nodo (il wallet di un nodo)
+
+Il nodo ha una sua coppia di chiavi: al suo indirizzo arrivano le ricompense del nodo e le deleghe
+fatte a lui, e di solito chi gestisce un nodo vi tiene già il proprio stake. Accanto al suo nodo il
+wallet è **il wallet del nodo** e usa direttamente quella chiave, come account `node`:
+
+- quando parte con il `wallet.toml` del pacchetto (`./credits-wallet --config wallet.toml`, nella
+  cartella `csnode`): il suo profilo dice `node_key = "NodePrivate.txt"`;
+- quando un profilo del tuo `config.toml` ha `node_key = "/percorso/di/csnode/NodePrivate.txt"`
+  (la configurazione guidata lo scrive con il percorso completo quando crea `config.toml`);
+- quando parte nella cartella del nodo (che contiene `node` o `node.exe` e `config.ini`);
+- nell'immagine Docker del nodo (`CREDITS_WALLET_NODE_KEY=/data/keys/NodePrivate.txt`).
+
+`node_key = "off"` nel profilo lo disattiva.
+
+L'account `node` è il primo della lista ed è selezionato all'avvio dell'interfaccia; è segnato
+**NODE KEY** nella lista, nella schermata dell'account, in `account list` e in ogni riepilogo. Il
+wallet legge `NodePrivate.txt` dove lo legge il nodo: la chiave **non viene copiata**
+nell'archivio delle chiavi del wallet e **non viene cifrata** (al nodo serve il file in chiaro),
+quindi per firmare non viene chiesta una password; su mainnet scrivi comunque `send`. `account
+node-key` mostra il file, l'indirizzo, se `NodePublic.txt` corrisponde e se il nodo è in
+esecuzione. (Se l'archivio ha già un account di nome `node`, da un'importazione precedente, la
+chiave del nodo si chiama `node-key` e l'altro mantiene il suo nome.)
+
+> **La chiave del nodo resta in chiaro sul server**, perché il nodo ne ha bisogno: i CS che vi
+> tieni sono esposti quanto il server. Tienici solo quello che serve al nodo (il suo stake), e i
+> risparmi in un account separato (`account new`).
+
+**Il nodo non ha ancora una chiave.** Una cartella nuova del nodo non ha `NodePrivate.txt`; il nodo
+ne creerebbe una al primo avvio facendoti domande sulla sua console. Creala invece con il wallet,
+da una frase di 24 parole che è la copia su carta dell'identità del nodo:
+
+```sh
+./credits-wallet --config wallet.toml account node-key new      # nella cartella csnode
+```
+
+oppure `g` nella schermata principale dell'interfaccia. Come per `account new`, il wallet mostra le
+24 parole una volta, ne chiede indietro tre e propone il file di recupero (default no; mai nella
+cartella del nodo). Poi scrive `NodePrivate.txt` e `NodePublic.txt` nella cartella del nodo
+esattamente come li scrive il nodo, leggibili solo da te (modo 600). Il nodo li usa al prossimo
+avvio senza domande. Il wallet rifiuta, prima di mostrare qualsiasi parola, se c'è già un file di
+chiave (o un link con quel nome), se il nodo è in esecuzione, o se la cartella appartiene a un
+altro utente o chiunque può scriverci. `--out CARTELLA` indica la cartella di un altro nodo. Le 24
+parole ripristinano la chiave: con `account import`, o con l'opzione `--seed` del nodo stesso.
+
+**La chiave di un account come chiave del nodo.** `account export NOME --format node --out
+CARTELLA_CSNODE` scrive un account del wallet come `NodePrivate.txt` e `NodePublic.txt` del nodo
+(viene chiesta la password dell'account; scrivi `export` per confermare). Non scrive mai sopra una
+chiave che il nodo ha già. Per **sostituire l'identità del nodo**, ferma il nodo e aggiungi
+`--replace`: il wallet conserva i vecchi file come `NodePrivate.txt.bak-DATA` e
+`NodePublic.txt.bak-DATA` (modo 600) e ti chiede di scrivere `replace`. **L'identità del nodo
+segue la sua chiave**: il suo indirizzo, le deleghe ricevute, la sua storia di nodo fidato e le
+sue ricompense appartengono alla chiave; un nodo avviato con un'altra chiave è un altro nodo.
+Conserva la copia finché non sei sicuro.
 
 ---
 
@@ -270,8 +327,10 @@ Scegli un profilo con `--profile test` su qualsiasi comando. `--node HOST:PORT` 
 nodo, che conta sempre come **mainnet**.
 
 La configurazione del nodo (`setup.sh` / `setup.ps1`) scrive `wallet.toml` nella cartella `csnode`
-con un profilo per il nodo che ha configurato (la sua porta API, la sua porta diag, mainnet), e lo
-copia nella cartella dei dati come `config.toml` se non ce n'è ancora uno. Un `config.toml`
+con un profilo per il nodo che ha configurato (la sua porta API, la sua porta diag, mainnet, e
+`node_key = "NodePrivate.txt"`: la chiave del nodo è l'account `node`), e lo copia nella cartella
+dei dati come `config.toml` se non ce n'è ancora uno (con il percorso completo di
+`NodePrivate.txt`). Un `config.toml`
 esistente non viene mai modificato: `credits-wallet --config wallet.toml` usa invece il file della
 configurazione guidata.
 
@@ -496,6 +555,8 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
   firmata su una rete di test può essere riutilizzata (replay) su mainnet da chi gestisce o osserva quel nodo
   di test. Non usare mai altrove un account che contiene CS su mainnet. Dichiara i nodi di test come
   `network = "testnet"` (o `private`) nel loro profilo.
+- **La chiave del nodo è in chiaro sul server** (al nodo serve così): tienici solo quello che
+  serve al nodo, e i risparmi in un account separato, con le sue 24 parole su carta.
 - **Invia prima una piccola somma** a un nuovo destinatario, e controlla che sia arrivata, prima
   di quella grande. Fai lo stesso con un nuovo token o contratto.
 - **Controlla l'intero indirizzo** nella schermata di riepilogo, e l'indirizzo del contratto del
@@ -519,6 +580,10 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
 | "not confirmed by the node" | Il nodo non dice la sua rete: è un nodo ufficiale, una release più vecchia, oppure la porta diag è disattivata (`diag_port=0`) o su un'altra porta (`diag` nel profilo). Decide la configurazione; controlla che la rete del profilo sia giusta. |
 | "MISMATCH" / il wallet rifiuta di inviare | La rete del profilo e quella del nodo differiscono: sei sul nodo sbagliato o sul profilo sbagliato. Correggi il profilo; non forzare mai. |
 | "wrong password" | Riprova. Password dimenticata: importa di nuovo l'account dalle sue 24 parole. |
+| "the node's key file is encrypted by the node" | Il nodo è stato avviato con `--encryptkey` (o al primo avvio è stata scelta una password): solo il nodo può aprire quella chiave. Usa un account separato, o rendi di nuovo in chiaro la chiave con il nodo. |
+| "the node is running" (`node-key new`, `--format node`) | Ferma prima il nodo: il wallet non scrive mai la chiave del nodo mentre è in esecuzione. |
+| "NodePrivate.txt already exists" | Il nodo ha una chiave: il wallet non ci scrive mai sopra. Per sostituire di proposito l'identità del nodo: `account export NOME --format node --out CARTELLA --replace`. |
+| Manca l'account `node` | Il wallet non è il wallet del nodo: avvialo con `--config wallet.toml` nella cartella `csnode`, o imposta `node_key` nel profilo. |
 | Token "found from history (may be incomplete on a pruned node)" | Il nodo non ha una cache dei token. Attiva `tokens_cache=true` in `[api]` del suo `config.ini` e riavvialo, oppure aggiungi il token con `token add`. |
 | Manca un token anche se la cache è attiva | La cache è stata attivata dopo il pruning, o il nodo è partito da uno snapshot: conosce tutti i token, ma non i wallet che li hanno usati l'ultima volta prima del suo blocco più vecchio. Aggiungi il token con `token add` (il suo saldo viene letto dal contratto). Anche il primo avvio del nodo con la cache attiva richiede un po' (log: `tokens loaded!`). |
 | "the executor lost the errors" durante la compilazione | L'esecutore di contratti del nodo non ha restituito le righe di errore; correggi il sorgente con un IDE oppure aggiorna l'esecutore del nodo. |

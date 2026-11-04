@@ -59,6 +59,8 @@ type model struct {
 
 	screen screen // nil: the main screen
 	flash  string // a one-line message on the main screen
+
+	nodeWarned bool // the node key's warning was shown (once)
 }
 
 func newModel(w *wallet.Wallet) *model {
@@ -100,7 +102,7 @@ const callTimeout = 30 * time.Second
 
 func (m *model) loadAccounts() tea.Cmd {
 	return func() tea.Msg {
-		files, problems, err := m.w.Store.List()
+		files, problems, err := m.w.Accounts()
 		if err == nil && len(problems) > 0 {
 			err = fmt.Errorf("key files not readable: %w", errors.Join(problems...))
 		}
@@ -182,6 +184,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case accountsMsg:
 		m.accounts, m.accErr = msg.files, msg.err
+		if !m.nodeWarned && len(m.accounts) > 0 && m.accounts[0].IsNodeKey() {
+			m.nodeWarned = true
+			m.flash = strings.TrimPrefix(m.flash+"; "+wallet.NodeKeyWarning, "; ")
+		}
 		if m.sel >= len(m.accounts) {
 			m.sel = max(0, len(m.accounts)-1)
 		}
@@ -255,6 +261,10 @@ func (m *model) updateMain(msg tea.Msg) tea.Cmd {
 			}
 		case "n":
 			m.screen = newAccountScreen(false)
+		case "g":
+			if m.w.NodeKeyMissing() {
+				m.screen = newNodeKeyScreen(m.w.NodeKey.Dir)
+			}
 		case "i":
 			m.screen = newAccountScreen(true)
 		case "s":
@@ -378,10 +388,14 @@ func (m *model) mainView() string {
 		if len(name) > 18 {
 			name = name[:17] + "…"
 		}
+		tag := ""
+		if f.IsNodeKey() && len(name) <= 9 {
+			tag = " " + stWarn.Render("node key")
+		}
 		if i == m.sel {
-			left.WriteString(stSel.Render("> "+name) + "\n")
+			left.WriteString(stSel.Render("> "+name) + tag + "\n")
 		} else {
-			left.WriteString("  " + name + "\n")
+			left.WriteString("  " + name + tag + "\n")
 		}
 	}
 	left.WriteString("\n" + keyHelp("n", "new") + "\n" + keyHelp("i", "import"))
@@ -393,6 +407,9 @@ func (m *model) mainView() string {
 	if f := m.current(); f != nil {
 		right.WriteString(stTitle.Render(f.Name) + "  " + stDim.Render("[y] copy the address") + "\n")
 		right.WriteString(f.Public + "\n") // whole, alone on its line: it can also be selected
+		if f.IsNodeKey() {
+			right.WriteString(stWarn.Render(truncate("NODE KEY: the node's own key, in clear in its folder (no password)", rightW)) + "\n")
+		}
 		if err := m.balErr[f.Name]; err != nil {
 			right.WriteString(stBad.Render(oneLine(err.Error())) + "\n")
 		} else if b, ok := m.balances[f.Name]; ok {
@@ -422,6 +439,10 @@ func (m *model) mainView() string {
 	} else {
 		right.WriteString("Welcome. Create an account with " + stKey.Render("[n]") + " or import one with " + stKey.Render("[i]") + ".\n")
 		right.WriteString(stDim.Render("Keys are stored encrypted in "+m.w.Store.Dir) + "\n")
+	}
+	if m.w.NodeKeyMissing() {
+		right.WriteString("\n" + stWarn.Render("The node in "+m.w.NodeKey.Dir+" has no key yet.") + "\n")
+		right.WriteString(stKey.Render("[g]") + " make the node's key from a 24-word phrase: the node uses it at its first start.\n")
 	}
 	if m.statusErr != nil {
 		right.WriteString("\n" + stBad.Render(oneLine(m.statusErr.Error())) + "\n")
@@ -615,6 +636,8 @@ func (helpScreen) view(m *model) string {
 		"  h            history of the selected account (e: export CSV)",
 		"  y            copy the selected account's address (or select it with Shift+drag)",
 		"  n / i        new account / import a key, a 24-word phrase or a keys JSON",
+		"  g            a node's wallet whose node has no key yet: make the node's key",
+		"               (24 words; the account \"node\", in clear in the node's folder)",
 		"  S            node status        r  refresh        q  quit",
 		"",
 		stTitle.Render("Forms"),

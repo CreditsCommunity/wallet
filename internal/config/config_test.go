@@ -185,3 +185,14 @@ diag = "off"
 		t.Errorf("unknown address: %+v %v", p, err)
 	}
 }
+
+// node_key: a path (or "off") in a node profile.
+func TestNodeKeySetting(t *testing.T) {
+	c, err := Parse("[nodes.local]\naddress = \"127.0.0.1:9090\"\nnode_key = \"NodePrivate.txt\"\n[nodes.other]\nnode_key = \"off\"\n", "wallet.toml")
+	if err != nil || c.Nodes["local"].NodeKey != "NodePrivate.txt" || c.Nodes["other"].NodeKey != NodeKeyOff {
+		t.Fatalf("%v %+v", err, c)
+	}
+	if _, err := Parse(Example, "example"); err != nil {
+		t.Fatal(err)
+	}
+}
