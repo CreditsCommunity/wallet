@@ -113,6 +113,9 @@ Nell'interfaccia premi `n`; da riga di comando:
 2. Il wallet mostra **una sola volta** la **frase di recupero di 24 parole**. Scrivila su carta,
    in ordine.
 3. Riscrivi le tre parole che ti chiede.
+4. Il wallet chiede `Save the 24 words to a file as well? [y/N]` (salvare le 24 parole anche in un
+   file?). **Il default è no**: premi Invio e le parole restano solo sul tuo foglio. Vedi
+   [Il file di recupero](#il-file-di-recupero).
 
 Viene mostrato l'indirizzo dell'account (la sua chiave pubblica, in base58): dallo a chi ti invia CS.
 
@@ -120,13 +123,38 @@ Viene mostrato l'indirizzo dell'account (la sua chiave pubblica, in base58): dal
 
 - Le 24 parole **sono** l'account: chi le ha può spendere tutto quello che contiene, da qualsiasi
   wallet, senza password. Senza di esse nessuno può recuperare l'account.
-- Scrivile su carta, mai in un file, in una e-mail, in una chat, in una foto o in un gestore di
-  password nel cloud. Tieni il foglio dove fuoco e acqua non arrivano, meglio se in due posti.
+- Scrivile su carta, mai in una e-mail, in una chat, in una foto o in un gestore di password nel
+  cloud. Un file solo di passaggio, vedi sotto. Tieni il foglio dove fuoco e acqua non arrivano, meglio se in due posti.
 - Il wallet poi pulisce lo schermo, ma lo scrollback di un terminale, tmux/screen o il log di una
   sessione possono conservare le parole: chiudi la finestra del terminale e pulisci lo scrollback
   di una sessione che resta aperta a lungo.
 - La frase ha lo stesso formato di quella del nodo: `account import NAME` e scrivere le 24 parole
   ripristina l'account, su questa o su un'altra macchina.
+
+### Il file di recupero
+
+Se alla domanda dopo la verifica rispondi `y` (da riga di comando o nell'interfaccia), il wallet
+scrive le 24 parole anche in un file:
+
+- Di default `~/credits-recovery-NOME.txt` (su Windows `%USERPROFILE%\credits-recovery-NOME.txt`);
+  se preferisci scrivi un altro percorso (Invio tiene quello proposto; `~/` è la tua cartella home).
+- Il file contiene il nome dell'account, il suo indirizzo, la data, le 24 parole numerate e un
+  avviso. Viene creato nuovo, leggibile solo da te (permessi 600; su Windows quelli del profilo
+  utente), e non sostituisce mai un file esistente né segue un collegamento simbolico.
+- **Non sta mai accanto alle chiavi.** Un percorso nella cartella dei dati del wallet, o in una
+  cartella che contiene file di chiavi (file delle chiavi del wallet, `NodePrivate.txt`, il JSON
+  delle chiavi dei wallet ufficiali), viene rifiutato e il wallet chiede di nuovo. Chi copia la
+  cartella dei dati ottiene i file delle chiavi cifrati, che richiedono ancora la tua password; con
+  le parole lì accanto la password non proteggerebbe più nulla.
+- **Portalo via dalla macchina.** Il wallet poi dice: *This file holds your account in clear: copy
+  it to paper or an offline USB key, then delete it from this computer.* (il file contiene il tuo
+  account in chiaro: copialo su carta o su una chiavetta USB tenuta offline, poi cancellalo da
+  questo computer). Fallo subito: un file lasciato sul computer può essere letto da un malware, da
+  un servizio di backup o da chiunque metta le mani sul disco.
+
+La domanda non viene fatta con `--json`, con `--words-file` o `--show-words`, né senza un
+terminale: gli script continuano a usare `--words-file FILE` (lo stesso meccanismo di scrittura,
+con le sole parole su una riga).
 
 ### Backup
 

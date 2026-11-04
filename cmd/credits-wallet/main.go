@@ -45,7 +45,9 @@ usage: credits-wallet [global flags] [command] [arguments]
   account new <name> [--words-file FILE | --show-words]
                                         create an account; on a terminal its 24-word phrase is
                                         shown once and checked; without one, the phrase goes to
-                                        FILE (new, mode 600) or, with --show-words, the output
+                                        FILE (new, mode 600) or, with --show-words, the output;
+                                        on a terminal it offers to save it to a file as well
+                                        (default no; never in the data folder)
   account import <name> [file]          import a secret key (base58), a 24-word phrase or the
                                         official wallets' keys JSON; asks for it without a file
   account export <name> [--format encrypted|base58|official] [--out FILE]

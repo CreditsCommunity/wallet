@@ -112,6 +112,8 @@ In the interface press `n`; on the command line:
    XChaCha20-Poly1305). It is asked for every transaction.
 2. The wallet shows the **24-word recovery phrase** once. Write it on paper, in order.
 3. Type back the three words it asks for.
+4. The wallet asks `Save the 24 words to a file as well? [y/N]`. **The default is no**: press
+   Enter and the words are only on your paper. See [The recovery file](#the-recovery-file).
 
 The account's address (its public key, base58) is shown; give it to whoever sends you CS.
 
@@ -119,13 +121,34 @@ The account's address (its public key, base58) is shown; give it to whoever send
 
 - The 24 words **are** the account: anyone who has them can spend everything in it, from any
   wallet, with no password. Nobody can recover the account without them.
-- Write them on paper, never in a file, an e-mail, a chat, a photo or a password manager in the
-  cloud. Keep the paper where fire and water cannot reach it, ideally in two places.
+- Write them on paper, never in an e-mail, a chat, a photo or a password manager in the
+  cloud. A file only as a passage, see below. Keep the paper where fire and water cannot reach it, ideally in two places.
 - The wallet clears the screen afterwards, but a terminal's scrollback, tmux/screen or a session
   log may keep the words: close the terminal window, and clear the scrollback of a long-lived
   session.
 - The phrase is the same format as the node's: `account import NAME` and typing the 24 words
   restores the account, on this or another machine.
+
+### The recovery file
+
+If you answer `y` to the question after the check (on the command line or in the interface), the
+wallet also writes the 24 words to a file:
+
+- By default `~/credits-recovery-NAME.txt` (on Windows `%USERPROFILE%\credits-recovery-NAME.txt`);
+  type another path if you prefer (Enter keeps the default; `~/` stands for your home folder).
+- The file holds the account name, its address, the date, the 24 numbered words and a warning. It
+  is created new, readable by you only (mode 600; on Windows the user profile's own permissions),
+  and never replaces an existing file or follows a symbolic link.
+- **It is never kept next to the keys.** A path in the wallet's data folder, or in a folder that
+  holds key files (wallet key files, `NodePrivate.txt`, the official wallets' keys JSON), is refused
+  and the wallet asks again. Whoever copies the data folder gets the encrypted key files, which
+  still need your password; with the words beside them the password would protect nothing.
+- **Move it off the machine.** The wallet then says: *This file holds your account in clear: copy
+  it to paper or an offline USB key, then delete it from this computer.* Do that now: a file left
+  on the computer can be read by malware, by a backup service, or by anyone who gets the disk.
+
+The question is not asked with `--json`, with `--words-file` or `--show-words`, or without a
+terminal: scripts keep using `--words-file FILE` (the same writer, the words alone on one line).
 
 ### Backups
 

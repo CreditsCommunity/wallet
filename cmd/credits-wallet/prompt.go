@@ -18,7 +18,8 @@ import (
 
 var stdinReader = bufio.NewReader(os.Stdin)
 
-func stdinIsTerminal() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+// stdinIsTerminal tells whether the standard input is a terminal (replaced in tests).
+var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
 // readPassword reads a password: the first line of --password-file, or from the terminal.
 // confirm asks twice (new key files).

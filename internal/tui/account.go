@@ -8,9 +8,11 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/CreditsCommunity/wallet/internal/echo"
 	"github.com/CreditsCommunity/wallet/internal/keys"
 	"github.com/CreditsCommunity/wallet/internal/wallet"
 )
@@ -18,10 +20,12 @@ import (
 type accStep int
 
 const (
-	accForm   accStep = iota
-	accWords          // new: the phrase is shown
-	accCheck          // new: three words typed back
-	accSaving         // Argon2id takes a moment
+	accForm     accStep = iota
+	accWords            // new: the phrase is shown
+	accCheck            // new: three words typed back
+	accFileAsk          // new: save the words to a file as well? (default no)
+	accFilePath         // new: where (default ~/credits-recovery-NAME.txt)
+	accSaving           // Argon2id takes a moment
 	accSaved
 )
 
@@ -32,6 +36,8 @@ type accountScreen struct {
 	words     []string
 	key       ed25519.PrivateKey
 	check     *form
+	file      *form  // the recovery file's path
+	recovery  string // the recovery file to write, then written
 	positions []int
 	fromFile  string
 	kind      string
@@ -40,8 +46,9 @@ type accountScreen struct {
 }
 
 type savedMsg struct {
-	address string
-	err     error
+	address  string
+	recovery string // the recovery file written, if any
+	err      error
 }
 
 func newAccountScreen(importing bool) *accountScreen {
@@ -69,12 +76,15 @@ func (s *accountScreen) forget() {
 	if s.check != nil {
 		s.check.wipe()
 	}
+	if s.file != nil {
+		s.file.wipe()
+	}
 }
 
 func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case savedMsg:
-		s.address, s.err = msg.address, msg.err
+		s.address, s.recovery, s.err = msg.address, msg.recovery, msg.err
 		s.forget()
 		s.step = accSaved
 		return nil
@@ -162,6 +172,42 @@ func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			}
 		}
 		s.err = nil
+		s.check.wipe()
+		s.step = accFileAsk
+		return nil
+	case accFileAsk:
+		k, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return nil
+		}
+		switch strings.ToLower(k.String()) {
+		case "y":
+			def, err := wallet.DefaultRecoveryPath(s.form.value(0))
+			if err != nil {
+				s.err = err
+			}
+			s.file = newForm("File")
+			s.file.inputs[0].CharLimit = 4096
+			s.file.inputs[0].SetValue(def)
+			s.file.inputs[0].CursorEnd()
+			s.step = accFilePath
+			return nil
+		case "n", "enter":
+			return s.save(m)
+		}
+		return nil
+	case accFilePath:
+		cmd, done := s.file.update(msg)
+		if !done {
+			return cmd
+		}
+		path, err := m.w.CheckRecoveryPath(s.file.value(0))
+		if err != nil {
+			s.err = err
+			return nil
+		}
+		s.err = nil
+		s.recovery = path
 		return s.save(m)
 	case accSaved:
 		if _, ok := msg.(tea.KeyMsg); ok {
@@ -176,16 +222,28 @@ func (s *accountScreen) save(m *model) tea.Cmd {
 	s.step = accSaving
 	n := len(s.form.inputs)
 	name, pw, key := s.form.value(0), []byte(s.form.inputs[n-2].Value()), s.key
+	recovery, words := s.recovery, s.words
 	s.form.wipe()
-	s.key = nil
+	s.key, s.words, s.recovery = nil, nil, ""
 	return func() tea.Msg {
 		defer keys.Zero(pw)
 		defer keys.Zero(key)
+		if recovery != "" {
+			data := wallet.RecoveryText(name, keys.Address(key.Public().(ed25519.PublicKey)), time.Now(), words)
+			err := wallet.WriteSecretFile(recovery, data)
+			keys.Zero(data)
+			if err != nil {
+				return savedMsg{err: fmt.Errorf("the recovery file: %w; nothing was created", err)}
+			}
+		}
 		f, err := m.w.CreateAccount(name, key, pw)
 		if err != nil {
+			if recovery != "" {
+				os.Remove(recovery)
+			}
 			return savedMsg{err: err}
 		}
-		return savedMsg{address: f.Public}
+		return savedMsg{address: f.Public, recovery: recovery}
 	}
 }
 
@@ -215,12 +273,25 @@ func (s *accountScreen) view(m *model) string {
 		b.WriteString("Type back three of the words.\n\n")
 		b.WriteString(s.check.view())
 		b.WriteString("\n" + keyHelp("Enter", "next", "Esc", "cancel") + "\n")
+	case accFileAsk:
+		b.WriteString(wallet.RecoveryQuestion + "\n\n")
+		b.WriteString(stDim.Render("The file goes outside the wallet's folder, never next to the keys. Default: no,") + "\n")
+		b.WriteString(stDim.Render("the words are only on your paper.") + "\n")
+		b.WriteString("\n" + keyHelp("y", "save to a file", "n/Enter", "no", "Esc", "cancel") + "\n")
+	case accFilePath:
+		b.WriteString("Where to save the 24 words (a new file, outside the wallet's folder).\n\n")
+		b.WriteString(s.file.view())
+		b.WriteString("\n" + keyHelp("Enter", "save", "Esc", "cancel") + "\n")
 	case accSaving:
 		b.WriteString(stDim.Render("encrypting the key file…") + "\n")
 	case accSaved:
 		if s.err == nil {
 			b.WriteString(stOK.Render("✓ account saved") + "\n")
 			b.WriteString("address " + s.address + "\n")
+			if s.recovery != "" {
+				b.WriteString("The 24 words are in this file (mode 600):\n" + echo.Terminal(s.recovery) + "\n")
+				b.WriteString(stWarn.Render(wallet.RecoveryAdvice) + "\n")
+			}
 			if s.kind != "" {
 				b.WriteString(stDim.Render("imported from a "+s.kind) + "\n")
 			}

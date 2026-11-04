@@ -168,8 +168,10 @@ func (a *app) accountList() error {
 }
 
 // accountNew creates an account. On a terminal the phrase is shown there (never in the output,
-// --json included) and three words are typed back. Without a terminal the phrase must go
-// somewhere explicit: --words-file FILE (created, mode 600) or --show-words (in the output).
+// --json included) and three words are typed back; then, unless the phrase already goes somewhere
+// (--words-file, --show-words) or the output is JSON, the wallet offers to save it to a file as
+// well (default no), outside the data folder. Without a terminal the phrase must go somewhere
+// explicit: --words-file FILE (created, mode 600) or --show-words (in the output).
 func (a *app) accountNew(name, wordsFile string, showWords bool) error {
 	if err := keys.ValidName(name); err != nil {
 		return err
@@ -181,7 +183,7 @@ func (a *app) accountNew(name, wordsFile string, showWords bool) error {
 	if !interactive && wordsFile == "" && !showWords {
 		return errors.New("no terminal to show the seed phrase on: add --words-file FILE (or --show-words to print it); nothing was created")
 	}
-	master, err := keys.NewMasterSeed()
+	master, err := newMasterSeed()
 	if err != nil {
 		return err
 	}
@@ -189,6 +191,7 @@ func (a *app) accountNew(name, wordsFile string, showWords bool) error {
 	words := keys.Words(&master)
 	key := keys.DeriveKey(&master)
 	defer keys.Zero(key)
+	recoveryFile := ""
 	if interactive {
 		fmt.Fprintln(os.Stderr, "Your seed phrase. Write it down on paper and keep it safe: it is shown only this once,")
 		fmt.Fprintln(os.Stderr, "and anyone who has it owns the account.")
@@ -203,6 +206,11 @@ func (a *app) accountNew(name, wordsFile string, showWords bool) error {
 		if err := checkWords(words); err != nil {
 			return err
 		}
+		if !a.json && wordsFile == "" && !showWords {
+			if recoveryFile, err = a.askRecoveryFile(name); err != nil {
+				return err
+			}
+		}
 	}
 	pw, err := a.readPassword("Password for the key file: ", true)
 	if err != nil {
@@ -210,14 +218,28 @@ func (a *app) accountNew(name, wordsFile string, showWords bool) error {
 	}
 	defer keys.Zero(pw)
 	if wordsFile != "" {
-		if err := writeSecretFile(wordsFile, []byte(strings.Join(words, " ")+"\n")); err != nil {
+		data := []byte(strings.Join(words, " ") + "\n")
+		err := wallet.WriteSecretFile(wordsFile, data)
+		keys.Zero(data)
+		if err != nil {
 			return fmt.Errorf("--words-file: %w; nothing was created", err)
+		}
+	}
+	if recoveryFile != "" {
+		data := wallet.RecoveryText(name, keys.Address(key.Public().(ed25519.PublicKey)), time.Now(), words)
+		err := wallet.WriteSecretFile(recoveryFile, data)
+		keys.Zero(data)
+		if err != nil {
+			return fmt.Errorf("the recovery file: %w; nothing was created", err)
 		}
 	}
 	f, err := a.w.CreateAccount(name, key, pw)
 	if err != nil {
 		if wordsFile != "" {
 			os.Remove(wordsFile)
+		}
+		if recoveryFile != "" {
+			os.Remove(recoveryFile)
 		}
 		return err
 	}
@@ -237,28 +259,66 @@ func (a *app) accountNew(name, wordsFile string, showWords bool) error {
 	if wordsFile != "" {
 		fmt.Fprintf(os.Stderr, "the seed phrase is in %s (mode 600): copy it to paper, then delete the file\n", wordsFile)
 	}
+	if recoveryFile != "" {
+		fmt.Fprintf(os.Stderr, "The 24 words are in %s (mode 600).\n%s\n", recoveryFile, wallet.RecoveryAdvice)
+	}
 	fmt.Fprintf(a.out, "account: %s\naddress: %s\n", f.Name, f.Public)
 	return nil
 }
 
-// writeSecretFile creates a new file readable by its owner only; it never overwrites.
-func writeSecretFile(path string, data []byte) error {
-	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+// newMasterSeed draws the master seed of a new account (replaced in tests).
+var newMasterSeed = keys.NewMasterSeed
+
+// askRecoveryFile asks whether to save the phrase to a file as well (default no) and where (default
+// ~/credits-recovery-NAME.txt), refusing a place next to the keys. "" is no file.
+func (a *app) askRecoveryFile(name string) (string, error) {
+	answer, err := ask(wallet.RecoveryQuestion)
 	if err != nil {
-		return err
+		return "", nil // no answer (end of input): no
 	}
-	if _, err := out.Write(data); err != nil {
-		out.Close()
-		os.Remove(path)
-		return err
+	if answer = strings.ToLower(answer); answer != "y" && answer != "yes" {
+		return "", nil
 	}
-	return out.Close()
+	def, err := wallet.DefaultRecoveryPath(name)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "no default place for the file:", err)
+	}
+	for tries := 0; tries < 3; tries++ {
+		prompt := "File: "
+		if def != "" {
+			prompt = fmt.Sprintf("File [%s]: ", def)
+		}
+		path, err := ask(prompt)
+		if err != nil {
+			break
+		}
+		if path == "" {
+			path = def
+		}
+		abs, err := a.w.CheckRecoveryPath(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, echo.Terminal(err.Error()))
+			continue
+		}
+		if warning := wallet.RecoveryProfileWarning(abs); warning != "" {
+			fmt.Fprintln(os.Stderr, "warning:", warning)
+		}
+		return abs, nil
+	}
+	fmt.Fprintln(os.Stderr, "No file: the words are only on your paper.")
+	return "", nil
+}
+
+// checkPositions picks the three words to type back (replaced in tests).
+var checkPositions = func(n int) []int {
+	p := rand.Perm(n)[:3]
+	sort.Ints(p)
+	return p
 }
 
 // checkWords asks the user to type back three words of the phrase.
 func checkWords(words []string) error {
-	positions := rand.Perm(len(words))[:3]
-	sort.Ints(positions)
+	positions := checkPositions(len(words))
 	fmt.Fprintln(os.Stderr, "Check: type back three of the words.")
 	for _, p := range positions {
 		for tries := 0; ; tries++ {
@@ -375,7 +435,7 @@ func (a *app) accountExport(name, format, outFile string, yes bool) error {
 		_, err = a.out.Write(data)
 		return err
 	}
-	if err := writeSecretFile(outFile, data); err != nil {
+	if err := wallet.WriteSecretFile(outFile, data); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "written to %s (mode 600)\n", outFile)

@@ -82,6 +82,26 @@ ci/release/build.sh      the reproducible release archives
   phrase once on the terminal and asks the user to type back three of its words. The phrase never
   goes to the output (nor `--json`) by default; without a terminal the command needs
   `--words-file FILE` (created, mode 0600) or `--show-words`.
+- The recovery file: on a terminal, after the check, without `--json`, `--words-file` or
+  `--show-words` (CLI), and in the TUI's account creation, the wallet asks "Save the 24 words to a
+  file as well? [y/N]"; the default is no. On yes it proposes `<home>/credits-recovery-<name>.txt`
+  (home: `%USERPROFILE%` on Windows; elsewhere `$HOME` if the effective user owns it, otherwise the
+  effective user's home from the password database, so `sudo` without `-H` never puts it in another
+  user's home) and accepts another path (`~/` expanded). Refused, with the question repeated (three
+  tries, then no file): an existing file or a symbolic link at the path, a folder that does not
+  exist, a path in the data folder or the accounts folder (also through links), a folder that
+  holds, or is below a folder that holds, key files (`NodePrivate.txt`, `NodePublic.txt`, wallet
+  key files, the official wallets' keys JSON). Rationale: the key files are encrypted under the
+  password; the words beside them would bypass it. The file holds the account name, address, date
+  (UTC), the 24 numbered words and a one-line warning. It is written by the same writer as
+  `--words-file` and `account export --out`: a temporary file created exclusively (mode 0600) in
+  the target folder, written and synced, then hard-linked to the name (fails if anything exists
+  there; without hard links, `O_CREAT|O_EXCL`); on Windows the mode is not applied and a path
+  outside `%USERPROFILE%` gets a warning. The file is written before the key file and removed if
+  the account cannot be saved. The words never go to the logs, an error message or the JSON; the
+  buffer holding the file's content is zeroed after writing. Afterwards the wallet prints the full
+  path and "This file holds your account in clear: copy it to paper or an offline USB key, then
+  delete it from this computer." (the TUI shows the same).
 
 ## 5. Functions
 
