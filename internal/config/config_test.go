@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExampleParses(t *testing.T) {
@@ -194,5 +195,107 @@ func TestNodeKeySetting(t *testing.T) {
 	}
 	if _, err := Parse(Example, "example"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// "Use it and remember it": node_key written into the active profile, every other line kept.
+func TestRememberNodeKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	text := "# my wallet\nnode = \"lab\"\nhistory_page = 30   # keep\n\n[nodes.local]\naddress = \"127.0.0.1:9090\"\n# node_key = \"old\"\n\n[nodes.lab]  # the lab\naddress = \"10.0.0.5:9090\"\nnetwork = \"testnet\"\n\n[nodes.\"x y\"]\naddress = \"10.0.0.6:9090\"\n"
+	os.WriteFile(path, []byte(text), 0o640)
+	cfg, _ := Load(path, true)
+	p, _ := cfg.Resolve("", "")
+	key := `/home/me/csnode "a"\NodePrivate.txt`
+	if err := RememberNodeKey(path, p, key); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	want := strings.Replace(text, "[nodes.lab]  # the lab\n", "[nodes.lab]  # the lab\nnode_key = \"/home/me/csnode \\\"a\\\"\\\\NodePrivate.txt\"\n", 1)
+	if string(got) != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o640 {
+		t.Errorf("mode %v", st.Mode().Perm())
+	}
+	c2, err := Load(path, true)
+	if err != nil || c2.Nodes["lab"].NodeKey != key || c2.HistoryPage != 30 || c2.Nodes["local"].NodeKey != "" {
+		t.Fatalf("%+v %v", c2, err)
+	}
+	// again: the line is replaced, not added
+	if err := RememberNodeKey(path, p, "/k2"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = os.ReadFile(path)
+	if strings.Count(string(got), "\nnode_key = ") != 1 || !strings.Contains(string(got), "node_key = \"/k2\"") || !strings.Contains(string(got), "# node_key = \"old\"") {
+		t.Fatalf("replaced:\n%s", got)
+	}
+	// a quoted profile name
+	q := *cfg.Nodes["x y"]
+	if err := RememberNodeKey(path, q, "/k3"); err != nil {
+		t.Fatal(err)
+	}
+	if c3, _ := Load(path, true); c3.Nodes["x y"].NodeKey != "/k3" || c3.Nodes["lab"].NodeKey != "/k2" {
+		t.Fatal("quoted profile")
+	}
+	// --node: no profile
+	if err := RememberNodeKey(path, Profile{Address: "1.2.3.4:9090"}, "/k"); err == nil {
+		t.Error("written without a profile")
+	}
+	// a profile written as an inline table: refused, nothing changed
+	inline := "[nodes]\nlocal = { address = \"127.0.0.1:9090\" }\n"
+	os.WriteFile(path, []byte(inline), 0o600)
+	cfg, _ = Load(path, true)
+	p, _ = cfg.Resolve("", "")
+	if err := RememberNodeKey(path, p, "/k"); err == nil || !strings.Contains(err.Error(), "by hand") {
+		t.Errorf("inline table: %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != inline {
+		t.Errorf("changed:\n%s", got)
+	}
+	// no file yet: created with the profile (mode 600)
+	fresh := filepath.Join(dir, "new", "config.toml")
+	if err := RememberNodeKey(fresh, Profile{Name: "local", Address: DefaultAddress, Network: Mainnet}, "/n/NodePrivate.txt"); err != nil {
+		t.Fatal(err)
+	}
+	c4, err := Load(fresh, true)
+	if err != nil || c4.Nodes["local"].NodeKey != "/n/NodePrivate.txt" || c4.Nodes["local"].Address != DefaultAddress {
+		t.Fatalf("%+v %v", c4, err)
+	}
+	if st, _ := os.Stat(fresh); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v", st.Mode().Perm())
+	}
+	// a file without [nodes] (the default profile): the table is added at the end
+	bare := filepath.Join(dir, "bare.toml")
+	os.WriteFile(bare, []byte("# only this\nhistory_page = 5"), 0o600)
+	cfg, _ = Load(bare, true)
+	p, _ = cfg.Resolve("", "")
+	if err := RememberNodeKey(bare, p, "/b"); err != nil {
+		t.Fatal(err)
+	}
+	if c5, _ := Load(bare, true); c5.Nodes["local"].NodeKey != "/b" || c5.HistoryPage != 5 {
+		t.Fatal("bare")
+	}
+	if got, _ := os.ReadFile(bare); !strings.HasPrefix(string(got), "# only this\nhistory_page = 5\n") {
+		t.Errorf("bare:\n%s", got)
+	}
+}
+
+func TestLockAfter(t *testing.T) {
+	if Default().LockAfter() != 10*time.Minute {
+		t.Error("default")
+	}
+	c, err := Parse("lock_after_minutes = 0", "x")
+	if err != nil || c.LockAfter() != 0 {
+		t.Errorf("0: %v", err)
+	}
+	c, _ = Parse("lock_after_minutes = 3", "x")
+	if c.LockAfter() != 3*time.Minute {
+		t.Error("3")
+	}
+	for _, bad := range []string{"lock_after_minutes = -1", "lock_after_minutes = 100000"} {
+		if _, err := Parse(bad, "x"); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
 	}
 }

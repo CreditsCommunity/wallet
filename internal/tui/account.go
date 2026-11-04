@@ -47,6 +47,7 @@ type accountScreen struct {
 	address   string
 	err       error
 	note      string // after saving: "address copied"
+	savedName string // the account being saved (the form is wiped before)
 }
 
 type savedMsg struct {
@@ -105,9 +106,19 @@ func (s *accountScreen) forget() {
 func (s *accountScreen) update(m *model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case savedMsg:
+		name := s.savedName
 		s.address, s.recovery, s.err = msg.address, msg.recovery, msg.err
 		s.forget()
 		s.step = accSaved
+		if msg.err == nil {
+			// a new account: the session locks, and the unlock screen comes next, on that account
+			if s.nodeDir != "" {
+				name = m.w.NodeAccountName()
+			}
+			m.lockSession("", "")
+			m.selectName = name
+			m.screen = s
+		}
 		return nil
 	case tea.KeyMsg:
 		if msg.String() == "esc" && s.step != accSaving {
@@ -268,6 +279,7 @@ func (s *accountScreen) save(m *model) tea.Cmd {
 	}
 	n := len(s.form.inputs)
 	name, pw, key := s.form.value(0), []byte(s.form.inputs[n-2].Value()), s.key
+	s.savedName = name
 	recovery, words := s.recovery, s.words
 	s.form.wipe()
 	s.key, s.words, s.recovery = nil, nil, ""
@@ -404,7 +416,7 @@ func (s *accountScreen) view(m *model) string {
 			}
 		}
 		if s.err == nil {
-			b.WriteString("\n" + keyHelp("y", "copy the address") + "  " + stDim.Render("any other key: back") + "\n")
+			b.WriteString("\n" + keyHelp("y", "copy the address") + "  " + stDim.Render("any other key: the unlock screen") + "\n")
 		} else {
 			b.WriteString("\n" + stDim.Render("any key: back") + "\n")
 		}

@@ -23,9 +23,14 @@ import (
 	"github.com/CreditsCommunity/wallet/internal/wallet"
 )
 
-// Run starts the interface and returns when the user quits.
-func Run(w *wallet.Wallet, dataDir string) error {
+// Run starts the interface and returns when the user quits. found is a node's key in the current
+// folder, offered on the first screen (nil: none). The unlocked key is zeroed on the way out.
+func Run(w *wallet.Wallet, dataDir string, found *wallet.FoundNodeKey) error {
 	m := newModel(w)
+	if found != nil {
+		m.screen = newFoundKeyScreen(found)
+	}
+	defer m.lockSession("", "")
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
@@ -41,8 +46,17 @@ type model struct {
 	width, height int
 
 	accounts []*keys.File
-	sel      int
+	sel      int // the account chosen on the unlock screen
 	accErr   error
+	// selectName: the account to select once the list is loaded (a new one, the found node key)
+	selectName string
+
+	// the session (spec 6, "Unlock"): nil while locked, then nothing of any account is loaded
+	unlocked  *wallet.Unlocked
+	lock      *lockScreen
+	lockAfter time.Duration    // inactivity before the session locks (0: never)
+	lastInput time.Time        // the last key press or click
+	now       func() time.Time // the clock (tests)
 
 	status    node.Status
 	statusErr error
@@ -64,7 +78,7 @@ type model struct {
 }
 
 func newModel(w *wallet.Wallet) *model {
-	return &model{flash: strings.Join(config.PermissionWarnings(filepath.Dir(w.Store.Dir)), "; "), w: w, width: 80, height: 24, balances: map[string]node.Balance{}, balErr: map[string]error{},
+	return &model{lock: &lockScreen{}, now: time.Now, lockAfter: w.Config.LockAfter(), flash: strings.Join(config.PermissionWarnings(filepath.Dir(w.Store.Dir)), "; "), w: w, width: 80, height: 24, balances: map[string]node.Balance{}, balErr: map[string]error{},
 		recent: map[string][]history.Entry{}, total: map[string]int{}, tokens: map[string]*wallet.TokenList{}, tokErr: map[string]error{}}
 }
 
@@ -157,11 +171,12 @@ func (m *model) loadAccountTokens(f *keys.File) tea.Cmd {
 
 func tick() tea.Cmd { return tea.Tick(10*time.Second, func(time.Time) tea.Msg { return tickMsg{} }) }
 
+// current is the unlocked account (nil while locked).
 func (m *model) current() *keys.File {
-	if m.sel >= 0 && m.sel < len(m.accounts) {
-		return m.accounts[m.sel]
+	if m.unlocked == nil {
+		return nil
 	}
-	return nil
+	return m.unlocked.Account
 }
 
 func (m *model) refreshCurrent() tea.Cmd {
@@ -184,9 +199,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case accountsMsg:
 		m.accounts, m.accErr = msg.files, msg.err
+		if m.selectName != "" {
+			m.selectByName()
+		}
 		if !m.nodeWarned && len(m.accounts) > 0 && m.accounts[0].IsNodeKey() {
 			m.nodeWarned = true
 			warning := wallet.NodeKeyWarning
+			if m.accounts[0].NodeKeyEncrypted {
+				warning = wallet.NodeKeyEncryptedWarning
+			}
 			if w := wallet.NodeKeyModeWarning(m.accounts[0].NodeKey); w != "" {
 				warning = w + "; " + warning
 			}
@@ -206,6 +227,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case accountDataMsg:
+		if f := m.current(); f == nil || f.Name != msg.name {
+			return m, nil // locked, or another account since: dropped
+		}
 		if msg.err != nil {
 			m.balErr[msg.name] = msg.err
 		} else {
@@ -214,6 +238,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case accountTokensMsg:
+		if f := m.current(); f == nil || f.Name != msg.name {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.tokErr[msg.name] = msg.err
 		} else {
@@ -222,16 +249,31 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tickMsg:
+		if m.unlocked != nil && m.lockAfter > 0 && m.now().Sub(m.lastInput) >= m.lockAfter && !m.sending() {
+			m.lockSession(fmt.Sprintf("locked after %s without a key press", m.lockAfter), "")
+		}
 		return m, tea.Batch(m.loadStatus(m.oldest == 0), m.refreshCurrent(), tick())
 	case tea.KeyMsg:
+		m.lastInput = m.now()
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
+	case tea.MouseMsg:
+		m.lastInput = m.now()
 	}
 	if m.screen != nil {
 		return m, m.screen.update(m, msg)
 	}
+	if m.unlocked == nil {
+		return m, m.updateLock(msg)
+	}
 	return m, m.updateMain(msg)
+}
+
+// sending tells whether a transaction is on its way (the session does not lock under it).
+func (m *model) sending() bool {
+	s, ok := m.screen.(*sendScreen)
+	return ok && s.step == sendSending
 }
 
 func (m *model) back(cmds ...tea.Cmd) tea.Cmd {
@@ -241,28 +283,18 @@ func (m *model) back(cmds ...tea.Cmd) tea.Cmd {
 
 func (m *model) updateMain(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
-	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.X < 22 {
-			if i := msg.Y - 2; i >= 0 && i < len(m.accounts) {
-				m.sel = i
-				return m.refreshCurrent()
-			}
-		}
 	case tea.KeyMsg:
 		m.flash = ""
 		switch msg.String() {
 		case "q", "esc":
 			return tea.Quit
-		case "up", "k":
-			if m.sel > 0 {
-				m.sel--
-				return m.refreshCurrent()
-			}
-		case "down", "j":
-			if m.sel < len(m.accounts)-1 {
-				m.sel++
-				return m.refreshCurrent()
-			}
+		case "l":
+			m.lockSession("locked", "")
+		case "a":
+			// another account: the session locks first, its password is asked
+			m.lockSession("", "")
+		case "up", "down", "k", "j":
+			m.flash = "[a] another account: the session locks first"
 		case "n":
 			m.screen = newAccountScreen(false)
 		case "g":
@@ -358,9 +390,12 @@ func (m *model) View() string {
 		title = m.screen.title()
 		body = m.screen.view(m)
 		footer = ""
+	} else if m.unlocked == nil {
+		title = "credits-wallet: locked"
+		body = m.lockView()
 	} else {
 		body = m.mainView()
-		footer = keyHelp("s", "send", "d", "delegate", "c", "contracts", "h", "history", "t", "tokens", "?", "help", "q", "quit")
+		footer = keyHelp("s", "send", "d", "delegate", "c", "contracts", "h", "history", "t", "tokens", "l", "lock", "?", "help")
 		if lipgloss.Width(footer) > m.width {
 			footer = strings.ReplaceAll(footer, "  ", " ")
 		}
@@ -387,7 +422,8 @@ func (m *model) mainView() string {
 	if len(m.accounts) == 0 {
 		left.WriteString(stDim.Render("none yet") + "\n")
 	}
-	for i, f := range m.accounts {
+	cur := m.current()
+	for _, f := range m.accounts {
 		name := f.Name
 		if len(name) > 18 {
 			name = name[:17] + "…"
@@ -396,13 +432,13 @@ func (m *model) mainView() string {
 		if f.IsNodeKey() && len(name) <= 9 {
 			tag = " " + stWarn.Render("node key")
 		}
-		if i == m.sel {
+		if cur != nil && f.Name == cur.Name {
 			left.WriteString(stSel.Render("> "+name) + tag + "\n")
 		} else {
-			left.WriteString("  " + name + tag + "\n")
+			left.WriteString(stDim.Render("  "+name) + tag + "\n")
 		}
 	}
-	left.WriteString("\n" + keyHelp("n", "new") + "\n" + keyHelp("i", "import"))
+	left.WriteString("\n" + keyHelp("a", "switch") + "\n" + keyHelp("n", "new") + "\n" + keyHelp("i", "import") + "\n" + keyHelp("q", "quit"))
 	leftCol := lipgloss.NewStyle().Width(21).Render(left.String())
 
 	// details of the selected account
@@ -411,7 +447,10 @@ func (m *model) mainView() string {
 	if f := m.current(); f != nil {
 		right.WriteString(stTitle.Render(f.Name) + "  " + stDim.Render("[y] copy the address") + "\n")
 		right.WriteString(f.Public + "\n") // whole, alone on its line: it can also be selected
-		if f.IsNodeKey() {
+		if f.NodeKeyEncrypted {
+			right.WriteString(stWarn.Render(truncate("NODE KEY, encrypted by the node: unlocked", rightW)) + "\n")
+			right.WriteString(stDim.Render(truncate("read from "+f.NodeKey, rightW)) + "\n")
+		} else if f.IsNodeKey() {
 			right.WriteString(stWarn.Render(truncate("NODE KEY: the node's own key, in clear in its folder (no password)", rightW)) + "\n")
 			right.WriteString(stDim.Render(truncate("read from "+f.NodeKey, rightW)) + "\n")
 		}
@@ -630,7 +669,7 @@ func (helpScreen) update(m *model, msg tea.Msg) tea.Cmd {
 func (helpScreen) view(m *model) string {
 	return strings.Join([]string{
 		stTitle.Render("Main screen"),
-		"  ↑/↓ or j/k   select an account (or click it)",
+		"  l            lock: the password is asked again   a  another account (locks first)",
 		"  s            send CS from the selected account (optional user data: public text)",
 		"  d            delegations: made and received; n delegate, w withdraw",
 		"  t            tokens: every token held with its contract address; s send, a add a token,",
@@ -644,6 +683,7 @@ func (helpScreen) view(m *model) string {
 		"  g            a node's wallet whose node has no key yet: make the node's key",
 		"               (24 words; the account \"node\", in clear in the node's folder)",
 		"  S            node status        r  refresh        q  quit",
+		"  The wallet locks by itself after lock_after_minutes without a key (default 10).",
 		"",
 		stTitle.Render("Forms"),
 		"  Tab, ↑/↓     next or previous field    Enter  next / confirm    Esc  cancel",
@@ -652,7 +692,7 @@ func (helpScreen) view(m *model) string {
 		stTitle.Render("Safety"),
 		"  The network is shown at the top. MAINNET is assumed unless the configuration declares",
 		"  network = \"testnet\" or \"private\" for this node; on mainnet a transfer asks you to type",
-		"  'send' and your password. Keys never leave this machine: transactions are signed here.",
+		"  'send'. Unlocked, signing asks no password: lock (l) before leaving the terminal.",
 		"  The wallet refuses to send while the node is not synced.",
 		"",
 		"  Scriptable commands: credits-wallet help",

@@ -183,19 +183,12 @@ func (s *sendScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.step = sendReview
-		switch {
-		case s.plan.NodeKey:
-			// the node's key is in clear in the node's folder: no password to ask
-			s.confirm = newForm("Confirm")
-			s.confirm.inputs[0].Placeholder = "Enter to sign with the node's key"
-			if s.plan.Network.IsMainnet() {
-				s.confirm.inputs[0].Placeholder = "type send"
-			}
-		case s.plan.Network.IsMainnet():
-			s.confirm = newForm("Confirm", "Password").secret(1)
+		// the account is unlocked for the session: no password (the user's choice); on mainnet
+		// the review still asks to type send
+		s.confirm = newForm("Confirm")
+		s.confirm.inputs[0].Placeholder = "Enter to sign"
+		if s.plan.Network.IsMainnet() {
 			s.confirm.inputs[0].Placeholder = "type send"
-		default:
-			s.confirm = newForm("Password").secret(0)
 		}
 		return nil
 	case sentMsg:
@@ -256,32 +249,26 @@ func (s *sendScreen) update(m *model, msg tea.Msg) tea.Cmd {
 			s.err = fmt.Errorf("the review does not fit the screen: read it to the end with PgDn before signing")
 			return nil
 		}
-		pwIndex := len(s.confirm.inputs) - 1
 		if s.plan.Network.IsMainnet() && s.confirm.value(0) != "send" {
 			s.err = fmt.Errorf("type send in Confirm to send on MAINNET")
 			s.confirm.setFocus(0)
 			return nil
 		}
-		var pw []byte
-		if !s.plan.NodeKey {
-			pw = []byte(s.confirm.inputs[pwIndex].Value())
-		}
 		s.confirm.wipe()
-		if len(pw) == 0 && !s.plan.NodeKey {
-			s.err = fmt.Errorf("the password is empty")
+		u := m.unlocked
+		if u == nil || u.Account.Name != s.plan.Account {
+			s.err = fmt.Errorf("%s is not unlocked: nothing was sent", s.plan.Account)
 			return nil
 		}
 		// the plan is a few seconds old at most; an old one is prepared again
 		if time.Since(s.plan.Prepared) > 2*time.Minute {
-			keys.Zero(pw)
 			s.step, s.err = sendFields, fmt.Errorf("the check is more than 2 minutes old: press Enter to check again")
 			return nil
 		}
 		s.step, s.err = sendSending, nil
 		plan := s.plan
 		return func() tea.Msg {
-			res, err := m.w.Send(context.Background(), plan, pw, 120*time.Second)
-			keys.Zero(pw)
+			res, err := m.w.SendUnlocked(context.Background(), plan, u, 120*time.Second)
 			return sentMsg{res, err}
 		}
 	case sendDone:
@@ -398,7 +385,10 @@ func (s *sendScreen) view(m *model) string {
 		bal = x.CS.Grouped() + " CS"
 	}
 	fmt.Fprintf(&b, "%-10s %s  %s   balance %s\n", "From", s.account.Name, keys.Short(s.account.Public), bal)
-	if s.account.IsNodeKey() {
+	switch {
+	case s.account.NodeKeyEncrypted:
+		b.WriteString(stWarn.Render(fmt.Sprintf("%-10s NODE KEY: encrypted by the node, unlocked for this session", "")) + "\n")
+	case s.account.IsNodeKey():
 		b.WriteString(stWarn.Render(fmt.Sprintf("%-10s NODE KEY: signed from the node's file, in clear (no password)", "")) + "\n")
 	}
 	switch s.step {

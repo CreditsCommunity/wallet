@@ -156,6 +156,7 @@ func TestReviewMustBeReadToTheEnd(t *testing.T) {
 	m := newModel(w)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	f := &keys.File{Name: "main", Public: "u6PJ8DtQuPFnfmwHbGFULQ4u4EgjDiyYKjVEsynXq2w"}
+	m.unlocked = &wallet.Unlocked{Account: f}
 	pub, _ := keys.ParseAddress(f.Public)
 	args := make([]string, 12)
 	md := &general.MethodDescription{Name: "many", ReturnType: "void"}

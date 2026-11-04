@@ -139,6 +139,8 @@ type app struct {
 	nodeKey      string
 
 	dataDir string
+	tui     bool                 // the terminal interface: it offers a found node key itself
+	found   *wallet.FoundNodeKey // a node key in the current folder, not used
 	w       *wallet.Wallet
 	out     io.Writer
 }
@@ -218,6 +220,12 @@ func (a *app) open() error {
 	}
 	// the node's key account is said with its address and file the first time it is read
 	a.w.NodeKeyNotice = func(s string) { fmt.Fprintln(os.Stderr, s) }
+	// a node's key in the current folder is never used by itself: the interface offers it, the
+	// commands say how to use it
+	a.found = wallet.FindLocalNodeKey(cwd, dir, a.w.NodeKey, wallet.NodeKeyExplicitlyOff(p, a.nodeKey))
+	if a.found != nil && !a.tui {
+		fmt.Fprintln(os.Stderr, wallet.LocalNodeKeyHint(a.found))
+	}
 	if w := config.HomeWarning(); w != "" && os.Getenv("CREDITS_WALLET_HOME") == "" {
 		fmt.Fprintln(os.Stderr, "warning:", w) // the data folder is in that home
 	}
@@ -338,11 +346,12 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		if _, err := parse(fs, args); err != nil {
 			return usagef("%v", err)
 		}
+		a.tui = true
 		if err := a.open(); err != nil {
 			return err
 		}
 		a.w.NodeKeyNotice = nil // the interface shows it on its own screen
-		return tui.Run(a.w, a.dataDir)
+		return tui.Run(a.w, a.dataDir, a.found)
 	case "status":
 		return a.cmdStatus(ctx, args)
 	case "account":
