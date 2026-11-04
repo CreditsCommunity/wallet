@@ -56,7 +56,7 @@ type Profile struct {
 	RequireNetworkUUID bool `toml:"require_network_uuid"`
 	// NodeKey makes the wallet the node's wallet: the node's own key file (NodePrivate.txt, a
 	// path relative to the configuration file's folder), used in place as the account "node".
-	// Unset: the same when the wallet runs in a node's folder; "off": never.
+	// Unset: $CREDITS_WALLET_NODE_KEY if set; "off": never. Never guessed from the current folder.
 	NodeKey string `toml:"node_key"`
 }
 
@@ -123,7 +123,7 @@ network = "mainnet"
 # diag = "127.0.0.1:9088"
 # the wallet of the node in this folder: its key file, used in place as the account "node" (in
 # clear on the server, as the node needs it; a path relative to this file's folder); "off" not
-# to use it; unset: used when the wallet runs in a node's folder
+# to use it; never guessed from the current folder (--node-key FILE on the line also works)
 # node_key = "/home/me/csnode/NodePrivate.txt"
 
 # [nodes.lab]

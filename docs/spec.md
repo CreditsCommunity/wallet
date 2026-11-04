@@ -141,13 +141,22 @@ Operators keep their stake on the node's key, and the node's rewards and the del
 receives go to that address. Next to its node the wallet therefore uses the node's own key pair,
 **in place**, as an account:
 
-- **The wallet of a node.** The wallet is the node's wallet when the node profile sets
-  `node_key` (a key file, or a node's folder; relative to the configuration file's folder: the
-  package's `csnode/wallet.toml` has `node_key = "NodePrivate.txt"`), or else
-  `$CREDITS_WALLET_NODE_KEY` names the key file (an absolute path; the node's Docker image sets it
-  to `/data/keys/NodePrivate.txt`), or else the wallet runs in a node's folder (it holds `node` or
-  `node.exe` and `config.ini`). `node_key = "off"` turns it off. The public key file is
-  `NodePublic.txt` next to the private one.
+- **The wallet of a node**, always by an explicit choice: `--node-key FILE` (a key file or a
+  node's folder, relative to the current folder), else the node profile's `node_key` (relative to
+  the configuration file's folder: the package's `csnode/wallet.toml` has `node_key =
+  "NodePrivate.txt"`), else `$CREDITS_WALLET_NODE_KEY` (an absolute path; the node's Docker image
+  sets it to `/data/keys/NodePrivate.txt`). `node_key = "off"` turns it off. It is **never guessed
+  from the current folder**: a folder someone else controls (an archive, a shared folder, `/tmp`)
+  could hold a planted key pair, which would become the default account, so that the address the
+  user copies and the key that signs are the planter's. The public key file is `NodePublic.txt`
+  next to the private one.
+- **Checks before use** (Linux, macOS; Windows ACLs are not checked): the key file and its folder
+  owned by the user the wallet runs as (or root) and writable by nobody else (no group or world
+  write: `chmod 600`, `chmod go-w`); the key file a regular file, or a link whose target and the
+  target's folder pass the same checks. Otherwise the key is refused, not used, with the reason.
+  The first time the account is read in a session the wallet says it with its address, its file
+  and why it is used ("node key account node: ADDRESS, read from FILE (node_key in wallet.toml)",
+  on stderr; the TUI shows the file under the address), so a substituted key is visible.
 - **The account.** Named `node` (`node-key` when the key store already has an account `node`, an
   earlier import of the node's key for instance; the store's account keeps its name), listed
   first, the default account (selected at start in the TUI; `account address` without a name), and

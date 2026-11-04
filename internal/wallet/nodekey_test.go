@@ -42,19 +42,21 @@ func TestResolveNodeKey(t *testing.T) {
 	dir := nodeDir(t)
 	other := t.TempDir()
 	cfg := filepath.Join(dir, "wallet.toml")
-	cases := []struct {
-		nodeKey, cwd, want string
-	}{
-		{"", dir, filepath.Join(dir, "NodePrivate.txt")}, // in the node's folder
-		{"", other, ""},  // elsewhere: not a node's wallet
-		{"off", dir, ""}, // turned off
-		{"NodePrivate.txt", other, filepath.Join(dir, "NodePrivate.txt")}, // relative to wallet.toml
-		{dir, other, filepath.Join(dir, "NodePrivate.txt")},               // a folder
-		{filepath.Join(dir, "key.txt"), other, filepath.Join(dir, "key.txt")},
-	}
 	t.Setenv(NodeKeyEnv, "")
+	cases := []struct {
+		nodeKey, flag, cwd, want string
+	}{
+		{"", "", dir, ""}, // in the node's folder, nothing named: never guessed
+		{"", "", other, ""},
+		{"off", "", dir, ""},
+		{"NodePrivate.txt", "", other, filepath.Join(dir, "NodePrivate.txt")}, // relative to wallet.toml
+		{dir, "", other, filepath.Join(dir, "NodePrivate.txt")},               // a folder
+		{filepath.Join(dir, "key.txt"), "", other, filepath.Join(dir, "key.txt")},
+		{"off", dir, other, filepath.Join(dir, "NodePrivate.txt")},          // --node-key wins
+		{"", "NodePrivate.txt", dir, filepath.Join(dir, "NodePrivate.txt")}, // relative to the current folder
+	}
 	for _, c := range cases {
-		nk, err := ResolveNodeKey(config.Profile{NodeKey: c.nodeKey}, cfg, c.cwd)
+		nk, err := ResolveNodeKey(config.Profile{NodeKey: c.nodeKey}, cfg, c.flag, c.cwd)
 		got := ""
 		if nk != nil {
 			got = nk.Private
@@ -68,20 +70,114 @@ func TestResolveNodeKey(t *testing.T) {
 	}
 }
 
-// $CREDITS_WALLET_NODE_KEY (the Docker image): when the profile names no key; "off" wins.
+// $CREDITS_WALLET_NODE_KEY (the Docker image): when neither the flag nor the profile names a key.
 func TestResolveNodeKeyEnv(t *testing.T) {
 	dir := nodeDir(t)
 	t.Setenv(NodeKeyEnv, filepath.Join(dir, "keys", "NodePrivate.txt"))
-	nk, err := ResolveNodeKey(config.Profile{}, "", t.TempDir())
+	nk, err := ResolveNodeKey(config.Profile{}, "", "", t.TempDir())
 	if err != nil || nk == nil || nk.Private != filepath.Join(dir, "keys", "NodePrivate.txt") || nk.Public != filepath.Join(dir, "keys", "NodePublic.txt") || !strings.Contains(nk.Source, NodeKeyEnv) {
 		t.Fatalf("%+v %v", nk, err)
 	}
-	if nk, err := ResolveNodeKey(config.Profile{NodeKey: "off"}, "", t.TempDir()); nk != nil || err != nil {
+	if nk, err := ResolveNodeKey(config.Profile{NodeKey: "off"}, "", "", t.TempDir()); nk != nil || err != nil {
 		t.Fatalf("off: %+v %v", nk, err)
 	}
 	t.Setenv(NodeKeyEnv, "keys/NodePrivate.txt")
-	if _, err := ResolveNodeKey(config.Profile{}, "", dir); err == nil {
+	if _, err := ResolveNodeKey(config.Profile{}, "", "", dir); err == nil {
 		t.Fatal("a relative path")
+	}
+}
+
+// The node's key and its folder: the user's (or root's), writable by nobody else, a regular file
+// or a link whose target passes the same checks; otherwise refused, the key not used.
+func TestNodeKeySafety(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ACLs are not checked on Windows")
+	}
+	w := New(config.Default(), config.Profile{Address: config.DefaultAddress}, t.TempDir())
+	use := func(dir, private string) error {
+		w.NodeKey = NodeKeyIn(dir, "test")
+		w.NodeKey.Private = private
+		_, err := w.LoadAccount("node")
+		return err
+	}
+	dir := nodeDir(t)
+	key := filepath.Join(dir, "NodePrivate.txt")
+	os.WriteFile(key, []byte(nkSecret), 0o600)
+	if err := use(dir, key); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []os.FileMode{0o620, 0o602, 0o666} {
+		os.Chmod(key, mode)
+		if err := use(dir, key); err == nil || !strings.Contains(err.Error(), "written by other users") {
+			t.Errorf("key mode %v: %v", mode, err)
+		}
+	}
+	os.Chmod(key, 0o644) // readable by others is the node's own default: accepted
+	if err := use(dir, key); err != nil {
+		t.Errorf("0644: %v", err)
+	}
+	for _, mode := range []os.FileMode{0o775, 0o757, 0o777} {
+		os.Chmod(dir, mode)
+		if err := use(dir, key); err == nil || !strings.Contains(err.Error(), "the node's folder") {
+			t.Errorf("folder mode %v: %v", mode, err)
+		}
+	}
+	os.Chmod(dir, 0o755)
+	// owned by another user (root is accepted)
+	saved := fileOwner
+	t.Cleanup(func() { fileOwner = saved })
+	fileOwner = func(st os.FileInfo) int { return os.Geteuid() + 4242 }
+	if err := use(dir, key); err == nil || !strings.Contains(err.Error(), "belongs to another user") {
+		t.Errorf("another user's: %v", err)
+	}
+	fileOwner = func(st os.FileInfo) int { return 0 }
+	if err := use(dir, key); err != nil {
+		t.Errorf("root's: %v", err)
+	}
+	fileOwner = saved
+	// a link: its target is checked, and the target's folder
+	safe := filepath.Join(t.TempDir(), "real")
+	os.Mkdir(safe, 0o700)
+	os.WriteFile(filepath.Join(safe, "k.txt"), []byte(nkSecret), 0o600)
+	linkDir := nodeDir(t)
+	link := filepath.Join(linkDir, "NodePrivate.txt")
+	os.Symlink(filepath.Join(safe, "k.txt"), link)
+	if err := use(linkDir, link); err != nil {
+		t.Errorf("a link to a safe key: %v", err)
+	}
+	os.Chmod(safe, 0o777)
+	if err := use(linkDir, link); err == nil || !strings.Contains(err.Error(), "the node's folder") {
+		t.Errorf("a link into an open folder: %v", err)
+	}
+	os.Chmod(safe, 0o700)
+	os.Chmod(filepath.Join(safe, "k.txt"), 0o666)
+	if err := use(linkDir, link); err == nil || !strings.Contains(err.Error(), "written by other users") {
+		t.Errorf("a link to an open key: %v", err)
+	}
+	os.Remove(filepath.Join(safe, "k.txt"))
+	if err := use(linkDir, link); err == nil || !strings.Contains(err.Error(), "leads nowhere") {
+		t.Errorf("a dangling link: %v", err)
+	}
+	// not a regular file
+	fifoDir := nodeDir(t)
+	os.Mkdir(filepath.Join(fifoDir, "NodePrivate.txt"), 0o700)
+	if err := use(fifoDir, filepath.Join(fifoDir, "NodePrivate.txt")); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a folder as the key: %v", err)
+	}
+}
+
+// The node's key account is announced once per session, with its address and file.
+func TestNodeKeyNotice(t *testing.T) {
+	dir := nodeDir(t)
+	os.WriteFile(filepath.Join(dir, "NodePrivate.txt"), []byte(nkSecret), 0o600)
+	w := New(config.Default(), config.Profile{Address: config.DefaultAddress}, t.TempDir())
+	w.NodeKey = NodeKeyIn(dir, "node_key in wallet.toml")
+	var said []string
+	w.NodeKeyNotice = func(s string) { said = append(said, s) }
+	w.Accounts()
+	w.LoadAccount("node")
+	if len(said) != 1 || !strings.Contains(said[0], nkAddress) || !strings.Contains(said[0], filepath.Join(dir, "NodePrivate.txt")) || !strings.Contains(said[0], "wallet.toml") {
+		t.Fatalf("%q", said)
 	}
 }
 

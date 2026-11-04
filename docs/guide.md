@@ -218,10 +218,15 @@ wallet** and uses that key directly, as the account `node`:
   `csnode` folder): its profile says `node_key = "NodePrivate.txt"`;
 - when a node profile of your `config.toml` has `node_key = "/path/to/csnode/NodePrivate.txt"`
   (the set-up writes it there with the full path when it creates `config.toml`);
-- when it runs in the node's folder (it holds `node` or `node.exe` and `config.ini`);
+- with `--node-key /path/to/csnode/NodePrivate.txt` on the command line;
 - in the node's Docker image (`CREDITS_WALLET_NODE_KEY=/data/keys/NodePrivate.txt`).
 
-`node_key = "off"` in the profile turns it off.
+`node_key = "off"` in the profile turns it off. The wallet never guesses it from the folder you
+run it in: a folder someone else controls could hold a planted key pair, whose address you would
+then hand out. Before using the key it checks that `NodePrivate.txt` and its folder are yours (or
+root's) and that nobody else can write to them (fix with `chmod 600 NodePrivate.txt` and `chmod
+go-w` on the folder; the set-up does it), and the first time it reads the key it says the
+account's address and the file it comes from: check that they are your node's.
 
 The account `node` is listed first and selected when the interface starts; it is marked **NODE
 KEY** in the list, on the account's screen, in `account list` and in every review. The wallet reads
@@ -566,7 +571,8 @@ without `--yes`, and `account new` needs `--words-file FILE` (or `--show-words`)
 | "the node's key file is encrypted by the node" | The node was started with `--encryptkey` (or its first start chose a password): only the node can open that key. Use a separate account, or make the node's key plain again with the node. |
 | "the node is running" (`node-key new`, `--format node`) | Stop the node first: the wallet never writes the node's key while it runs. |
 | "NodePrivate.txt already exists" | The node has a key: the wallet never writes over it. To replace the node's identity on purpose: `account export NAME --format node --out FOLDER --replace`. |
-| The account `node` is missing | The wallet is not the node's wallet: run it with `--config wallet.toml` in the `csnode` folder, or set `node_key` in the profile. |
+| The account `node` is missing | The wallet is not the node's wallet: run it with `--config wallet.toml` in the `csnode` folder, or set `node_key` in the profile (or `--node-key FILE`). |
+| "the node's key … can be written by other users" / "belongs to another user" | `chmod 600 NodePrivate.txt`, `chmod go-w` on the node's folder; run the wallet as the user who owns the node's folder. |
 | Tokens "found from history (may be incomplete on a pruned node)" | The node keeps no token cache. Turn on `tokens_cache=true` in `[api]` of its `config.ini` and restart it, or add the token with `token add`. |
 | A token is missing although the cache is on | The cache was turned on after the node pruned, or the node started from a snapshot: it knows every token, but not the wallets whose last use of a token is older than its oldest block. Add the token with `token add` (its balance is read from the contract). The node's first start with the cache on also takes a while (log: `tokens loaded!`). |
 | "the executor lost the errors" when compiling | The node's contract executor did not return the error lines; fix the source with an IDE or update the node's executor. |

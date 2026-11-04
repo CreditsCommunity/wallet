@@ -27,6 +27,9 @@ type Wallet struct {
 	DataDir string
 	// NodeKey is the node whose wallet this is (its key is the account "node"), nil otherwise.
 	NodeKey *NodeKey
+	// NodeKeyNotice, when set, receives NodeKeySource the first time the node's key account is read.
+	NodeKeyNotice func(string)
+	noticed       bool
 
 	historyNode *node.Client // the remote history node, when the profile names one
 

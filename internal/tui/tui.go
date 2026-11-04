@@ -409,6 +409,7 @@ func (m *model) mainView() string {
 		right.WriteString(f.Public + "\n") // whole, alone on its line: it can also be selected
 		if f.IsNodeKey() {
 			right.WriteString(stWarn.Render(truncate("NODE KEY: the node's own key, in clear in its folder (no password)", rightW)) + "\n")
+			right.WriteString(stDim.Render(truncate("read from "+f.NodeKey, rightW)) + "\n")
 		}
 		if err := m.balErr[f.Name]; err != nil {
 			right.WriteString(stBad.Render(oneLine(err.Error())) + "\n")

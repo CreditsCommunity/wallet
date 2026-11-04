@@ -137,10 +137,12 @@ deploys; on a contract Enter reads a getter or signs a call, `g` get, `c` call),
 ### The node's key
 
 Next to its node the wallet is **the node's wallet**: it uses the node's own key pair, in place, as
-the account `node`, listed first, the default, and marked `NODE KEY`. That is the case when it runs
-with the package's `csnode/wallet.toml` (whose profile says `node_key = "NodePrivate.txt"`), with
-`node_key` in a node profile of `config.toml`, in the node's folder, or in the node's Docker image
-(`CREDITS_WALLET_NODE_KEY`). The node's rewards and the delegations it receives go to that address,
+the account `node`, listed first, the default, and marked `NODE KEY`. That is always an explicit
+choice: the package's `csnode/wallet.toml` (whose profile says `node_key = "NodePrivate.txt"`),
+`node_key` in a node profile of `config.toml`, `--node-key FILE`, or the node's Docker image
+(`CREDITS_WALLET_NODE_KEY`); never a guess from the current folder, where someone could have
+planted a key pair. The key file and its folder must be yours (or root's) and writable by nobody
+else, and the wallet says the account's address and file the first time it reads it. The node's rewards and the delegations it receives go to that address,
 and operators usually keep their stake there.
 
 - `NodePrivate.txt` is read where the node reads it: never copied into the key store, never

@@ -227,10 +227,16 @@ wallet è **il wallet del nodo** e usa direttamente quella chiave, come account 
   cartella `csnode`): il suo profilo dice `node_key = "NodePrivate.txt"`;
 - quando un profilo del tuo `config.toml` ha `node_key = "/percorso/di/csnode/NodePrivate.txt"`
   (la configurazione guidata lo scrive con il percorso completo quando crea `config.toml`);
-- quando parte nella cartella del nodo (che contiene `node` o `node.exe` e `config.ini`);
+- con `--node-key /percorso/di/csnode/NodePrivate.txt` sulla riga di comando;
 - nell'immagine Docker del nodo (`CREDITS_WALLET_NODE_KEY=/data/keys/NodePrivate.txt`).
 
-`node_key = "off"` nel profilo lo disattiva.
+`node_key = "off"` nel profilo lo disattiva. Il wallet non la deduce mai dalla cartella in cui lo
+avvii: una cartella controllata da altri potrebbe contenere una coppia di chiavi messa lì apposta,
+e finiresti per dare in giro il suo indirizzo. Prima di usare la chiave controlla che
+`NodePrivate.txt` e la sua cartella siano tuoi (o di root) e che nessun altro possa scriverci (si
+corregge con `chmod 600 NodePrivate.txt` e `chmod go-w` sulla cartella; la configurazione guidata
+lo fa da sé), e la prima volta che la legge mostra l'indirizzo dell'account e il file da cui
+viene: controlla che siano quelli del tuo nodo.
 
 L'account `node` è il primo della lista ed è selezionato all'avvio dell'interfaccia; è segnato
 **NODE KEY** nella lista, nella schermata dell'account, in `account list` e in ogni riepilogo. Il
@@ -583,7 +589,8 @@ inviare senza `--yes`, e `account new` richiede `--words-file FILE` (oppure `--s
 | "the node's key file is encrypted by the node" | Il nodo è stato avviato con `--encryptkey` (o al primo avvio è stata scelta una password): solo il nodo può aprire quella chiave. Usa un account separato, o rendi di nuovo in chiaro la chiave con il nodo. |
 | "the node is running" (`node-key new`, `--format node`) | Ferma prima il nodo: il wallet non scrive mai la chiave del nodo mentre è in esecuzione. |
 | "NodePrivate.txt already exists" | Il nodo ha una chiave: il wallet non ci scrive mai sopra. Per sostituire di proposito l'identità del nodo: `account export NOME --format node --out CARTELLA --replace`. |
-| Manca l'account `node` | Il wallet non è il wallet del nodo: avvialo con `--config wallet.toml` nella cartella `csnode`, o imposta `node_key` nel profilo. |
+| Manca l'account `node` | Il wallet non è il wallet del nodo: avvialo con `--config wallet.toml` nella cartella `csnode`, o imposta `node_key` nel profilo (oppure `--node-key FILE`). |
+| "the node's key … can be written by other users" / "belongs to another user" | `chmod 600 NodePrivate.txt`, `chmod go-w` sulla cartella del nodo; avvia il wallet come l'utente proprietario della cartella del nodo. |
 | Token "found from history (may be incomplete on a pruned node)" | Il nodo non ha una cache dei token. Attiva `tokens_cache=true` in `[api]` del suo `config.ini` e riavvialo, oppure aggiungi il token con `token add`. |
 | Manca un token anche se la cache è attiva | La cache è stata attivata dopo il pruning, o il nodo è partito da uno snapshot: conosce tutti i token, ma non i wallet che li hanno usati l'ultima volta prima del suo blocco più vecchio. Aggiungi il token con `token add` (il suo saldo viene letto dal contratto). Anche il primo avvio del nodo con la cache attiva richiede un po' (log: `tokens loaded!`). |
 | "the executor lost the errors" durante la compilazione | L'esecutore di contratti del nodo non ha restituito le righe di errore; correggi il sorgente con un IDE oppure aggiorna l'esecutore del nodo. |

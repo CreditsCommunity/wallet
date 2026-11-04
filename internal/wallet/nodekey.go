@@ -51,66 +51,42 @@ func NodeKeyIn(dir, source string) *NodeKey {
 	return &NodeKey{Dir: dir, Private: filepath.Join(dir, keys.NodePrivateFile), Public: filepath.Join(dir, keys.NodePublicFile), Source: source}
 }
 
-// IsNodeFolder tells whether dir is a node's folder: it holds the node program (node, node.exe)
-// and its config.ini.
-func IsNodeFolder(dir string) bool {
-	if st, err := os.Stat(filepath.Join(dir, "config.ini")); err != nil || !st.Mode().IsRegular() {
-		return false
-	}
-	for _, exe := range []string{"node", "node.exe"} {
-		if st, err := os.Stat(filepath.Join(dir, exe)); err == nil && st.Mode().IsRegular() {
-			return true
-		}
-	}
-	return false
-}
-
-// NodeKeyEnv names the node's key file when the profile does not (the node's Docker image sets it:
-// its key is not in the node program's folder).
+// NodeKeyEnv names the node's key file when neither --node-key nor the profile does (the node's
+// Docker image sets it: its key is not in the node program's folder).
 const NodeKeyEnv = "CREDITS_WALLET_NODE_KEY"
 
-// ResolveNodeKey finds the node whose wallet this is: the profile's node_key (a file, or a node's
-// folder; relative to the configuration file's folder), or $CREDITS_WALLET_NODE_KEY, or else the
-// current folder when it is a node's folder; nil when the wallet is not a node's wallet
-// (node_key = "off", or none of them).
-func ResolveNodeKey(p config.Profile, configPath, cwd string) (*NodeKey, error) {
-	if p.NodeKey == "" {
-		if env := os.Getenv(NodeKeyEnv); env != "" {
-			p.NodeKey = env
-			configPath = ""
-			if !filepath.IsAbs(ExpandHome(env)) {
-				return nil, fmt.Errorf("%s=%s: give an absolute path", NodeKeyEnv, env)
-			}
-		}
-	}
-	switch p.NodeKey {
-	case config.NodeKeyOff:
-		return nil, nil
-	case "":
-		if cwd != "" && IsNodeFolder(cwd) {
-			abs, err := filepath.Abs(cwd)
-			if err != nil {
-				return nil, err
-			}
-			return NodeKeyIn(abs, "the wallet runs in the node's folder"), nil
-		}
-		return nil, nil
-	}
-	path := ExpandHome(p.NodeKey)
-	if !filepath.IsAbs(path) {
-		base := cwd
+// ResolveNodeKey finds the node whose wallet this is. It is always an explicit choice, never
+// guessed from the current folder (a folder someone else controls could hold a planted key pair):
+// flag (--node-key: a file or a node's folder; relative to the current folder), else the profile's
+// node_key (relative to the configuration file's folder), else $CREDITS_WALLET_NODE_KEY (an
+// absolute path). nil when the wallet is not a node's wallet (none of them, or "off").
+func ResolveNodeKey(p config.Profile, configPath, flag, cwd string) (*NodeKey, error) {
+	value, base, source := flag, cwd, "--node-key"
+	switch {
+	case flag != "":
+	case p.NodeKey != "":
+		value, source = p.NodeKey, "node_key in "+configPath
 		if configPath != "" {
 			base = filepath.Dir(configPath)
 		}
+	case os.Getenv(NodeKeyEnv) != "":
+		value, source = os.Getenv(NodeKeyEnv), "$"+NodeKeyEnv
+		if !filepath.IsAbs(ExpandHome(value)) {
+			return nil, fmt.Errorf("%s=%s: give an absolute path", NodeKeyEnv, value)
+		}
+	default:
+		return nil, nil
+	}
+	if value == config.NodeKeyOff {
+		return nil, nil
+	}
+	path := ExpandHome(value)
+	if !filepath.IsAbs(path) {
 		path = filepath.Join(base, path)
 	}
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
-	}
-	source := "node_key in " + configPath
-	if configPath == "" {
-		source = "$" + NodeKeyEnv
 	}
 	if st, err := os.Stat(path); err == nil && st.IsDir() {
 		return NodeKeyIn(path, source), nil
@@ -118,6 +94,45 @@ func ResolveNodeKey(p config.Profile, configPath, cwd string) (*NodeKey, error) 
 	nk := NodeKeyIn(filepath.Dir(path), source)
 	nk.Private = path
 	return nk, nil
+}
+
+// CheckNodeKeySafe checks the node's key file and its folder before the key is used: each owned by
+// the user the wallet runs as (or root) and writable by nobody else (no group or world write);
+// the key file a regular file, or a link whose target passes the same checks (as does the
+// target's folder). On Windows the ACLs are not checked (the wallet sets none itself).
+func CheckNodeKeySafe(private string) error {
+	paths := []string{filepath.Dir(private)}
+	st, err := os.Lstat(private)
+	if err != nil {
+		return err
+	}
+	target := private
+	if st.Mode()&os.ModeSymlink != 0 {
+		if target, err = filepath.EvalSymlinks(private); err != nil {
+			return fmt.Errorf("%s is a link that leads nowhere: %w", private, err)
+		}
+		paths = append(paths, filepath.Dir(target))
+	}
+	tst, err := os.Stat(target)
+	if err != nil {
+		return err
+	}
+	if !tst.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file: refused", target)
+	}
+	if err := ownedSafe(target, tst, "the node's key file", "chmod 600 "); err != nil {
+		return err
+	}
+	for _, d := range paths {
+		dst, err := os.Stat(d)
+		if err != nil {
+			return err
+		}
+		if err := ownedSafe(d, dst, "the node's folder", "chmod go-w "); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // NodeAccountName is the name of the node's key account: "node", or "node-key" when the key store
@@ -140,13 +155,27 @@ func (w *Wallet) NodeAccount() (*keys.File, error) {
 	if _, err := os.Lstat(w.NodeKey.Private); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
+	if err := CheckNodeKeySafe(w.NodeKey.Private); err != nil {
+		return nil, fmt.Errorf("%w; the node's key is not used", err)
+	}
 	key, err := keys.ReadNodeKey(w.NodeKey.Private)
 	if err != nil {
 		return nil, err
 	}
 	defer keys.Zero(key)
-	return &keys.File{Version: keys.FileVersion, Name: w.NodeAccountName(), Public: keys.Address(key.Public().(ed25519.PublicKey)),
-		NodeKey: w.NodeKey.Private}, nil
+	f := &keys.File{Version: keys.FileVersion, Name: w.NodeAccountName(), Public: keys.Address(key.Public().(ed25519.PublicKey)),
+		NodeKey: w.NodeKey.Private}
+	if w.NodeKeyNotice != nil && !w.noticed {
+		w.noticed = true
+		w.NodeKeyNotice(NodeKeySource(f, w.NodeKey))
+	}
+	return f, nil
+}
+
+// NodeKeySource says which key the node's key account is and where it comes from, shown the first
+// time it is used in a session so that a substituted key is visible.
+func NodeKeySource(f *keys.File, nk *NodeKey) string {
+	return fmt.Sprintf("node key account %s: %s, read from %s (%s)", f.Name, f.Public, f.NodeKey, nk.Source)
 }
 
 // NodeKeyMissing tells whether the wallet is a node's wallet whose node has no key yet.

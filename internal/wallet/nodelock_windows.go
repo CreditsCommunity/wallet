@@ -32,3 +32,9 @@ func lockBusy(path string) bool {
 
 // folderSafe: on Windows the folder's ACL is not checked (the wallet sets no ACLs itself).
 func folderSafe(real string, st os.FileInfo) error { return nil }
+
+// ownedSafe: on Windows the ACLs are not checked.
+func ownedSafe(path string, st os.FileInfo, what, fix string) error { return nil }
+
+// fileOwner: not used on Windows (the tests that replace it skip there).
+var fileOwner = func(st os.FileInfo) int { return -1 }

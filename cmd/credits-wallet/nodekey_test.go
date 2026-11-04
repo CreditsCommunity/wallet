@@ -185,6 +185,27 @@ func TestNodeKeyAccountSends(t *testing.T) {
 	if _, errOut, code := runWallet2(t, "account", "export", "node", "--format", "node", "--out", t.TempDir(), c); code == 0 || !strings.Contains(errOut, "the node's key already") {
 		t.Fatalf("export node of the node: %d %s", code, errOut)
 	}
+	// the account is announced once with its address and file
+	if !strings.Contains(errOut, "node key account node: "+testAddr+", read from "+filepath.Join(dir, "NodePrivate.txt")) {
+		t.Errorf("no notice of the node's key:\n%s", errOut)
+	}
+	// never guessed from the current folder (a planted key pair would become the default account);
+	// --node-key names it
+	t.Chdir(dir)
+	if out, code := runWallet(t, "account", "list", "--node="+fake.addr); code != 0 || strings.Contains(out, testAddr) {
+		t.Fatalf("guessed from the current folder: %d %s", code, out)
+	}
+	if out, code := runWallet(t, "account", "address", "--node-key", "NodePrivate.txt"); code != 0 || strings.TrimSpace(out) != testAddr {
+		t.Fatalf("--node-key: %d %s", code, out)
+	}
+	// a key file others can write to is refused, not used
+	os.Chmod(filepath.Join(dir, "NodePrivate.txt"), 0o666)
+	if runtime.GOOS != "windows" {
+		if _, errOut, code := runWallet2(t, "account", "address", "--node-key", "NodePrivate.txt"); code == 0 || !strings.Contains(errOut, "written by other users") {
+			t.Fatalf("an open key: %d %s", code, errOut)
+		}
+	}
+	os.Chmod(filepath.Join(dir, "NodePrivate.txt"), 0o600)
 	// the same profile with node_key = "off": no node account
 	os.WriteFile(cfg, []byte(fmt.Sprintf("[nodes.local]\naddress = %q\nnetwork = \"private\"\nnode_key = \"off\"\n", fake.addr)), 0o644)
 	if out, code := runWallet(t, "account", "list", c); code != 0 || strings.Contains(out, testAddr) {

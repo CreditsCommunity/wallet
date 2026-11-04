@@ -39,3 +39,23 @@ func folderSafe(real string, st os.FileInfo) error {
 	}
 	return nil
 }
+
+// fileOwner is the owner of a file (replaced in tests).
+var fileOwner = func(st os.FileInfo) int {
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+		return int(sys.Uid)
+	}
+	return -1
+}
+
+// ownedSafe refuses a file or folder that is not the wallet user's (or root's) or that the group
+// or other users can write to.
+func ownedSafe(path string, st os.FileInfo, what, fix string) error {
+	if uid := fileOwner(st); uid != os.Geteuid() && uid != 0 {
+		return fmt.Errorf("%s %s belongs to another user (uid %d): refused%s", what, path, uid, folderOwnerNote(path))
+	}
+	if st.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s %s can be written by other users (mode %v): refused, %s%s first", what, path, st.Mode().Perm(), fix, path)
+	}
+	return nil
+}
