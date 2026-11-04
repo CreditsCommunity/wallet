@@ -46,6 +46,17 @@ func foundModel(t *testing.T, mode os.FileMode) (*model, string, string) {
 	return m, dir, cfgPath
 }
 
+// A key the node encrypted: its address is tagged as NodePublic.txt's, unverified until unlocked.
+func TestFoundKeyEncryptedTagged(t *testing.T) {
+	m := testModel(t)
+	m.screen = newFoundKeyScreen(&wallet.FoundNodeKey{Path: "/n/NodePrivate.txt", Address: "FAe4sisG95oZ42w7buUn5qEE4TAnfTTFPiguZUHmhiF", Encrypted: true})
+	v := flat(m.View())
+	if !strings.Contains(v, "(from NodePublic.txt, unverified until unlocked)") || !strings.Contains(v, "its password is asked") {
+		t.Errorf("encrypted:\n%s", m.View())
+	}
+	fits80x24(t, "found encrypted", m.View())
+}
+
 // The found key is said with its address and full path and never used before a choice.
 func TestFoundKeyUseForSession(t *testing.T) {
 	m, dir, cfgPath := foundModel(t, 0o600)

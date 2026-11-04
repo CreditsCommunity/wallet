@@ -119,14 +119,9 @@ func OpenNodePrivate(data, password []byte) (ed25519.PrivateKey, error) {
 	return DecryptNodeKey(secret, password)
 }
 
-// ReadNodePublic reads the address in a NodePublic.txt (its first line, as the node compares it).
-func ReadNodePublic(path string) (ed25519.PublicKey, error) {
-	data, err := readSmall(path)
-	if err != nil {
-		return nil, err
-	}
-	return ParseAddress(firstLine(data))
-}
+// ParseNodePublic reads the address in a NodePublic.txt's content (its first line, as the node
+// compares it).
+func ParseNodePublic(data []byte) (ed25519.PublicKey, error) { return ParseAddress(firstLine(data)) }
 
 // ReadNodeKey reads a NodePrivate.txt. The caller zeroes the key after use.
 func ReadNodeKey(path string) (ed25519.PrivateKey, error) {

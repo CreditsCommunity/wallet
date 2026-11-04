@@ -308,8 +308,17 @@ func TestEncryptedNodeKeySends(t *testing.T) {
 	os.WriteFile(cfg, []byte(fmt.Sprintf("node = \"local\"\n[nodes.local]\naddress = %q\nnetwork = \"private\"\ndiag = \"off\"\nnode_key = \"NodePrivate.txt\"\n", fake.addr)), 0o644)
 	c := "--config=" + cfg
 	out, errOut, code := runWallet2(t, "account", "list", c)
-	if code != 0 || !strings.Contains(out, testAddr+"  NODE KEY") || !strings.Contains(out, "encrypted by the node") || !strings.Contains(errOut, "encrypted with the node's password") {
+	if code != 0 || !strings.Contains(out, testAddr+"  NODE KEY") || !strings.Contains(out, "encrypted by the node") || !strings.Contains(errOut, "encrypted with the node's password") ||
+		!strings.Contains(out, "(from NodePublic.txt, unverified until unlocked)") {
 		t.Fatalf("list: %d\n%s\n%s", code, out, errOut)
+	}
+	// the address alone on the output (for a pipe), the tag on stderr
+	out, errOut, code = runWallet2(t, "account", "address", c)
+	if code != 0 || strings.TrimSpace(out) != testAddr || !strings.Contains(errOut, "unverified until unlocked") {
+		t.Fatalf("address: %d %q %q", code, out, errOut)
+	}
+	if out, code := runWallet(t, "account", "address", c, "--json"); code != 0 || !strings.Contains(out, `"address_unverified": true`) {
+		t.Fatalf("address --json: %d %s", code, out)
 	}
 	wrong := filepath.Join(home, "wrong")
 	os.WriteFile(wrong, []byte("nope\n"), 0o600)

@@ -184,9 +184,16 @@ func (a *app) accountAddress(name string) error {
 		return fmt.Errorf("the key file of %q has no valid address: %w", name, err)
 	}
 	if a.json {
-		return a.printJSON(map[string]any{"name": f.Name, "address": f.Public})
+		out := map[string]any{"name": f.Name, "address": f.Public}
+		if f.NodeKeyEncrypted {
+			out["address_unverified"] = true
+		}
+		return a.printJSON(out)
 	}
 	fmt.Fprintln(a.out, f.Public)
+	if f.NodeKeyEncrypted { // on stderr: the output stays the address alone, for a pipe
+		fmt.Fprintln(os.Stderr, "address "+wallet.UnverifiedAddressNote)
+	}
 	return nil
 }
 
@@ -204,10 +211,12 @@ func (a *app) accountList() error {
 			Default bool   `json:"default,omitempty"`
 			// encrypted by the node: the node's password opens it
 			NodeKeyEncrypted bool `json:"node_key_encrypted,omitempty"`
+			// the address comes from NodePublic.txt until the key is opened
+			AddressUnverified bool `json:"address_unverified,omitempty"`
 		}
 		rows := []row{}
 		for _, f := range files {
-			rows = append(rows, row{f.Name, f.Public, f.NodeKey, f.IsNodeKey(), f.NodeKeyEncrypted})
+			rows = append(rows, row{f.Name, f.Public, f.NodeKey, f.IsNodeKey(), f.NodeKeyEncrypted, f.NodeKeyEncrypted})
 		}
 		return a.printJSON(rows)
 	}
@@ -220,7 +229,7 @@ func (a *app) accountList() error {
 			nodeKey, nodeEncrypted = true, f.NodeKeyEncrypted
 			how := "in clear"
 			if f.NodeKeyEncrypted {
-				how = "encrypted by the node: its password signs"
+				how = "encrypted by the node: its password signs; address " + wallet.UnverifiedAddressNote
 			}
 			fmt.Fprintf(a.out, "%-20s %s  NODE KEY (default; %s, %s)\n", f.Name, f.Public, f.NodeKey, how)
 			continue

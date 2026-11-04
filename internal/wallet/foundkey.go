@@ -16,6 +16,10 @@ import (
 // uses it by itself (someone could have planted it there), but the terminal interface says so and
 // offers it, and the commands print a one-line hint.
 
+// UnverifiedAddressNote tags the address of a key the node encrypted until it is opened: it comes
+// from NodePublic.txt.
+const UnverifiedAddressNote = "(from NodePublic.txt, unverified until unlocked)"
+
 // FoundNodeKey is a NodePrivate.txt in the folder the wallet was started in.
 type FoundNodeKey struct {
 	Path      string // absolute

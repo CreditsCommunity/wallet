@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -103,6 +104,13 @@ func TestEncryptedNodeKeyAccount(t *testing.T) {
 	files, _, _ = w.Accounts()
 	if _, err := w.Unlock(files[0], []byte("new pw")); err == nil || !strings.Contains(err.Error(), "not the one of NodePublic.txt") {
 		t.Fatalf("another NodePublic.txt: %v", err)
+	}
+	// a NodePublic.txt others can write would choose the address shown: refused
+	if runtime.GOOS != "windows" {
+		os.Chmod(filepath.Join(dir, keys.NodePublicFile), 0o666)
+		if _, problems, _ := w.Accounts(); len(problems) != 1 || !strings.Contains(problems[0].Error(), "can be written by other users") {
+			t.Fatalf("NodePublic.txt open to others: %v", problems)
+		}
 	}
 	// no NodePublic.txt: no address, not used
 	os.Remove(filepath.Join(dir, keys.NodePublicFile))

@@ -86,6 +86,9 @@ func (s *foundKeyScreen) view(m *model) string {
 	} else {
 		b.WriteString("Address  " + highlightAddress(f.Address) + "\n")
 		if f.Encrypted {
+			b.WriteString(stWarn.Render("         "+wallet.UnverifiedAddressNote) + "\n")
+		}
+		if f.Encrypted {
 			b.WriteString(stDim.Render("encrypted by the node: its password is asked to unlock it") + "\n")
 		} else {
 			b.WriteString(stDim.Render("in clear, as the node needs it: no password") + "\n")

@@ -201,8 +201,14 @@ func NodeKeyFileInfo(private string) (address string, encrypted bool, warning st
 		defer keys.Zero(key)
 		return keys.Address(key.Public().(ed25519.PublicKey)), false, warning, nil
 	}
+	// the address until the key is opened: NodePublic.txt, read with the same checks as the key
+	// (one that others could write would choose the address shown), unverified until unlocked
 	pubFile := filepath.Join(filepath.Dir(private), keys.NodePublicFile)
-	pub, err := keys.ReadNodePublic(pubFile)
+	pubData, _, err := readNodeKeyFileSafe(pubFile)
+	var pub ed25519.PublicKey
+	if err == nil {
+		pub, err = keys.ParseNodePublic(pubData)
+	}
 	if err != nil {
 		return "", true, "", fmt.Errorf("%s is encrypted by the node and %s does not give its address (%v): the node itself would not start with them", private, pubFile, err)
 	}
