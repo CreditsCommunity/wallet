@@ -88,6 +88,7 @@ func (f *form) address(fields ...int) *form {
 func (f *form) value(i int) string { return strings.TrimSpace(f.inputs[i].Value()) }
 
 func (f *form) setFocus(i int) {
+	f.pasteErr, f.pasteErrAt = "", -1
 	f.inputs[f.focus].Blur()
 	f.focus = (i + len(f.inputs)) % len(f.inputs)
 	f.inputs[f.focus].Focus()

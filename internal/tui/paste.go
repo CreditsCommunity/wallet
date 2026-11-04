@@ -1,12 +1,13 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/CreditsCommunity/wallet/internal/keys"
 )
@@ -14,7 +15,8 @@ import (
 // Pasting an address. The terminal's paste (Ctrl+Shift+V, right click, Cmd+V) reaches the wallet
 // as a bracketed paste: one key message with Paste set and the whole text. The text is untrusted
 // (malware may have replaced what the user copied): it is trimmed, a leading "credits:" goes, and
-// in an address field anything but a base58 32-byte address is refused, shown escaped. A pasted
+// in an address field anything but a base58 32-byte address is refused, and only its length is
+// shown (it may be a secret pasted by mistake). A pasted
 // address is shown with its first and last 6 characters highlighted, to compare with the source.
 // The wallet never reads the clipboard itself (that would need external programs).
 
@@ -64,7 +66,8 @@ func (f *form) paste(k tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	if f.addr[i] {
-		f.pasteErr = "the pasted text is not a CREDITS address (base58 of 32 bytes): " + ansi.Truncate(printable(text), 40, "…")
+		// never the text itself: what was pasted may be a secret key or a phrase
+		f.pasteErr = fmt.Sprintf("the pasted text (%d characters) is not a CREDITS address (base58 of 32 bytes): not shown, not taken", utf8.RuneCountInString(text))
 		f.pasteErrAt = i
 		return nil
 	}

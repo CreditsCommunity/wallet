@@ -156,3 +156,32 @@ func TestCopyOwnAddress(t *testing.T) {
 		t.Errorf("copy after saving: %q\n%s", buf.String(), m.View())
 	}
 }
+
+// M2: a refused paste never shows what was pasted (it may be a secret key or a phrase), and the
+// refusal goes when the field loses focus.
+func TestPasteRefusalHidesText(t *testing.T) {
+	m := testModel(t)
+	s := newSendScreen(&keys.File{Name: "main", Public: "FAe4sisG95oZ42w7buUn5qEE4TAnfTTFPiguZUHmhiF"})
+	m.screen = s
+	secretKey := "1GMkH3brNXiNNs1tiFZHu4yZSRrzJwxi5wB9bHFtMikjwpAW9DMZzU2Pqakc5it8X3N5vPmqdN7KF4CCUpmKhq"
+	phrase := "drama smart pear grab uphold ginger feel roof ridge rocket zoo cactus"
+	for _, secret := range []string{secretKey, phrase, "shortxyz1"} {
+		m.Update(pasteMsg(secret))
+		view := m.View()
+		if !strings.Contains(view, "characters) is not a CREDITS address") {
+			t.Errorf("no refusal:\n%s", view)
+		}
+		for _, part := range []string{secret[:8], "drama", "1GMkH3"} {
+			if strings.Contains(view, part) {
+				t.Errorf("the pasted text is on the screen (%q):\n%s", part, view)
+			}
+		}
+		if strings.Contains(s.fields.pasteErr, secret[:5]) {
+			t.Error("the pasted text is kept in the refusal")
+		}
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if s.fields.pasteErr != "" || strings.Contains(m.View(), "not a CREDITS address") {
+		t.Error("the refusal stays after the focus moved")
+	}
+}
