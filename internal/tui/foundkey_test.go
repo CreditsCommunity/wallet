@@ -24,6 +24,7 @@ func foundModel(t *testing.T, mode os.FileMode) (*model, string, string) {
 	dir := filepath.Join(home, "csnode")
 	os.Mkdir(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "NodePrivate.txt"), []byte(nodeSecret), mode)
+	os.Chmod(filepath.Join(dir, "NodePrivate.txt"), mode) // whatever the umask
 	data := filepath.Join(home, ".credits-wallet")
 	os.MkdirAll(data, 0o700)
 	cfgPath := filepath.Join(data, "config.toml")
