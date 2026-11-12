@@ -920,7 +920,7 @@ asks that password; a node's key the node encrypted asks the node's password the
   publishes (a manual run on a tag builds only); the notes name the tag's commit. The
   build is reproducible: `-trimpath -buildvcs=true`, ldflags `-s -w -buildid= -X
   main.version=X.Y.Z`, archives dated at the commit's time (SOURCE_DATE_EPOCH), owner 0:0, fixed
-  modes, name order, gzip `-n`, zip `-X`; Go 1.27.3 and Thrift 0.19.0 pinned. Each archive holds
+  modes, name order, gzip `-n`, zip `-X`; Go 1.27.4 and Thrift 0.19.0 pinned. Each archive holds
   `credits-wallet-X.Y.Z/` with the binary, README.md, LICENSE, guide.md and guide.it.md, listed in
   `SHA256SUMS`. Actions pinned by commit; only the publishing job may write.
 - ci.yml also cross-compiles linux/arm64, which is not released yet.
