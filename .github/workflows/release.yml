@@ -30,7 +30,7 @@ concurrency:
 
 env:
   THRIFT_COMPILER: 0.19.0-2.1build5
-  GO_VERSION: '1.27.3'  # go.mod's toolchain
+  GO_VERSION: '1.27.4'  # go.mod's toolchain
 
 jobs:
   build:
