@@ -32,7 +32,7 @@ See the [guide](docs/guide.md#1-install-and-first-start).
 
 ## Build
 
-Needs Go 1.26 or later (`go.mod` names the toolchain, go1.27.3, which `go` fetches by itself) and the Thrift compiler **0.19.0** as `thrift` on the `PATH`
+Needs Go 1.26 or later (`go.mod` names the toolchain, go1.27.4, which `go` fetches by itself) and the Thrift compiler **0.19.0** as `thrift` on the `PATH`
 (`sudo apt install thrift-compiler` on Ubuntu 24.04; it must match `github.com/apache/thrift v0.19.0`
 in `go.mod`).
 
@@ -420,7 +420,7 @@ at the commit's time, owned by 0:0, in name order. To check a release:
 ```sh
 git checkout wallet-v0.1.0 && git submodule update --init
 go generate ./thrift                   # Thrift 0.19.0
-ci/release/build.sh 0.1.0 dist         # Go 1.27.3 (go.mod's toolchain)
+ci/release/build.sh 0.1.0 dist         # Go 1.27.4 (go.mod's toolchain)
 diff dist/SHA256SUMS <(curl -sSL https://github.com/CreditsCommunity/wallet/releases/download/wallet-v0.1.0/SHA256SUMS)
 ```
 
